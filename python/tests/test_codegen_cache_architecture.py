@@ -449,11 +449,15 @@ def _x86_64_python() -> list[str] | None:
     Rosetta installed has."""
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         return None
+    # Without Rosetta, `arch -x86_64` can wait on the offer to install it: CI's
+    # macos-15 runner sat out the whole timeout. Its runtime says it is there.
+    if not os.path.exists("/Library/Apple/usr/libexec/oah/libRosettaRuntime"):
+        return None
     cmd = ["arch", "-x86_64", "/usr/bin/python3", "-I"]
     try:
         out = subprocess.run(
             [*cmd, "-c", "import platform; print(platform.machine())"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=30,
         )  # fmt: skip
     except (OSError, subprocess.SubprocessError):
         return None
