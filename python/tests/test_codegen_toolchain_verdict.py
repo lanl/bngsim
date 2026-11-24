@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import re
 import shutil
 import stat
@@ -699,3 +700,226 @@ def test_the_sdk_comes_from_sdkroot_or_xcrun(monkeypatch):
         tc, "_run", lambda cmd, **kw: "/x/MacOSX2.sdk\n" if cmd[0] == "xcrun" else ""
     )
     assert tc._current_sdk() == ("/x/MacOSX2.sdk", "xcrun --show-sdk-path")
+
+
+# ── Issue #1759: CC is a command line, and a library for another machine ─────
+
+
+@pytest.mark.parametrize("system", ["Linux", "Darwin"])
+@pytest.mark.parametrize(
+    "cc_env, command",
+    [
+        ("cc -arch x86_64", ["cc", "-arch", "x86_64"]),
+        ("ccache cc", ["ccache", "cc"]),
+        ("  gcc-15   -O1 ", ["gcc-15", "-O1"]),
+        ("'/opt/my tools/cc' -DX='a b'", ["/opt/my tools/cc", "-DX=a b"]),
+        ("/usr/bin/cc", ["/usr/bin/cc"]),
+    ],
+)
+def test_cc_is_split_as_the_shell_splits_it(system, cc_env, command, monkeypatch):
+    """The issue's second fix: make and CMake read CC as a command line, so
+    ``CC="cc -arch x86_64"`` is ``cc`` and two arguments, not a file named that."""
+    monkeypatch.setattr(cg.platform, "system", lambda: system)
+    monkeypatch.setenv("CC", cc_env)
+    assert cg._find_c_compiler() == command
+
+
+@pytest.mark.parametrize(
+    "cc_env", [r"C:\Program Files\LLVM\bin\clang.exe", r"C:\msys64\mingw64\bin\gcc.exe"]
+)
+def test_cc_on_windows_stays_one_path(cc_env, monkeypatch):
+    """A Windows path has spaces in it and backslashes, which the shell's rules
+    would split on and take as escapes; there CC is the compiler's path, as before."""
+    monkeypatch.setattr(cg.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("CC", cc_env)
+    assert cg._find_c_compiler() == [cc_env]
+
+
+@pytest.mark.parametrize("system", ["Linux", "Darwin", "Windows"])
+@pytest.mark.parametrize("cc_env", ["", "   ", "\t"])
+def test_a_blank_cc_is_not_set(system, cc_env, monkeypatch):
+    monkeypatch.setattr(cg.platform, "system", lambda: system)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/found/{name}")
+    monkeypatch.setenv("CC", cc_env)
+    assert cg._find_c_compiler() == (["cl"] if system == "Windows" else ["cc"])
+    assert tc.cc_is_set() is False
+
+
+def test_a_cc_that_cannot_be_split_says_so(clean, monkeypatch):
+    """An unclosed quote: no compiler can be named, as on a Windows machine with
+    none, and the message quotes CC and why."""
+    monkeypatch.setattr(cg.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("CC", 'cc -DNAME="unclosed')
+    with pytest.raises(RuntimeError, match="cannot be read as a command line"):
+        cg._find_c_compiler()
+    compiler, verdict = tc.check()
+    assert compiler is None
+    assert "No closing quotation" in verdict and "CC='cc -DNAME=\"unclosed'" in verdict
+    assert tc.peek() == (None, str(verdict).split(" Models at or above")[0])
+
+
+@posix_only
+@requires_posix_cc
+def test_a_cc_with_arguments_is_found_on_path(clean, monkeypatch):
+    """The refusal the issue quotes: ``'/usr/bin/cc -arch x86_64' is not an
+    executable on PATH (from CC)``. The compiler is the first word."""
+    monkeypatch.setenv("CC", f"{REAL_CC} -O1")
+    assert tc.peek() == ([REAL_CC, "-O1"], None)
+    assert tc.record_missing([REAL_CC, "-O1"]) is None
+
+
+@posix_only
+def test_a_missing_first_word_of_cc_is_named(clean, monkeypatch):
+    monkeypatch.setenv("CC", "no-such-ccache-1759 cc")
+    compiler, problem = tc.peek()
+    assert compiler == ["no-such-ccache-1759", "cc"]
+    assert "'no-such-ccache-1759' is not an executable on PATH (from CC)" in problem
+
+
+@posix_only
+@requires_posix_cc
+def test_the_arguments_in_cc_reach_the_compiler(clean, monkeypatch):
+    """A source that builds only when CC's arguments are on the command line:
+    before the fix, CC was looked for as one file, which is not there."""
+    monkeypatch.setenv("CC", f"{REAL_CC} -DBNGSIM_CC_ARGUMENT=1759")
+    source = (
+        "#if BNGSIM_CC_ARGUMENT != 1759\n#error CC's arguments did not reach the compiler\n"
+        "#endif\n" + tc._PROBE_SOURCE
+    )
+    built = cg.compile_rhs(source, "1759cc0000arg000")
+    assert built.exists() and built.parent == cg.CACHE_DIR
+    assert tc._verdicts == {}
+
+
+_ARCHLESS_CC = r"""#!/bin/sh
+# A compiler that builds for its own machine whatever -arch says, as GCC on a
+# Mac does with a warning: drop every -arch and its value, then hand the rest on.
+echo call >> "$ARCHLESS_LOG"
+skip=0
+for a do
+  shift
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  if [ "$a" = -arch ]; then skip=1; echo "archless-cc: warning: -arch ignored" >&2; continue; fi
+  set -- "$@" "$a"
+done
+exec "$REAL_CC" "$@"
+"""
+
+macos_only = pytest.mark.skipif(
+    platform.system() != "Darwin",
+    reason="macOS only: a Mach-O library and -arch (issue #1759); the reader and "
+    "the message are tested on every OS in test_codegen_cache_architecture.py",
+)
+
+
+@pytest.fixture
+def archless_cc(clean, monkeypatch):
+    """CC set to :data:`_ARCHLESS_CC`, this process passed off as the machine the
+    Mac is not: that machine, the compiler's path, and a count of its calls."""
+    cc = clean / "archless-cc"
+    cc.write_text(_ARCHLESS_CC)
+    cc.chmod(cc.stat().st_mode | stat.S_IXUSR)
+    log = clean / "archless.log"
+    log.write_text("")
+    monkeypatch.setenv("CC", str(cc))
+    monkeypatch.setenv("ARCHLESS_LOG", str(log))
+    monkeypatch.setenv("REAL_CC", REAL_CC or "/nonexistent/cc")
+    other = "x86_64" if platform.machine() == "arm64" else "arm64"
+    monkeypatch.setattr(cg, "_CODEGEN_MACHINE", other, raising=False)
+    return other, cc, lambda: len(log.read_text().splitlines())
+
+
+@posix_only
+@macos_only
+@requires_posix_cc
+def test_a_library_for_another_machine_is_refused_named_and_not_cached(
+    archless_cc, monkeypatch, caplog
+):
+    """The issue asked, failing the fix, for "an error that names the cause".
+    A compiler that ignores ``-arch`` builds the Mac's own machine for a process
+    that is the other one: the library is not installed under this machine's
+    name (every later run would load it and fail), the message names both
+    machines and quotes the compiler, and the next build is refused at once."""
+    machine, cc, n_calls = archless_cc
+    native = platform.machine()
+    generated = _count_generation(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="bngsim"):
+        with pytest.raises(bngsim.CodegenToolchainError) as err:
+            bngsim.Simulator(_chain(5), method="ode", sensitivity_params=["k0"])
+        message = str(err.value)
+        assert err.value.code == "env.broken_toolchain"
+        assert "cannot build a codegen library this Python can load" in message
+        assert f"holds {native} code" in message
+        assert f"Asked for {machine} code with -arch {machine}, the compiler built {native}" in (
+            message
+        )
+        assert f"Set CC to a compiler that builds {machine} code" in message
+        assert "archless-cc: warning: -arch ignored" in message
+        assert f"compiler: {cc} (CC)" in message
+        assert not [p for p in cg.CACHE_DIR.iterdir() if p.suffix == cg._shared_lib_suffix()]
+
+        calls = n_calls()
+        assert calls == 3  # the model's compile, the probe, and the message's linker query
+        with pytest.raises(bngsim.CodegenToolchainError, match="this Python can load"):
+            bngsim.Simulator(_chain(6), method="ode", codegen=True)
+        assert n_calls() == calls
+    assert generated == [5]
+    assert len(_verdict_warnings(caplog)) == 1
+
+
+@posix_only
+@macos_only
+@requires_posix_cc
+def test_a_sharded_library_for_another_machine_is_refused(archless_cc, monkeypatch):
+    monkeypatch.setenv("BNGSIM_CODEGEN_CHUNK", "on")
+    monkeypatch.setenv("BNGSIM_CODEGEN_CHUNK_SIZE", "4")
+    monkeypatch.setattr(cg, "_resolve_codegen_jobs", lambda n_units: 2)
+    src, _ = cg.generate_combined_from_model(_chain(40))
+    assert cg._split_sharded_source(src) is not None
+    with pytest.raises(bngsim.CodegenToolchainError, match="this Python can load"):
+        cg.compile_rhs(src, "1759shardforeign")
+    assert not [p for p in cg.CACHE_DIR.iterdir() if p.suffix == cg._shared_lib_suffix()]
+
+
+@posix_only
+@macos_only
+@requires_posix_cc
+def test_the_probe_does_not_pass_a_library_for_another_machine(archless_cc):
+    """What ``bngsim doctor`` and a verdict's re-probe ask: the trivial file
+    builds, and that is not enough."""
+    machine, _, _ = archless_cc
+    ok, output = tc._probe(cg._find_c_compiler())
+    assert ok is False
+    assert output.held == frozenset({platform.machine()})
+    assert "archless-cc: warning: -arch ignored" in output
+    with_sdk = tc._broken_message(cg._find_c_compiler(), output)
+    assert f"-arch {machine}" in with_sdk
+
+
+@posix_only
+@macos_only
+@requires_posix_cc
+def test_a_model_failure_under_a_foreign_probe_is_the_toolchains(archless_cc, monkeypatch):
+    """A model that fails to compile, with a toolchain whose probe builds for
+    the other machine: the toolchain is what cannot build this process a library."""
+    with pytest.raises(bngsim.CodegenToolchainError, match="this Python can load"):
+        cg.compile_rhs("#error this model fails\n", "1759modelfails00")
+
+
+def test_a_foreign_probe_tries_no_other_sdk(monkeypatch):
+    """Another SDK builds the same machine, so none is probed for one that would
+    link; the SDK is still named."""
+    monkeypatch.setattr(tc, "_is_macos", lambda: True)
+    monkeypatch.setattr(tc, "_current_sdk", lambda: ("/x/MacOSX26.sdk", "SDKROOT"))
+    monkeypatch.setattr(tc, "_linker", lambda compiler: "")
+    monkeypatch.setattr(cg, "_CODEGEN_MACHINE", "x86_64")
+    monkeypatch.setattr(tc, "_translated", lambda: True)
+
+    def no_scan(compiler, sdk):
+        raise AssertionError("an SDK scan for a library of another machine")
+
+    monkeypatch.setattr(tc, "_sdk_suggestion", no_scan)
+    message = tc._broken_message(["cc"], tc._ForeignLibrary("", frozenset({"arm64"})))
+    assert "SDK:      /x/MacOSX26.sdk (SDKROOT)" in message
+    assert "holds arm64 code" in message and "(the compiler printed nothing)" in message
+    assert "under Rosetta 2" in message and "native arm64 Python" in message

@@ -25,6 +25,7 @@ import operator
 import os
 import platform
 import re
+import shlex
 import signal
 import struct
 import subprocess
@@ -416,18 +417,28 @@ def _codegen_arch_tag(machine: str | None = None) -> str:
     one it can load, as a key field carries it (issue #1486).
 
     ``platform.machine()`` of the running interpreter: ``arm64`` for a native
-    Python on Apple Silicon, ``x86_64`` for one under Rosetta (whose compiler
-    builds for x86_64 too), ``aarch64`` or ``x86_64`` on Linux. Written in
-    lowercase with every run of other characters as one ``-``, so that it adds
-    nothing :data:`_KEY_FIELD_UNSAFE` would rewrite and the key stays its own
-    field: ``x86_64`` is ``x86-64``.
+    Python on Apple Silicon, ``x86_64`` for one under Rosetta, ``aarch64`` or
+    ``x86_64`` on Linux. Written in lowercase with every run of other characters
+    as one ``-``, so that it adds nothing :data:`_KEY_FIELD_UNSAFE` would rewrite
+    and the key stays its own field: ``x86_64`` is ``x86-64``.
+
+    On macOS the compiler is told to build for that machine (:func:`_arch_flags`),
+    because Apple's ``cc`` builds for the hardware it runs on, not for the
+    process that starts it: under Rosetta it built arm64 for an x86_64 Python
+    (issue #1759).
     """
     raw = platform.machine() if machine is None else machine
     return re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-") or "unknown"
 
 
+#: The machine this process runs as, as ``platform.machine()`` names it. The
+#: architecture field of the cache key spells it (:data:`_CODEGEN_ARCH`), and on
+#: macOS every codegen compile and link asks for it with ``-arch``
+#: (:func:`_arch_flags`), so a library is named for the machine it is built for.
+_CODEGEN_MACHINE = platform.machine()
+
 #: This process's :func:`_codegen_arch_tag`.
-_CODEGEN_ARCH = _codegen_arch_tag()
+_CODEGEN_ARCH = _codegen_arch_tag(_CODEGEN_MACHINE)
 
 
 # The token every codegen cache key mixes in. Use this, never ``_CODEGEN_VERSION``
@@ -5016,15 +5027,35 @@ def _find_c_compiler() -> list[str]:
       2. Platform defaults:
          - Windows: cl.exe (MSVC), then gcc (MinGW)
          - Unix: cc
+
+    On Linux and macOS ``CC`` is a command line, split as the shell splits it,
+    as make and CMake read it: ``CC="ccache cc"`` or ``CC="cc -arch x86_64"``
+    is a compiler and its arguments (issue #1759), and a path with a space in
+    it is quoted. On Windows it is one path, as it always was, since a path
+    there often has a space in it and a backslash, which the shell's rules
+    would take as an escape. A ``CC`` that is empty or only blanks is not set.
+
+    Raises ``RuntimeError`` when ``CC`` cannot be split (an unclosed quote), and
+    on Windows when neither ``cl`` nor ``gcc`` is found.
     """
     import shutil
 
     # Honor CC environment variable
-    cc_env = os.environ.get("CC")
-    if cc_env:
-        return [cc_env]
-
+    cc_env = os.environ.get("CC", "")
     system = platform.system()
+    if cc_env.strip():
+        if system == "Windows":
+            return [cc_env]
+        try:
+            tokens = shlex.split(cc_env)
+        except ValueError as err:
+            raise RuntimeError(
+                f"CC={cc_env!r} cannot be read as a command line ({err}). Set CC to a "
+                "compiler, with any arguments after it, as a shell would run it."
+            ) from None
+        if tokens:
+            return tokens
+
     if system == "Windows":
         # Try MSVC cl.exe first, then MinGW gcc
         if shutil.which("cl"):
@@ -5208,6 +5239,37 @@ def _refuse_oversized_frames(stderr: str, opt_flag: str, what: str) -> None:
     )
 
 
+#: The machines Apple's compilers take as an ``-arch`` value, by the name
+#: ``platform.machine()`` gives each on macOS.
+_DARWIN_ARCH_NAMES = frozenset({"arm64", "x86_64"})
+
+
+def _arch_flags() -> list[str]:
+    """``["-arch", <this process's machine>]`` for a GCC/Clang compile or link on
+    macOS; nothing elsewhere, or for a machine Apple's compilers have no name for
+    (issue #1759).
+
+    Apple's ``cc`` is one binary for both architectures, and it builds for the
+    hardware it runs on, not for the process that starts it. Under Rosetta 2 an
+    x86_64 Python's compile built arm64, a library that process cannot load. A
+    library is only of use to the process that builds it (its cache name says so,
+    :data:`_CODEGEN_ARCH`), so every compile and link names that process's
+    machine. On a native build the flag names what the compiler builds anyway,
+    and the library is byte for byte the one it built without it. CPython passes
+    the same flag when it builds an extension on macOS.
+
+    A ``CC`` that names another ``-arch`` gets both, in one universal library;
+    one that names a ``-target`` gets this one, which clang takes over it.
+    A compiler that builds for another machine all the same (GCC warns and
+    ignores an ``-arch`` it cannot build) is caught before its library is
+    installed (:func:`bngsim._codegen_toolchain.foreign_library`). Linux and
+    Windows compilers build for their own architecture, and take no such flag.
+    """
+    if platform.system() != "Darwin" or _CODEGEN_MACHINE not in _DARWIN_ARCH_NAMES:
+        return []
+    return ["-arch", _CODEGEN_MACHINE]
+
+
 def _build_compile_cmd(
     c_path: Path, so_path: Path, opt_flag: str, compiler: list[str] | None = None
 ) -> list[str]:
@@ -5244,8 +5306,10 @@ def _build_compile_cmd(
             "/DLL",
         ]
     else:
-        # GCC / Clang (Unix): cc <opt> -shared -fPIC -o <output> <input> -lm
-        return compiler + [
+        # GCC / Clang (Unix): cc [-arch <machine>] <opt> -shared -fPIC -o <output> <input> -lm
+        return [
+            *compiler,
+            *_arch_flags(),
             opt_flag,
             _FP_CONTRACT_OFF,
             _frame_limit_flag(),
@@ -5829,6 +5893,23 @@ class _CompileFailed(RuntimeError):
     raises it on as a :class:`CodegenBuildError`, still a ``RuntimeError``."""
 
 
+def _refuse_foreign_library(tmp_so_path: Path, stderr: str | None) -> None:
+    """Raise :class:`_CompileFailed` when the library just built holds no code for
+    the machine this process runs as (issue #1759), so it is not installed under
+    that machine's name, where every later run would load it and fail. The
+    toolchain probe then says whose failure it is: a probe library built for the
+    other machine too makes it the toolchain's, and the verdict names the cause.
+    ``stderr`` is what the compiler printed, quoted when the probe disagrees."""
+    held = _toolchain.foreign_library(tmp_so_path)
+    if held is None:
+        return
+    printed = f"\n{stderr}" if stderr and stderr.strip() else ""
+    raise _CompileFailed(
+        "Codegen built a library this Python cannot load, and did not install it. "
+        f"{_toolchain.foreign_library_reason(held)}{printed}"
+    )
+
+
 def _compile_one_object(
     compiler: list[str],
     opt_flag: str,
@@ -5837,12 +5918,15 @@ def _compile_one_object(
     o_name: str,
     timeout: float | None,
 ) -> None:
-    """Compile one ``.c`` to ``.o`` (``cc <opt> -fPIC -c``) from within ``work``
-    using relative names, then normalize the object's mtime. Relative names +
-    fixed mtimes keep the linked .so reproducible (the linker would otherwise
-    embed absolute input paths and per-build timestamps). Raises on failure, and
-    on a function whose stack frame is past the limit (issue #1566)."""
-    cmd = compiler + [
+    """Compile one ``.c`` to ``.o`` (``cc [-arch <machine>] <opt> -fPIC -c``) from
+    within ``work`` using relative names, then normalize the object's mtime.
+    Relative names + fixed mtimes keep the linked .so reproducible (the linker
+    would otherwise embed absolute input paths and per-build timestamps). Raises
+    on failure, and on a function whose stack frame is past the limit (issue
+    #1566)."""
+    cmd = [
+        *compiler,
+        *_arch_flags(),
         opt_flag,
         _FP_CONTRACT_OFF,
         _frame_limit_flag(),
@@ -5910,6 +5994,7 @@ def _compile_sharded(
         linked = f"linked{tmp_so_path.suffix}"
         link_cmd = (
             compiler
+            + _arch_flags()
             + ["-shared", "-fPIC"]
             + _repro_link_flags()
             + ["-o", linked]
@@ -6023,6 +6108,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
                 jobs,
             )
             _compile_sharded(driver_src, units, tmp_so_path, opt_flag, jobs, timeout, compiler)
+            _refuse_foreign_library(tmp_so_path, "")
             os.replace(tmp_so_path, so_path)
             _compile_installs.last = str(so_path)
         else:
@@ -6043,6 +6129,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
                 _refuse_oversized_frames(
                     result.stderr, opt_flag, f"a {len(c_source):,}-byte C source"
                 )
+                _refuse_foreign_library(tmp_so_path, result.stderr)
                 os.replace(tmp_so_path, so_path)
                 _compile_installs.last = str(so_path)
             finally:

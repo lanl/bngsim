@@ -154,6 +154,12 @@ def codegen_strict() -> bool:
     return value not in ("", "0", "false", "no", "off")
 
 
+def cc_is_set() -> bool:
+    """Whether ``CC`` names the compiler: set, and not only blanks, which
+    :func:`bngsim._codegen._find_c_compiler` reads as unset."""
+    return bool(os.environ.get("CC", "").strip())
+
+
 def toolchain_key(compiler: list[str] | None) -> tuple:
     """The key a verdict is kept under: the compiler command (``None`` when none
     can be named) and the environment variables in :data:`_TOOLCHAIN_ENV`."""
@@ -251,7 +257,7 @@ def peek() -> tuple[list[str] | None, str | None]:
     if shutil.which(compiler[0]) is None:
         return compiler, (
             f"C compiler not found: {compiler[0]!r} is not an executable on PATH"
-            f"{' (from CC)' if os.environ.get('CC') else ''}."
+            f"{' (from CC)' if cc_is_set() else ''}."
         )
     entry = _verdicts.get(toolchain_key(compiler))
     return compiler, (None if entry is None else entry[0])
@@ -265,7 +271,7 @@ def record_missing(compiler: list[str]) -> str | None:
         return None
     message = no_compiler(
         f"C compiler not found: {compiler[0]!r} is not an executable on PATH"
-        f"{' (from CC)' if os.environ.get('CC') else ''}. Install Xcode Command Line "
+        f"{' (from CC)' if cc_is_set() else ''}. Install Xcode Command Line "
         "Tools (macOS), gcc (Linux), or Visual Studio Build Tools (Windows), or set CC. "
         f"{_FALLBACK}"
     )
@@ -297,7 +303,7 @@ def record_unstartable(compiler: list[str], err: OSError) -> str:
     exe = shutil.which(compiler[0]) or compiler[0]
     message = (
         f"The C toolchain cannot build a codegen library: the system cannot start "
-        f"the compiler {exe!r}{' (from CC)' if os.environ.get('CC') else ''} "
+        f"the compiler {exe!r}{' (from CC)' if cc_is_set() else ''} "
         f"({err.strerror or err}); a script whose interpreter is gone, for example, "
         "fails this way. Reinstall the compiler, or set CC to one that runs. The "
         f"toolchain is probed again after {_VERDICT_TTL:g} s. {_FALLBACK}"
@@ -321,6 +327,122 @@ def strict_refusal(what: str, cause: BaseException | str) -> RuntimeError:
     if isinstance(cause, CodegenToolchainError):
         return CodegenToolchainError.restated(cause, message)
     return CodegenBuildError(message)
+
+
+#: Mach-O CPU types (``<mach/machine.h>``), by the name ``-arch`` gives each.
+_MACHO_CPU_NAMES = {
+    0x01000007: "x86_64",
+    0x0100000C: "arm64",
+    0x0200000C: "arm64_32",
+    7: "i386",
+    12: "arm",
+    18: "ppc",
+    0x01000012: "ppc64",
+}
+#: A thin Mach-O file's magic, 32- and 64-bit, in the file's own byte order.
+_MH_MAGIC = (0xFEEDFACE, 0xFEEDFACF)
+#: A universal file's magic, always big-endian, and the size of each record in
+#: the table of slices after it (``fat_arch``, ``fat_arch_64``).
+_FAT_MAGIC = {0xCAFEBABE: 20, 0xCAFEBABF: 32}
+
+
+def macho_architectures(path: str | os.PathLike) -> frozenset[str] | None:
+    """The architectures a Mach-O file holds code for, by ``-arch`` name: one for
+    a thin file, one per slice for a universal one. A CPU type with no name here
+    is named by its number. ``None`` when the file is not Mach-O or cannot be
+    read (issue #1759)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+            if len(head) < 8:
+                return None
+            magic = int.from_bytes(head[:4], "big")
+            if magic in _FAT_MAGIC:
+                count, size = int.from_bytes(head[4:8], "big"), _FAT_MAGIC[magic]
+                if not 0 < count <= 64:
+                    return None
+                table = f.read(count * size)
+                if len(table) < count * size:
+                    return None
+                starts = range(0, count * size, size)
+                cpus = [int.from_bytes(table[at : at + 4], "big") for at in starts]
+            elif int.from_bytes(head[:4], "little") in _MH_MAGIC:
+                cpus = [int.from_bytes(head[4:8], "little")]
+            elif magic in _MH_MAGIC:
+                cpus = [int.from_bytes(head[4:8], "big")]
+            else:
+                return None
+    except OSError:
+        return None
+    return frozenset(_MACHO_CPU_NAMES.get(cpu, f"cpu type {cpu:#x}") for cpu in cpus)
+
+
+def foreign_library(path: str | os.PathLike) -> frozenset[str] | None:
+    """The architectures of the library at ``path`` when it holds no code for the
+    machine this process runs as, which cannot load it (issue #1759). ``None``
+    when it does, and wherever that cannot be told: off macOS, on a machine
+    Apple's compilers have no name for, or for a file that is not Mach-O.
+
+    A compiler asked for this machine with ``-arch`` can build for another all
+    the same: GCC warns that it does not support it and ignores it."""
+    from bngsim import _codegen as cg
+
+    if platform.system() != "Darwin" or cg._CODEGEN_MACHINE not in cg._DARWIN_ARCH_NAMES:
+        return None
+    held = macho_architectures(path)
+    if held is None or cg._CODEGEN_MACHINE in held:
+        return None
+    return held
+
+
+def _translated() -> bool:
+    """Whether this process runs under Rosetta 2 (``sysctl.proc_translated``,
+    which an Intel Mac does not have)."""
+    try:
+        import ctypes
+
+        value = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        rc = ctypes.CDLL(None).sysctlbyname(
+            b"sysctl.proc_translated",
+            ctypes.byref(value),
+            ctypes.byref(size),
+            None,
+            ctypes.c_size_t(0),
+        )
+    except (OSError, AttributeError):
+        return False
+    return rc == 0 and value.value == 1
+
+
+def foreign_library_reason(held: frozenset[str]) -> str:
+    """Why a library holding ``held`` cannot load in this process, and what to do
+    about it: two sentences that name both architectures and, when this process
+    runs under Rosetta 2, that (issue #1759)."""
+    from bngsim import _codegen as cg
+
+    machine = cg._CODEGEN_MACHINE
+    built = " and ".join(sorted(held))
+    rosetta = _translated()
+    native = f", or run a native {built} Python instead of one under Rosetta" if rosetta else ""
+    return (
+        f"Asked for {machine} code with -arch {machine}, the compiler built {built} "
+        f"code, and this Python runs as {machine}{', under Rosetta 2' if rosetta else ''}, "
+        "so it cannot load the library. Set CC to a compiler that builds "
+        f"{machine} code (Apple's clang, /usr/bin/cc, does){native}."
+    )
+
+
+class _ForeignLibrary(str):
+    """What the compiler printed while building a probe library this process
+    cannot load, with the architectures it holds (issue #1759)."""
+
+    held: frozenset[str]
+
+    def __new__(cls, output: str, held: frozenset[str]) -> _ForeignLibrary:
+        text = super().__new__(cls, output)
+        text.held = held
+        return text
 
 
 def _run(cmd: list[str], *, timeout: float = 10.0) -> str:
@@ -351,7 +473,11 @@ def _probe(
     """Build :data:`_PROBE_SOURCE` with the command every codegen library is built
     with. Returns ``(True, "")`` when it builds, ``(False, stderr)`` when the
     compiler or linker refuses it, and ``(None, why)`` when the attempt proves
-    nothing (it timed out, or the scratch directory could not be written)."""
+    nothing (it timed out, or the scratch directory could not be written).
+
+    A library this process cannot load, built for another architecture (issue
+    #1759), does not build: ``(False, output)`` with what the compiler printed as
+    a :class:`_ForeignLibrary`, which says what it holds."""
     from bngsim import _codegen as cg
 
     limit = _PROBE_TIMEOUT if timeout is None else timeout
@@ -365,6 +491,7 @@ def _probe(
             # From the scratch directory, so what a compiler writes beside its
             # output (MSVC's probe.obj) goes away with it.
             result = cg._run_compile(cmd, cwd=Path(work), timeout=limit, env=env)
+            held = foreign_library(so_path) if result.returncode == 0 else None
     except subprocess.TimeoutExpired:
         return None, f"the probe build ran past {limit:g} s"
     except OSError as err:
@@ -372,9 +499,12 @@ def _probe(
         # any probe (record_missing, record_unstartable); anything else here is
         # the scratch directory's.
         return None, f"the probe could not be written or run ({err})"
+    output = (result.stderr or "") + (result.stdout or "")
+    if held is not None:
+        return False, _ForeignLibrary(output, held)
     if result.returncode == 0:
         return True, ""
-    return False, (result.stderr or "") + (result.stdout or "")
+    return False, output
 
 
 def _excerpt(stderr: str) -> str:
@@ -482,14 +612,26 @@ def _sdk_suggestion(compiler: list[str], current: str) -> str:
 
 
 def _broken_message(compiler: list[str], stderr: str) -> str:
-    """The broken-toolchain verdict: what failed, with what, and what to do."""
+    """The broken-toolchain verdict: what failed, with what, and what to do.
+
+    ``stderr`` is what the probe's compiler printed; a :class:`_ForeignLibrary`
+    says the probe built a library for another architecture (issue #1759), which
+    another SDK would not change, so none is tried."""
     exe = shutil.which(compiler[0]) or compiler[0]
-    lines = [
-        "The C toolchain cannot build a codegen library: a trivial C file fails to "
-        "build with the command every codegen library is built with, so the failure "
-        "is the environment's, not the model's.",
-        f"  compiler: {exe}{' (CC)' if os.environ.get('CC') else ''}",
-    ]
+    held = getattr(stderr, "held", None)
+    if held is None:
+        head = (
+            "The C toolchain cannot build a codegen library: a trivial C file fails to "
+            "build with the command every codegen library is built with, so the failure "
+            "is the environment's, not the model's."
+        )
+    else:
+        head = (
+            "The C toolchain cannot build a codegen library this Python can load: a "
+            "trivial C file built with the command every codegen library is built with "
+            f"holds {' and '.join(sorted(held))} code."
+        )
+    lines = [head, f"  compiler: {exe}{' (CC)' if cc_is_set() else ''}"]
     linker = _linker(compiler)
     if linker:
         lines.append(f"  linker:   {linker}")
@@ -500,9 +642,15 @@ def _broken_message(compiler: list[str], stderr: str) -> str:
             target = os.path.basename(os.path.realpath(sdk))
             shown = sdk if target == os.path.basename(sdk) else f"{sdk} -> {target}"
             lines.append(f"  SDK:      {shown} ({source})")
-            suggestion = _sdk_suggestion(compiler, sdk)
-    lines.append("  error:")
-    lines.append(_excerpt(stderr) or "    (the compiler printed nothing)")
+            if held is None:
+                suggestion = _sdk_suggestion(compiler, sdk)
+    if held is None:
+        lines.append("  error:")
+        lines.append(_excerpt(stderr) or "    (the compiler printed nothing)")
+    else:
+        lines.append("  compiler output:")
+        lines.append(_excerpt(stderr) or "    (the compiler printed nothing)")
+        suggestion = foreign_library_reason(held)
     if suggestion:
         lines.append(suggestion)
     lines.append(
