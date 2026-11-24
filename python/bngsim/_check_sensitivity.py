@@ -30,25 +30,30 @@ the two.
   again at a hundredth of the tolerance (:data:`FLOOR_SHARE`): a floor the
   solver's arithmetic sets (issue #177), not the tolerance, holds it, and its
   move is read on its column's largest peak.
-- ``"sensitivity_fd"``: a difference quotient. Each ``θ`` is moved by
-  :data:`FD_STEP` of its value both ways (an initial amount through the start
-  state, a parameter through :meth:`Model.set_param`, so a derived parameter
-  and an initial amount that read it follow), and the run made again at a
-  hundredth of its tolerance with no sensitivities, so the quotient reads
-  nothing of the sensitivity code: not its right-hand side, not its seeds.
-  The quotient's own error is read cell by cell from how far its forward and
-  backward halves differ: about ``h·d²Y/dθ²`` where the trajectory is smooth in
-  ``θ``, and as large as the jump itself near a switch or event time that
-  ``θ`` moves, where a central quotient is half the jump (issue #368). So the
-  check widens there by itself, and needs no list of switch times. On top of
-  that, the quotient may be off by :data:`FD_NOISE` times its runs' error over
-  its step, each run erring by about the run's own drift scaled to the
-  quotient's tolerance (and by no less than that tolerance), and the run's own
-  sensitivities by what a path may differ by (:func:`bngsim._check.allowance`,
-  with the series' move at the tighter tolerance as its drift). A series whose
-  peak is within the quotient's noise of zero is not resolved by it, and is
-  named. A ``θ`` at 0 (a parameter, or an initial amount at 0) is moved one
-  way, up, and its quotient's error read from a second step of twice the size.
+- ``"sensitivity_fd"``: a central difference quotient. Each ``θ`` is moved by
+  :data:`FD_STEP` of its value, and by twice that, both ways (an initial
+  amount through the start state, a parameter through
+  :meth:`Model.set_param`, so a derived parameter and an initial amount that
+  read it follow), and the run made again at a hundredth of its tolerance
+  (within :data:`FD_RTOL_LEAST` and :data:`FD_RTOL_MOST`) with no
+  sensitivities, so the quotient reads nothing of the sensitivity code: not
+  its right-hand side, not its seeds. Its own error is read cell by cell from
+  the two steps: their Richardson difference, three times the truncation
+  error of the smaller where the trajectory is smooth in ``θ``; and what
+  doubling the step leaves of the forward half less the backward, which is
+  next to nothing there and about the jump itself within reach of a switch or
+  event time ``θ`` moves, where a central quotient is half the jump (issue
+  #368). So the check widens there by itself, and needs no list of switch
+  times. On top of that, the quotient may be off by :data:`FD_NOISE` times its
+  runs' error over its step, each run erring by about the run's own drift
+  scaled to the quotient's tolerance (and by no less than that tolerance), and
+  the run's own sensitivities by what a path may differ by
+  (:func:`bngsim._check.allowance`, with the series' move at the tighter
+  tolerance as its drift; a series not converged at the run's tolerance gets
+  none). A series whose allowance is :data:`FD_RESOLVED` of its peak or more
+  is not resolved by the quotient, and is named. A ``θ`` at 0 has no step
+  size that follows from its value, and is not judged; nor is a derived
+  parameter, whose column is a partial derivative.
 
 Neither check judges a row that is not finite in the run by design (an
 assignment-rule species whose sensitivity is refused,
@@ -90,11 +95,23 @@ if TYPE_CHECKING:
 #: as a derivative; issue #49) and its truncation error, of order the square of
 #: the step for a central quotient, is still small.
 FD_STEP = 1e-3
-#: How much tighter than the run the quotient's runs are made.
+#: How much tighter than the run the quotient's runs are made, within
+#: :data:`FD_RTOL_LEAST` and :data:`FD_RTOL_MOST`.
 FD_TIGHTER = 100.0
-#: How many times the quotient's error estimate (how far its two halves
-#: differ, cell by cell) a series may differ from it by, on top of the rest.
+#: The loosest rtol a quotient's runs are made at: a hundredth of a loose
+#: run's own tolerance still leaves the quotient's noise over its step a large
+#: share of the derivative.
+FD_RTOL_MOST = 1e-8
+#: The tightest: CVODES refuses an rtol near the double's own precision.
+FD_RTOL_LEAST = 1e-14
+#: How many times the quotient's error estimate (cell by cell, the Richardson
+#: difference of its two steps and what doubling the step leaves of the
+#: forward half less the backward) a series may differ from it by, on top of
+#: the rest.
 FD_SPREAD = 2.0
+#: A series whose allowance in the quotient check is this share of its peak
+#: or more is named as one the quotient does not resolve.
+FD_RESOLVED = 0.05
 #: A series past the bound whose move between the hundredfold and the tenfold
 #: tighter runs is at least this share of its move at the tenfold one is held
 #: by a floor, not the tolerance (:func:`_floor_held`).
@@ -293,17 +310,39 @@ def _context(ctx: _Context) -> _Columns:
     return cols
 
 
-def _drift(
+def _tier1(
     ctx: _Context, cols: _Columns
-) -> tuple[NDArray[np.float64], NDArray[np.bool_], NDArray[np.float64]]:
-    """Each series' move at the tenfold tighter tolerance, which series the run
-    resolves, and the drift a quotient's allowance reads (:func:`spread`, on
-    the 2x looser run's sensitivities where it ran)."""
+) -> tuple[NDArray[np.float64], NDArray[np.bool_], NDArray[np.float64], NDArray[np.bool_]]:
+    """Each series' move at the tenfold tighter tolerance (a series a floor
+    holds read on its column's largest peak), which series the run resolves,
+    each series' largest difference there, and which a floor holds
+    (:func:`_floor_held`); made once. Raises :class:`bngsim._check._Out`
+    where the budget runs out telling a floor from the tolerance."""
     if ctx.sens_drift is None:
         assert ctx.tight is not None
-        ctx.sens_drift = _moves(cols, _block(ctx.tight))
-    drift: tuple[NDArray[np.float64], NDArray[np.bool_], NDArray[np.float64]] = ctx.sens_drift
-    return drift
+        move, keep, d10 = _moves(cols, _block(ctx.tight))
+        live = ~cols.refused.reshape(-1)
+        held = _floor_held(ctx, cols, move, d10, live & keep)
+        if held.any():
+            # Read on its column's largest peak, as a series the run does not
+            # resolve is: the arithmetic, not the tolerance, holds it.
+            n_sp, n_cols = cols.atol.shape
+            peak = np.where(np.isfinite(cols.S), np.abs(cols.S), 0.0).max(axis=0)
+            col_peak = np.where(cols.refused, 0.0, peak).max(axis=0)
+            scale = np.maximum(np.repeat(col_peak[None, :], n_sp, axis=0), peak).reshape(-1)
+            over = np.maximum(d10 - cols.atol.reshape(-1), 0.0)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                on_column = np.where(
+                    scale > 0,
+                    over / np.where(scale > 0, scale, 1.0),
+                    np.where(over > 0, np.inf, 0.0),
+                )
+            move = np.where(held, on_column, move)
+        ctx.sens_drift = (move, keep, d10, held)
+    out: tuple[NDArray[np.float64], NDArray[np.bool_], NDArray[np.float64], NDArray[np.bool_]] = (
+        ctx.sens_drift
+    )
+    return out
 
 
 def check_sensitivity(ctx: _Context) -> dict[str, Any]:
@@ -322,28 +361,23 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
             changed=changed,
         )
     cols = _context(ctx)
-    move, keep, d10 = _drift(ctx, cols)
+    try:
+        move, keep, _, held = _tier1(ctx, cols)
+    except _Out:
+        return _verdict(
+            name,
+            "timeout",
+            note="the budget ran out at rtol/100, while telling a floor the arithmetic sets "
+            "from the tolerance in the series that move past the bound at rtol/10",
+            changed=changed,
+        )
     live = ~cols.refused.reshape(-1)
     trace = live & ~keep
-    held = _floor_held(ctx, cols, move, d10, live & keep)
-    if held.any():
-        # Read on its column's largest peak, as a series the run does not
-        # resolve is: the arithmetic, not the tolerance, holds it.
-        n_sp, n_cols = cols.atol.shape
-        peak = np.where(np.isfinite(cols.S), np.abs(cols.S), 0.0).max(axis=0)
-        col_peak = np.where(cols.refused, 0.0, peak).max(axis=0)
-        scale = np.maximum(np.repeat(col_peak[None, :], n_sp, axis=0), peak).reshape(-1)
-        over = np.maximum(d10 - cols.atol.reshape(-1), 0.0)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            on_column = np.where(
-                scale > 0, over / np.where(scale > 0, scale, 1.0), np.where(over > 0, np.inf, 0.0)
-            )
-        move = np.where(held, on_column, move)
     value = float(move.max()) if move.size else 0.0
     status = "pass" if value <= TOLERANCE_MOVE else "diff"
     n_series = int(live.sum())
     note = (
-        f"the sensitivities move by {value:.2e} of a series' peak at rtol/10 and atol/10 "
+        f"the sensitivities move by {value:.2e} of a series' scale at rtol/10 and atol/10 "
         f"(bound {TOLERANCE_MOVE:g}), over {n_series} series of {len(cols.names)} column(s)"
     )
     n_trace = int(trace.sum())
@@ -409,19 +443,14 @@ def _floor_held(
     return over & np.isfinite(d) & (d >= FLOOR_SHARE * d10)
 
 
-def _step(cols: _Columns, j: int) -> tuple[float, float, bool]:
-    """Column *j*'s value, its quotient's step, and whether it is moved one
-    way only (from 0, up)."""
-    v = cols.theta[j]
-    assert v is not None
-    if v != 0.0:
-        return v, FD_STEP * abs(v), False
-    if j < len(cols.params):
-        # A parameter has no scale but its own; at 0, the historical 1.
-        return v, FD_STEP, True
-    # An initial amount at 0, on the scale of the state it is part of.
-    s = max((abs(x) for x in cols.state if math.isfinite(x)), default=0.0)
-    return v, FD_STEP * (s if s > 0 else 1.0), True
+def _fd_tolerance(ctx: _Context) -> float:
+    """How many times tighter than the run's its quotient's runs are made: a
+    hundredfold, to an rtol of no more than :data:`FD_RTOL_MOST` and no less
+    than :data:`FD_RTOL_LEAST`."""
+    rtol = float(ctx.rtol or 0.0)
+    if not rtol > 0:
+        return FD_TIGHTER
+    return rtol / min(max(rtol / FD_TIGHTER, FD_RTOL_LEAST), FD_RTOL_MOST)
 
 
 def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
@@ -436,43 +465,37 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
             name, "no_base", note=f"the run at a tenfold tighter tolerance raised ({err})"
         )
     cols = _context(ctx)
-    tighter = ctx._tighter(FD_TIGHTER)
+    by = _fd_tolerance(ctx)
+    tighter = ctx._tighter(by)
     rtol_fd = float(tighter["rtol"])
-    atol_fd = np.asarray(ctx.atols, dtype=float) / FD_TIGHTER
-    changed: dict[str, Any] = {
-        **tighter,
-        "step": FD_STEP,
-        "sensitivities": None,
-    }
+    atol_fd = np.asarray(ctx.atols, dtype=float) / by
+    changed: dict[str, Any] = {**tighter, "step": FD_STEP, "sensitivities": None}
     n_sp, n_cols = cols.atol.shape
     # The forward sensitivities' own error: a path's allowance on each series,
     # with its move at the tighter tolerance (and the looser one) as its drift.
-    _, keep, d_tight = _drift(ctx, cols)
+    # A series not converged at the run's tolerance gets no drift, which would
+    # forgive its own error (the tolerance check reports it).
+    move, _, d_tight, held = _tier1(ctx, cols)
+    converged = ((move <= TOLERANCE_MOVE) | held).reshape(n_sp, n_cols)
     peak = (
         np.where(np.isfinite(cols.S), np.abs(cols.S), 0.0).max(axis=0)
         if cols.S.size
-        else (np.zeros((n_sp, n_cols)))
+        else np.zeros((n_sp, n_cols))
     )
     drift = d_tight.reshape(n_sp, n_cols)
-    loose = getattr(ctx, "loose", None)
-    try:
-        ctx._ensure_spread()
-        loose = getattr(ctx, "loose", None)
-    except _Out:
-        raise
-    if loose is not None:
+    ctx._ensure_spread()
+    if ctx.loose is not None:
         try:
-            d_loose, _ = differences(cols.flat(_block(loose)), cols.flat(cols.S))
-            drift = spread(drift.reshape(-1), d_loose, peak.reshape(-1)).reshape(n_sp, n_cols)
+            d_loose, _ = differences(cols.flat(_block(ctx.loose)), cols.flat(cols.S))
         except ValueError:
             pass
+        else:
+            drift = spread(drift.reshape(-1), d_loose, peak.reshape(-1)).reshape(n_sp, n_cols)
+    drift = np.where(converged, drift, 0.0)
     own = allowance(
         peak.reshape(-1), cols.atol.reshape(-1), float(ctx.rtol or 0.0), drift.reshape(-1)
     ).reshape(n_sp, n_cols)
-    try:
-        base = ctx.perturbed(**tighter)
-    except _Out:
-        return _verdict(name, "timeout", note="the budget ran out before the quotient's base run")
+    base = ctx.perturbed(**tighter)
     y0 = np.asarray(base._species, dtype=float)
     if y0.shape != np.asarray(ctx.result._species).shape:
         return _verdict(
@@ -485,29 +508,32 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
     y_peak = np.where(np.isfinite(y0), np.abs(y0), 0.0).max(axis=0)
     # Each run of the quotient errs by about the run's own drift, scaled to
     # the quotient's tighter tolerance, and by no less than that tolerance.
-    held = ctx.spread_abs if ctx.spread_abs is not None else ctx.drift_abs
-    assert held is not None
-    sp_drift = np.where(np.isfinite(held), held, 0.0)
-    err_run = np.maximum(sp_drift / FD_TIGHTER, rtol_fd * y_peak) + atol_fd
+    sp = ctx.spread_abs if ctx.spread_abs is not None else ctx.drift_abs
+    assert sp is not None
+    err_run = np.maximum(np.where(np.isfinite(sp), sp, 0.0) / by, rtol_fd * y_peak) + atol_fd
 
     ratio = np.zeros((n_sp, n_cols))
     rel = np.zeros((n_sp, n_cols))
+    share = np.zeros((n_sp, n_cols))
     judged = np.zeros(n_cols, dtype=bool)
     fd_trace = np.zeros((n_sp, n_cols), dtype=bool)
     not_judged: dict[str, str] = {}
     timed_out: list[str] = []
     for j in range(n_cols):
         label = cols.names[j]
-        if cols.theta[j] is None or not math.isfinite(float(cols.theta[j])):  # type: ignore[arg-type]
+        v = cols.theta[j]
+        if v is None or not math.isfinite(v):
             not_judged[label] = "the record gives it no finite value"
+            continue
+        if v == 0.0:
+            not_judged[label] = "its value is 0, so no step size follows from it"
             continue
         is_param = j < len(cols.params)
         if not is_param and label not in cols.state_index:
             not_judged[label] = "not in the run's start state"
             continue
-        v, h, one_way = _step(cols, j)
-        hi = v + h
-        lo = v - h if not one_way else v + 2.0 * h
+        h = FD_STEP * abs(v)
+        at = (v + h, v - h, v + 2.0 * h, v - 2.0 * h)
 
         def run_at(x: float, j: int = j, is_param: bool = is_param) -> NDArray[np.float64]:
             moved: dict[str, Any] = (
@@ -519,10 +545,12 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
             return np.asarray(again._species, dtype=float)
 
         try:
-            y_hi = run_at(hi)
-            y_lo = run_at(lo)
+            p1 = run_at(at[0])
+            m1 = run_at(at[1])
+            p2 = run_at(at[2])
+            m2 = run_at(at[3])
         except _Out:
-            timed_out = cols.names[j:]
+            timed_out = [n for n in cols.names[j:] if n not in not_judged]
             break
         except UsageError as e:
             if (getattr(e, "details", None) or {}).get("reason") != "derived_parameter":
@@ -531,35 +559,43 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
                 "a derived parameter, whose column is a partial derivative no set_param moves"
             )
             continue
-        h_hi, h_lo = hi - v, v - lo  # the steps as realized; h_lo < 0 one way
-        if one_way:
-            fwd = (y_hi - y0) / h_hi
-            fwd2 = (y_lo - y0) / (-h_lo)
-            quotient, est = fwd, np.abs(fwd2 - fwd)
-            noise = FD_NOISE * 2.0 * err_run / h_hi
-        else:
-            quotient = (y_hi - y_lo) / (hi - lo)
-            est = np.abs((y_hi - y0) / h_hi - (y0 - y_lo) / h_lo)
-            noise = FD_NOISE * 2.0 * err_run / (hi - lo)
+        # The steps as realized, on each side.
+        a1, b1, a2, b2 = at[0] - v, v - at[1], at[2] - v, v - at[3]
+        q1 = (p1 - m1) / (a1 + b1)
+        q2 = (p2 - m2) / (a2 + b2)
+        # Richardson: where the trajectory is smooth in the value, q1 errs by
+        # about a third of how far it is from q2.
+        rich = np.abs(q2 - q1)
+        # A step's forward half less its backward half is about h·d²Y/dθ²
+        # where the trajectory is smooth, so twice the step doubles it. Within
+        # reach of a switch or event time the value moves, it is about the
+        # jump at either step, and what doubling leaves of it marks the kink.
+        d1 = (p1 - y0) / a1 - (y0 - m1) / b1
+        d2 = (p2 - y0) / a2 - (y0 - m2) / b2
+        kink = np.abs(d2 - d1 * ((a2 + b2) / (a1 + b1)))
+        est = rich + kink
+        noise = FD_NOISE * 2.0 * err_run / (a1 + b1)
         s = cols.S[:, :, j]
-        fin_s, fin_q = np.isfinite(s), np.isfinite(quotient) & np.isfinite(est)
-        differ = np.where(fin_s & fin_q, np.abs(s - quotient) - FD_SPREAD * est, 0.0)
+        fin_s, fin_q = np.isfinite(s), np.isfinite(q1) & np.isfinite(est)
+        differ = np.where(fin_s & fin_q, np.abs(s - q1) - FD_SPREAD * est, 0.0)
         differ = np.maximum(differ, 0.0).max(axis=0) if differ.size else np.zeros(n_sp)
         bad = (fin_s != fin_q).any(axis=0) if s.size else np.zeros(n_sp, dtype=bool)
         allow = np.maximum(own[:, j], noise)
+        pk = peak[:, j]
         with np.errstate(divide="ignore", invalid="ignore"):
             r = np.where(
                 allow > 0,
                 differ / np.where(allow > 0, allow, 1.0),
                 np.where(differ > 0, np.inf, 0.0),
             )
-            scale_j = np.maximum(peak[:, j], noise)
+            scale_j = np.maximum(pk, allow)
             rel_j = np.where(scale_j > 0, differ / np.where(scale_j > 0, scale_j, 1.0), 0.0)
+            share[:, j] = np.where(pk > 0, allow / np.where(pk > 0, pk, 1.0), np.inf)
         r = np.where(bad, np.inf, r)
         r = np.where(cols.refused[:, j], 0.0, r)
         ratio[:, j] = r
         rel[:, j] = np.where(cols.refused[:, j], 0.0, np.where(bad, np.inf, rel_j))
-        fd_trace[:, j] = (noise >= peak[:, j]) & ~cols.refused[:, j]
+        fd_trace[:, j] = (allow >= FD_RESOLVED * pk) & ~cols.refused[:, j]
         judged[j] = True
 
     flat = ratio.reshape(-1)
@@ -567,6 +603,8 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
     n_judged = int(judged.sum())
     live = ~cols.refused & judged[None, :]
     value = float(np.where(live, rel, 0.0).max()) if rel.size else 0.0
+    resolved_fd = live & ~fd_trace
+    accuracy = float(np.where(resolved_fd, share, 0.0).max()) if resolved_fd.any() else None
     if margin > 1.0:
         status = "diff"
     elif timed_out:
@@ -576,15 +614,23 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
     else:
         status = "pass"
     note = (
-        f"forward sensitivities against a difference quotient of runs at rtol/{FD_TIGHTER:g} "
-        f"with each value moved by {FD_STEP:g} of itself: {value:.2e} of a series' peak at "
-        f"most, past the quotient's own error, and {margin:.2g} of the allowance; "
-        f"{n_judged} of {n_cols} column(s) judged"
+        f"forward sensitivities against central difference quotients, each value moved by "
+        f"{FD_STEP:g} and {2 * FD_STEP:g} of itself, of runs at rtol {rtol_fd:.3g}: "
+        f"{value:.2e} of a series' peak at most, past the quotient's own error, and "
+        f"{margin:.2g} of the allowance; {n_judged} of {n_cols} column(s) judged"
     )
+    if accuracy is not None:
+        note += f", to within {accuracy:.1g} of a series' peak"
+    n_out = int((live & ~converged).sum())
+    if n_out:
+        note += (
+            f"; {n_out} series not converged at the run's tolerance, judged on the tolerance alone"
+        )
     n_fd_trace = int((fd_trace & live).sum())
     if n_fd_trace:
         note += (
-            f"; {n_fd_trace} series within the quotient's noise of zero, which it does not resolve"
+            f"; {n_fd_trace} series the quotient resolves to no better than "
+            f"{FD_RESOLVED:g} of the series' peak"
         )
     if not_judged:
         first = next(iter(not_judged.items()))
@@ -596,14 +642,16 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
         note += f"; {n_refused} series not finite in the run by design, not judged"
     score = np.where(live, ratio, 0.0).reshape(-1)
     entry = _columns_entry(cols, np.where(live, ratio, -1.0).reshape(-1))
-    entry["columns"] = [c for c in entry["columns"] if c["name"] not in not_judged]
-    entry["columns"] = [c for c in entry["columns"] if c["name"] not in set(timed_out)]
+    gone = set(not_judged) | set(timed_out)
+    entry["columns"] = [c for c in entry["columns"] if c["name"] not in gone]
     extra: dict[str, Any] = {
         "margin": _num(margin),
         **entry,
         "n_judged": n_judged,
         "not_judged": dict(list(not_judged.items())[:MAX_NAMED]),
         "timed_out": timed_out[:MAX_NAMED],
+        "allowance": None if accuracy is None else _num(accuracy),
+        "n_not_converged": n_out,
         "n_not_resolved": n_fd_trace,
         "not_resolved": _named(cols, fd_trace & live)[:MAX_NAMED],
         "n_refused": n_refused,

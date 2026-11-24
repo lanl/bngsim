@@ -3503,18 +3503,24 @@ class Result:
               it moves by at most 1e-3 of that peak. A series within 100 of
               those tolerances of zero is not resolved by the run, named in
               the verdict's ``not_resolved``, and judged on its column's
-              largest peak.
-            - ``"sensitivity_fd"``: the forward sensitivities against a
-              central difference quotient, each parameter (through
-              ``set_param``, so an initial amount it sets follows) and initial
-              amount moved by 1e-3 of itself, of runs at a hundredth of the
-              tolerance with the sensitivities off. The quotient's own error
-              is read cell by cell from how far its forward and backward
-              halves differ, which widens it near a switch or event time the
-              parameter moves; a series within the quotient's noise of zero
-              is named in ``not_resolved``. A value at 0 is moved one way.
-              It costs two runs per column, within ``budget``; the columns
-              the budget does not reach are named in ``timed_out``.
+              largest peak; so is one past the bound that moves as far again
+              at ``rtol/100``, which a floor the solver's arithmetic sets
+              holds, not the tolerance (``n_floor_held``).
+            - ``"sensitivity_fd"``: the forward sensitivities against central
+              difference quotients, each parameter (through ``set_param``, so
+              an initial amount it sets follows) and initial amount moved by
+              1e-3 and 2e-3 of itself, of runs at a hundredth of the
+              tolerance (an rtol from 1e-14 to 1e-8) with the sensitivities
+              off. The quotient's own error is read cell by cell from its two
+              steps: their Richardson difference, and what doubling the step
+              leaves of its forward half less its backward, which widens it
+              near a switch or event time the parameter moves. A series it
+              resolves to no better than 5% of its peak is named in
+              ``not_resolved``; ``allowance`` is the largest share of a
+              peak it allows the rest. A value at 0, and a derived
+              parameter, are not judged (``not_judged``). It costs four runs
+              per column and one more, within ``budget``; the columns the
+              budget does not reach are named in ``timed_out``.
             - ``"replicates"``: a stochastic run made again at ``replicates``
               other seeds; for each observable at the last time, the mean
               over them, its standard error, and how many standard errors this
@@ -3558,9 +3564,12 @@ class Result:
             species and value, the worst columns first, at most 20),
             ``n_columns``, ``n_not_resolved``, ``not_resolved`` (series
             names) and ``n_refused`` (series the run reports as not finite
-            by design, which are not judged); ``"sensitivity_fd"`` also
-            gives ``margin``, ``n_judged``, ``not_judged`` (columns, with
-            the reason) and ``timed_out``.
+            by design, which are not judged); ``"sensitivity"`` also gives
+            ``n_series`` and ``n_floor_held``, and ``"sensitivity_fd"``
+            ``margin``, ``n_judged``, ``not_judged`` (columns, with the
+            reason), ``timed_out``, ``allowance`` and ``n_not_converged``
+            (series the tolerance check finds not converged, judged on the
+            tolerance alone).
 
         Raises
         ------

@@ -102,6 +102,9 @@ def test_all_on_a_sensitivity_run_skips_the_interpreted_backend_rather_than_rais
     assert list(by) == [*_check.DETERMINISTIC, *_check.SENSITIVITY]
     assert by["backend"]["status"] == "skip", by["backend"]
     assert "compiled" in by["backend"]["note"]
+    # The refusal the skip stands in for: if it goes, so should the skip.
+    with pytest.raises(bngsim.UsageError, match="codegen=False"):
+        _decay().rerun(codegen=False)
 
 
 def test_a_run_stopped_at_a_steady_state_is_not_judged():
@@ -252,6 +255,8 @@ def test_a_wrong_solve_every_tolerance_agrees_on_is_found_by_the_quotient(
     assert v["status"] == "diff", v
     assert v["worst_column"] == name and v["margin"] > 1.0
     assert v["columns"][0]["name"] == ("k", "A0")[column]
+    rep = bad.check(["sensitivity_fd"])
+    assert "difference quotient" in rep["next"] and rep["ok"] is False
 
 
 def test_an_initial_amount_column_off_is_found_by_the_quotient(monkeypatch):
@@ -283,50 +288,41 @@ def test_the_quotient_runs_compute_no_sensitivities_and_move_one_value_each(monk
 
     monkeypatch.setattr(_rerun, "perturbed", perturbed)
     _decay().check(["sensitivity_fd"])
-    # One base run, then two per column: k and A0 by 1e-3 of themselves, and
-    # the initial amount A(0) = 100 through the start state.
+    # One base run, then four per column: k and A0 by 1e-3 and 2e-3 of
+    # themselves each way, and the initial amount A(0) = 100 through the
+    # start state.
     assert seen[0][:2] == (None, None)
     moved = [(p, s) for p, s, _ in seen[1:]]
+    steps = (1.001, 0.999, 1.002, 0.998)
     assert moved == [
-        ({"k": 0.5 * 1.001}, None),
-        ({"k": 0.5 * 0.999}, None),
-        ({"A0": 100.0 * 1.001}, None),
-        ({"A0": 100.0 * 0.999}, None),
-        (None, {0: 100.0 * 1.001}),
-        (None, {0: 100.0 * 0.999}),
+        *(({"k": 0.5 * f}, None) for f in steps),
+        *(({"A0": 100.0 * f}, None) for f in steps),
+        *((None, {0: 100.0 * f}) for f in steps),
     ]
     assert all(len(names) == 0 for _, _, names in seen)
 
 
-def test_a_value_at_zero_is_moved_up_only(monkeypatch):
+def test_a_value_at_zero_is_not_judged_by_the_quotient():
+    # No step size follows from 0: a step of 1e-3 in absolute terms is far past
+    # a saturating response at K = 1e-6, and the quotient is then far off.
     ant = """
     model z
-      J1: A -> B; k*A
-      J2: -> B; kb
-      k = 0.5; kb = 0
-      A = 10; B = 0
+      J1: -> X; kb
+      J2: X -> ; kd*X
+      J3: -> Y; v*X/(K + X)
+      kb = 0; kd = 1; v = 1; K = 1e-6
+      X = 0; Y = 0
     end
     """
     r = Simulator(
-        Model.from_antimony_string(ant), method="ode", sensitivity_params=["k", "kb"],
-        sensitivity_ic=["B"],
-    ).run(t_span=(0, 5), n_points=11)  # fmt: skip
-    seen = []
-    real = _rerun.perturbed
-
-    def perturbed(result, **kw):
-        seen.append((kw.get("parameters"), kw.get("state")))
-        return real(result, **kw)
-
-    monkeypatch.setattr(_rerun, "perturbed", perturbed)
+        Model.from_antimony_string(ant), method="ode", sensitivity_params=["kb", "kd"],
+        sensitivity_ic=["X"],
+    ).run(t_span=(0, 2), n_points=11)  # fmt: skip
     v = _by_name(r.check(["sensitivity_fd"]))["sensitivity_fd"]
     assert v["status"] == "pass", v
-    assert ({"kb": 1e-3}, None) in seen and ({"kb": 2e-3}, None) in seen
-    assert all(p is None or all(x >= 0 for x in p.values()) for p, _ in seen)
-    # B starts at 0: moved up on the scale of the state (A = 10).
-    assert (None, {1: 1e-2}) in seen and (None, {1: 2e-2}) in seen
-    # dB/dkb = t, which the one-way quotient resolves.
-    assert np.allclose(np.asarray(r._sensitivities)[:, 1, 1], r.time, rtol=1e-6)
+    assert set(v["not_judged"]) == {"kb", "X"}
+    assert "value is 0" in v["not_judged"]["kb"]
+    assert v["n_judged"] == 1
 
 
 def test_a_switch_time_the_parameter_moves_is_widened_not_failed():
@@ -418,6 +414,18 @@ def test_a_loose_run_is_still_judged_by_the_quotient():
     v = _by_name(r.check(["sensitivity_fd"]))["sensitivity_fd"]
     assert v["status"] == "pass"
     assert v["n_not_resolved"] <= 1  # of 6 series (dA/dk2 is exactly 0)
+    assert v["changed"]["rtol"] == _check_sensitivity.FD_RTOL_MOST
+
+
+@pytest.mark.parametrize(("factor", "status"), [(1.05, "diff"), (1.002, "pass")])
+def test_a_loose_run_s_wrong_column_is_found_to_its_tolerance(monkeypatch, factor, status):
+    # At rtol 1e-3 two correct paths may differ by 1% of a peak: a column 5%
+    # off is a finding, one 0.2% off is within what the run's tolerance allows.
+    r = _decay(rtol=1e-3, atol=1e-6)
+    _every_solve_off(monkeypatch, 0, factor)
+    v = _by_name(_scaled(r, 0, factor).check(["sensitivity_fd"]))["sensitivity_fd"]
+    assert v["status"] == status, v
+    assert v["allowance"] is not None and v["allowance"] <= 0.011
 
 
 def test_a_refused_row_is_counted_not_judged():
@@ -444,7 +452,7 @@ def test_a_budget_that_runs_out_names_the_columns_it_did_not_reach(monkeypatch):
 
     def perturbed(result, **kw):
         calls.append(kw)
-        if len(calls) > 3:  # the base run and k's two
+        if len(calls) > 5:  # the base run and k's four
             from bngsim._exceptions import SimulationError
 
             raise SimulationError("timed out", code="sim.timeout")
@@ -455,6 +463,145 @@ def test_a_budget_that_runs_out_names_the_columns_it_did_not_reach(monkeypatch):
     v = rep["checks"][0]
     assert v["status"] == "timeout" and rep["ok"] is False
     assert v["timed_out"] == ["A0", "A()"] and v["n_judged"] == 1
+
+
+@pytest.mark.parametrize(
+    ("w", "t_end", "n"), [(2.0, 50.0, 501), (2.0, 200.0, 401), (math.pi, 10.0, 11)]
+)
+def test_an_oscillator_over_many_periods_passes_the_quotient(w, t_end, n):
+    # x = cos(wt), y = -sin(wt): dx/dw = -t·sin(wt), dy/dw = -t·cos(wt). Where
+    # d²Y/dw² crosses 0 the quotient still has its truncation error, which the
+    # Richardson difference of its two steps measures.
+    ant = f"""
+    model osc
+      J1: -> x; w*y
+      J2: -> y; -w*x
+      w = {w!r}
+      x = 1; y = 0
+    end
+    """
+    r = Simulator(Model.from_antimony_string(ant), method="ode", sensitivity_params=["w"]).run(
+        t_span=(0, t_end), n_points=n
+    )
+    t = np.asarray(r.time)
+    s = np.asarray(r._sensitivities)[:, :, 0]
+    assert np.allclose(s[:, 1], -t * np.cos(w * t), atol=1e-5 * t_end)
+    v = _by_name(r.check(["sensitivity_fd"]))["sensitivity_fd"]
+    assert v["status"] == "pass", v
+
+
+def test_a_late_time_error_of_a_fraction_of_a_percent_is_found(monkeypatch):
+    # An error that grows as t²: 0.5% of dA/dk at t = 10, where a first-order
+    # estimate of the quotient's error would be about 1%.
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if len(out._sensitivity_params):
+            out = copy.copy(out)
+            s = np.asarray(out._sensitivities, dtype=float).copy()
+            s[:, 0, 0] *= 1.0 + 0.005 * (np.asarray(out.time) / 10.0) ** 2
+            out._sensitivities = s
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run)
+    r = _decay()
+    v = _by_name(r.check(["sensitivity", "sensitivity_fd"]))
+    assert v["sensitivity"]["status"] == "pass"
+    assert v["sensitivity_fd"]["status"] == "diff" and v["sensitivity_fd"]["worst_column"] == (
+        "dA()/dk"
+    )
+
+
+def test_an_unconverged_series_does_not_widen_its_own_quotient_check():
+    # The run's dA/dk alone 1% off: the tolerance check sees it move, and the
+    # quotient is not to forgive it by that move.
+    by = _by_name(_scaled(_decay(), 0, 1.01).check(["sensitivity", "sensitivity_fd"]))
+    assert by["sensitivity"]["status"] == "diff"
+    v = by["sensitivity_fd"]
+    assert v["status"] == "diff" and v["worst_column"] == "dA()/dk", v
+    assert v["n_not_converged"] == 1
+
+
+def test_a_derived_parameter_column_is_not_judged_by_the_quotient():
+    ant = """
+    model ia
+      J1: A -> ; k*A
+      k = 0.5; A0 = 10; s = 2
+      A = A0*s
+    end
+    """
+    r = Simulator(
+        Model.from_antimony_string(ant), method="ode", sensitivity_params=["_ic_A", "k"]
+    ).run(t_span=(0, 5), n_points=6)
+    v = _by_name(r.check(["sensitivity_fd"]))["sensitivity_fd"]
+    assert v["status"] == "pass" and v["n_judged"] == 1
+    assert "derived parameter" in v["not_judged"]["_ic_A"]
+    assert [c["name"] for c in v["columns"]] == ["k"]
+
+
+NR = """
+model nr
+  J1: A -> ; k*A
+  J2: -> C; kc
+  k = 0.5; kc = 0
+  A = 100; C = 0
+end
+"""
+
+
+@pytest.mark.parametrize(("share", "status"), [(0.5, "pass"), (1.05, "diff")])
+def test_a_series_at_zero_is_judged_on_its_column_s_peak(monkeypatch, share, status):
+    # dC/dk is 0 throughout and its atolS 1e-8/0.5: the tighter run reading it
+    # at a share of a thousandth of its column's peak (dA/dk's) past 100 atolS
+    # is within the bound on that scale, and past it at a little more.
+    r = Simulator(Model.from_antimony_string(NR), method="ode", sensitivity_params=["k"]).run(
+        t_span=(0, 10), n_points=11
+    )
+    col_peak = np.abs(np.asarray(r._sensitivities)[:, 0, 0]).max()
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        out = copy.copy(out)
+        s = np.asarray(out._sensitivities, dtype=float).copy()
+        s[5, 1, 0] = share * 1e-3 * col_peak + 100 * 2e-8
+        out._sensitivities = s
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    v = _by_name(r.check(["sensitivity"]))["sensitivity"]
+    assert v["status"] == status, v
+    assert "dC/dk" in v["not_resolved"]
+
+
+def test_the_quotient_names_a_series_it_does_not_resolve():
+    r = Simulator(Model.from_antimony_string(NR), method="ode", sensitivity_params=["k"]).run(
+        t_span=(0, 10), n_points=11
+    )
+    v = _by_name(r.check(["sensitivity_fd"]))["sensitivity_fd"]
+    assert v["status"] == "pass" and v["not_resolved"] == ["dC/dk"]
+
+
+def test_a_column_s_roundoff_is_a_floor_under_its_small_entries():
+    # B starts at 0 (atolS 1e-8·1/0.5) and is made from A = 1e12: dB/dk is of
+    # order 1e12, and every entry of that column carries eps of it.
+    ant = """
+    model big
+      J1: A -> B; k*A
+      k = 0.5
+      A = 1e12; B = 0
+    end
+    """
+    r = Simulator(Model.from_antimony_string(ant), method="ode", sensitivity_params=["k"]).run(
+        t_span=(0, 10), n_points=11
+    )
+    ctx = _check._Context(r, r.record, None)
+    cols = _check_sensitivity._Columns(ctx)
+    colmax = np.abs(np.asarray(r._sensitivities)[:, :, 0]).max()
+    assert cols.atol[1, 0] == pytest.approx(np.finfo(float).eps * colmax)
+    assert cols.atol[1, 0] > 1e-8 / 0.5
+    assert cols.atol[0, 0] == pytest.approx(1e-8 * 1e12 / 0.5)
 
 
 # ─── The rerun the quotient makes ────────────────────────────────────────────
@@ -525,5 +672,6 @@ def test_bngsim_check_exits_6_on_a_sensitivity_diff_with_no_change_to_the_comman
 
 def test_the_constants_say_what_the_docs_say():
     assert _check_sensitivity.FD_STEP == 1e-3 and _check_sensitivity.FD_TIGHTER == 100.0
+    assert (_check_sensitivity.FD_RTOL_LEAST, _check_sensitivity.FD_RTOL_MOST) == (1e-14, 1e-8)
     assert math.isclose(_check_sensitivity.FD_NOISE, _check.DRIFT_FACTOR)
     assert _check.SENSITIVITY == ("sensitivity", "sensitivity_fd")
