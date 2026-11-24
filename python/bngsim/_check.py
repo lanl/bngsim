@@ -415,6 +415,12 @@ def _next(out: Report) -> str:
             "and atol (result.rerun(rtol=..., atol=...)) until they do not, and report that "
             "run's sensitivities."
         )
+    if diffs and diffs[0]["name"] == "sensitivity_fd" and diffs[0].get("diff_not_converged"):
+        return (
+            "The sensitivities that disagree with a difference quotient are not converged at "
+            "the run's tolerance: rerun at a tighter rtol and atol (result.rerun(rtol=..., "
+            "atol=...)) and check that run's sensitivities."
+        )
     if diffs and diffs[0]["name"] == "sensitivity_fd":
         return (
             "The forward sensitivities disagree with a difference quotient of the trajectories "

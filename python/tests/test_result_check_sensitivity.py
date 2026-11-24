@@ -78,6 +78,7 @@ def test_the_closed_form_holds_and_both_tiers_pass_on_a_correct_run():
     assert by["sensitivity"]["status"] == "pass" and by["sensitivity_fd"]["status"] == "pass"
     assert by["sensitivity"]["value"] < 1e-6
     assert by["sensitivity_fd"]["n_judged"] == 3
+    assert 0.0 < by["sensitivity_fd"]["allowance"] < 0.01
     assert {c["name"] for c in by["sensitivity_fd"]["columns"]} == {"k", "A0", "A()"}
     assert rep["ok"] is True
     assert json.loads(json.dumps(rep, allow_nan=False)) == rep
@@ -222,10 +223,14 @@ def test_a_series_a_floor_holds_is_named_and_judged_on_its_column(
     monkeypatch.setattr(Simulator, "run", run)
     sim = Simulator(Model.from_antimony_string(TWO), method="ode", sensitivity_params=["k"])
     r = sim.run(t_span=(0, 10), n_points=11, rtol=1e-8)
-    v = _by_name(r.check(["sensitivity"]))["sensitivity"]
+    by = _by_name(r.check(["sensitivity", "sensitivity_fd"]))
+    v = by["sensitivity"]
     assert v["status"] == status, v
     assert v["n_floor_held"] == len(held)
     assert all(h in v["not_resolved"] for h in held)
+    if status == "pass":
+        # The quotient reads a floor-held series' move as its drift too.
+        assert by["sensitivity_fd"]["status"] == "pass", by["sensitivity_fd"]
 
 
 def test_the_floor_is_the_atol_the_solver_held_each_series_to():
@@ -490,6 +495,65 @@ def test_an_oscillator_over_many_periods_passes_the_quotient(w, t_end, n):
     assert v["status"] == "pass", v
 
 
+OSC = """
+model osc
+  J1: -> x; w*y
+  J2: -> y; -w*x
+  w = 2
+  x = 1; y = 0
+end
+"""
+
+
+@pytest.mark.parametrize(
+    ("t_end", "n", "f", "status", "named"),
+    [
+        # 3% off at the end of 16 periods: within what the quotient resolves.
+        (50.0, 501, 0.03, "diff", []),
+        # 10% off at the end of 64 periods: the step moves the phase too far
+        # for the quotient to tell, from some time on, and it says so.
+        (200.0, 401, 0.1, "pass", ["dx/dw", "dy/dw"]),
+        # A correct run over 500 periods, past the step's phase: no finding.
+        (1600.0, 3201, 0.0, "pass", ["dx/dw", "dy/dw"]),
+    ],
+)
+def test_a_long_oscillation_is_judged_as_far_as_the_quotient_resolves_it(
+    monkeypatch, t_end, n, f, status, named
+):
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if len(out._sensitivity_params):
+            out = copy.copy(out)
+            s = np.asarray(out._sensitivities, dtype=float).copy()
+            s[:, :, 0] *= (1.0 + f * (np.asarray(out.time) / t_end) ** 2)[:, None]
+            out._sensitivities = s
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run)
+    r = Simulator(Model.from_antimony_string(OSC), method="ode", sensitivity_params=["w"]).run(
+        t_span=(0, t_end), n_points=n, rtol=1e-10, atol=1e-12
+    )
+    v = _by_name(r.check(["sensitivity_fd"]))["sensitivity_fd"]
+    assert v["status"] == status, v
+    assert v["not_resolved"] == named
+    if named == ["dx/dw", "dy/dw"]:
+        assert v["allowance"] is None  # no series is resolved to claim an accuracy for
+    else:
+        assert 0.0 < v["allowance"] < 0.02
+
+
+def test_a_quotient_diff_on_unconverged_series_says_to_tighten():
+    r = Simulator(examples.load("chain"), method="ode", sensitivity_params=["k1", "k2"]).run(
+        t_span=(0, 20), n_points=21, rtol=3e-2, atol=1e-4
+    )
+    rep = r.check(["sensitivity_fd"])
+    v = rep["checks"][0]
+    assert v["status"] == "diff" and v["diff_not_converged"] is True and v["n_not_converged"] > 0
+    assert "not converged" in rep["next"] and "bug" not in rep["next"]
+
+
 def test_a_late_time_error_of_a_fraction_of_a_percent_is_found(monkeypatch):
     # An error that grows as t²: 0.5% of dA/dk at t = 10, where a first-order
     # estimate of the quotient's error would be about 1%.
@@ -650,6 +714,9 @@ def test_perturbed_refuses_a_derived_parameter_and_records_what_it_moved():
 
 
 def test_bngsim_check_exits_6_on_a_sensitivity_diff_with_no_change_to_the_command(tmp_path):
+    # The command has no option that asks for sensitivities (issue #1925), so
+    # the run is made a sensitivity run by patching the Simulator; the exit
+    # code is the command's own.
     import subprocess
     import sys
 

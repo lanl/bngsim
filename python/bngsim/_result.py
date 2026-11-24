@@ -3509,15 +3509,19 @@ class Result:
             - ``"sensitivity_fd"``: the forward sensitivities against central
               difference quotients, each parameter (through ``set_param``, so
               an initial amount it sets follows) and initial amount moved by
-              1e-3 and 2e-3 of itself, of runs at a hundredth of the
-              tolerance (an rtol from 1e-14 to 1e-8) with the sensitivities
-              off. The quotient's own error is read cell by cell from its two
-              steps: their Richardson difference, and what doubling the step
-              leaves of its forward half less its backward, which widens it
-              near a switch or event time the parameter moves. A series it
-              resolves to no better than 5% of its peak is named in
-              ``not_resolved``; ``allowance`` is the largest share of a
-              peak it allows the rest. A value at 0, and a derived
+              1e-3 and 2e-3 of itself, of runs at ``rtol/100`` clamped to
+              1e-14 to 1e-8 (never looser than the run), atol scaled alike,
+              with the sensitivities off. The quotient's own error is read
+              cell by cell from its two steps: their Richardson difference,
+              and what doubling the step leaves of its forward half less its
+              backward, which widens it near a switch or event time the
+              parameter moves; a cell where that is 5% of a series' peak is
+              not judged. A series it resolves to no better than 5% of its
+              peak, everywhere or from the time its Richardson difference
+              reaches that share on (a long oscillation whose phase the step
+              moves), is named in ``not_resolved`` and not judged past it;
+              ``allowance`` is the largest share of a peak it allows where
+              it judges. A value at 0, and a derived
               parameter, are not judged (``not_judged``). It costs four runs
               per column and one more, within ``budget``; the columns the
               budget does not reach are named in ``timed_out``.
@@ -3567,9 +3571,10 @@ class Result:
             by design, which are not judged); ``"sensitivity"`` also gives
             ``n_series`` and ``n_floor_held``, and ``"sensitivity_fd"``
             ``margin``, ``n_judged``, ``not_judged`` (columns, with the
-            reason), ``timed_out``, ``allowance`` and ``n_not_converged``
+            reason), ``timed_out``, ``allowance``, ``n_not_converged``
             (series the tolerance check finds not converged, judged on the
-            tolerance alone).
+            tolerance alone) and ``diff_not_converged`` (a diff in those
+            series alone, which ``next`` reads as the tolerance's).
 
         Raises
         ------
