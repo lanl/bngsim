@@ -5425,8 +5425,8 @@ class Simulator:
         self, atol: AtolLike | None, criterion: str, state=None, rtol: float | None = None
     ) -> AtolLike | None:
         """The march's ``atol`` for a steady-state solve, which under
-        ``criterion="scaled"`` is also the run test's (issue #1001), each
-        species' no coarser there than ``rtol`` of its scale at the start
+        ``criterion="scaled"`` is also the run test's (issue #1001), no
+        species' there coarser than :meth:`run`'s ceiling from the same start
         (issue #1895), which this default never is.
 
         Where neither the call nor :meth:`set_tolerances` gave an ``atol``, each
@@ -9799,8 +9799,8 @@ class Simulator:
               the march's own, never more than
               ``rtol`` times the largest species the solve starts with or
               reaches. The run is integrated at the march's ``atol`` too, but
-              no species' coarser than ``rtol`` of its own scale at the start
-              (the scale the default is derived from, issue #1895): a scalar
+              no species held coarser than :meth:`run` would hold it from the
+              same start, given the same scalar (issue #1895): a scalar
               ``atol`` is taken as given, and where it is coarser than the
               model the march resolves nothing and stops where its error
               leaves it, which a run at that ``atol`` does not see move.
@@ -13856,8 +13856,8 @@ class SteadyStateResult:
         The run test of ``criterion="scaled"``: the largest move of a
         measured species, over its tolerance, across the run taken on from
         the state returned; at most 1 passes (issue #1001). The run holds
-        each species to an ``atol`` no coarser than ``rtol`` of its own scale
-        at the start (issue #1895). ``inf`` where the
+        no species coarser than :meth:`Simulator.run` would from the solve's
+        start, given the same scalar ``atol`` (issue #1895). ``inf`` where the
         run could not be taken to its time; NaN where none was taken (under ``"residual"``,
         where the parity test already refused, and for a burst-free Newton
         solve).

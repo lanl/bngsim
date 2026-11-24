@@ -6309,16 +6309,24 @@ static constexpr double kRunRtolLeast = 1e-13;
 // of the tolerances takes for a drift (ss_continued_run).
 static constexpr double kDriftAtLeast = 10.0;
 
-// Each species' scale at the state the solve starts from (issue #1895): its
-// own magnitude, and for one below it (at 0) the floor, the smallest
-// magnitude a species not $-fixed starts at, but no finer than double
-// precision resolves beside the largest of them. That is the scale the
-// default atol is derived from (Simulator._steady_state_atol, which is
-// _atol_from_scale's rule with a share of machine epsilon), so the default
-// atol is never coarser than rtol times it. Empty where no species not
-// $-fixed starts above 0: the start has no scale. A value that is not
-// finite counts as 0, as it does there.
-static std::vector<double> ss_start_scales(const NetworkModel &model) {
+// The share of the largest species below which a run() counts a species as
+// rounding and holds it as though it were at that share (issue #1420): the
+// Python layer's Simulator._ATOL_SCALE_RELEVANT, which a test pins this to.
+static constexpr double kStartScaleShare = 1e-6;
+
+// Each species' scale at the state the solve starts from, the one rtol of
+// which the run test's atol is no coarser than (issue #1895): run()'s
+// per-species rule for a scalar atol from the same start (issue #1420,
+// Simulator._atol_from_scale). Its own magnitude, and for one below the floor
+// the floor: the smallest magnitude a species not $-fixed starts at, but not
+// under kStartScaleShare of the largest of them. A species below the floor
+// keeps its own magnitude where `rtol` of it is more than double precision
+// resolves beside the largest (issue #1439). The default atol is finer than
+// rtol times this (_steady_state_atol takes a share of machine epsilon, and
+// at most 1e-8), so its runs are never capped. Empty where no species not
+// $-fixed starts above 0: the start has no scale. A value that is not finite
+// counts as 0, as it does there.
+static std::vector<double> ss_start_scales(const NetworkModel &model, double rtol) {
     const int ns = model.n_species();
     double largest = 0.0;
     double least = std::numeric_limits<double>::infinity();
@@ -6332,11 +6340,15 @@ static std::vector<double> ss_start_scales(const NetworkModel &model) {
     }
     if (!std::isfinite(least))
         return {};
-    const double floor = std::max(least, std::numeric_limits<double>::epsilon() * largest);
+    const double floor = std::max(least, kStartScaleShare * largest);
+    const double resolvable = std::numeric_limits<double>::epsilon() * largest;
     std::vector<double> scales(static_cast<size_t>(ns));
     for (int i = 0; i < ns; ++i) {
-        const double v = std::abs(model.species()[i].concentration);
-        scales[static_cast<size_t>(i)] = std::isfinite(v) ? std::max(v, floor) : floor;
+        double v = std::abs(model.species()[i].concentration);
+        if (!std::isfinite(v))
+            v = 0.0;
+        const bool kept = !model.species()[i].fixed && v < floor && rtol * v > resolvable;
+        scales[static_cast<size_t>(i)] = kept ? v : std::max(v, floor);
     }
     return scales;
 }
@@ -6371,7 +6383,8 @@ static double ss_continued_run_once(NetworkModel &model, SteadyStateRhs &rhs,
     run_opts.rtol = opts.rtol * by;
     // A run that tests the state (`end` not given) is integrated with each
     // species' atol no coarser than the criterion's rtol times that species'
-    // scale at the start (issue #1895, ss_start_scales). The march takes the
+    // scale at the start (issue #1895, ss_start_scales): as run() would hold
+    // it, given the same scalar, from the same start. The march takes the
     // caller's atol as given, and where that is coarser than the model, the
     // state it stops at is its error, and so is the state's scale:
     // BIOMD0000000609, every species under 1.4e-13 at the start, marched at
@@ -6382,13 +6395,16 @@ static double ss_continued_run_once(NetworkModel &model, SteadyStateRhs &rhs,
     // (3.9e-15), stayed on it and passed it. Each species held to rtol of its
     // own scale at the start (1.3e-20 for the sulphate), the run leaves it, as
     // run() from it does. One cap for every species, rtol times the start's
-    // largest, would not do: an accumulator that had already run, or a
-    // species at 1 beside the rest, set it, and the run passed the same root.
-    // The default atol is never coarser than this, and neither is any atol
-    // at the model's scale: such a run is the one it was, to the bit (a
-    // scalar stays a scalar where no species is capped). The start has no
-    // scale where every species not $-fixed starts at 0, and the run is then
-    // as it was too.
+    // largest, would not do: an accumulator that had already run set it, and
+    // the run passed the same root. Nor a floor finer than run()'s: at a
+    // share of machine epsilon, BIOMD0000000696's species at 0, held to
+    // 6e-18 at a stable root they sit on within 1e-19, took some 5,000
+    // steps a unit of time, and the run ran out of its steps. The default
+    // atol is never coarser than this, and neither is any atol at the
+    // model's scale: such a run is the one it was, to the bit (a scalar stays
+    // a scalar where no species is capped). The start has no scale where
+    // every species not $-fixed starts at 0, and the run is then as it was
+    // too.
     const auto un_scales = opts.criterion_start_scales.size();
     const bool cap = end == nullptr && un_scales == un;
     const double rtol_c = std::max(opts.rtol, kCriterionRtolLeast);
@@ -6620,7 +6636,7 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
             opts.criterion_start_size =
                 std::max(opts.criterion_start_size, std::abs(model.species()[i].concentration));
     }
-    opts.criterion_start_scales = ss_start_scales(model);
+    opts.criterion_start_scales = ss_start_scales(model, std::max(opts.rtol, kCriterionRtolLeast));
 
     // Resolve the RHS backend once for the whole solve: the codegen artifact is
     // loaded (or JIT-compiled) a single time and shared by the march, the KINSOL

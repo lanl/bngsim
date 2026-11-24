@@ -117,12 +117,13 @@ spec = bngsim.convert.read_sedml("simulation.sedml", exact_atol=True)
 - SED-ML cannot say "exactly", so `write_sedml` writes the number, and
   `read_sedml(..., exact_atol=True)` reads it back as exact.
 - A vector of `n_species` values is always used exactly as given. One
-  exception: the run that `steady_state()`'s convergence test takes holds each
-  species no coarser than `rtol` of its own scale at the start (issue #1895).
+  exception: the run that `steady_state()`'s convergence test takes holds no
+  species coarser than a scalar would hold it from the solve's start (issue
+  #1895).
 - `steady_state(atol=...)` uses a scalar as given. Under `criterion="scaled"`
   it is also the steady-state convergence test's tolerance. The run that test
-  takes holds each species no coarser than `rtol` of its own scale at the
-  start (issue #1895).
+  takes reads it as `run()` does, a ceiling per species from the solve's start
+  (issue #1895).
 
 Use `ExactAtol` to compare with a tool that holds one absolute tolerance for
 every species.

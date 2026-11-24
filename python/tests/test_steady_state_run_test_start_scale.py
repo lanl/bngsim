@@ -11,19 +11,22 @@ has them at 1.3e-14 and 0) and the accumulator at 3.9e-9, and came back
 ``converged=True``: a run at an atol of 1e-9 does not see a state at 1e-14
 move. A run from it, as :meth:`Simulator.run` integrates one, fails at
 t = 2.1 with the RHS non-finite. The run test now holds each species to an
-atol no coarser than ``rtol`` of its own scale at the start. One cap for all,
-``rtol`` times the start's largest species, was blinded again by an
-accumulator that had already run, or by any species at 1 beside the rest.
+atol no coarser than :meth:`Simulator.run` would hold it, given the same
+scalar, from the solve's start: ``rtol`` of its own scale there (issue #1420's
+rule). One cap for all, ``rtol`` times the start's largest species, was
+blinded again by an accumulator that had already run, or by a species at the
+atol beside the rest.
 
-The models below are the issue's, transcribed to ``.net``, the same beside a
-large species, and a three-species reduction of it. Their steady state has a
-closed form: ``S = bS/dS``, ``G = bG/dG``, ``N = P = 0``. The oracles are that
-closed form and a run of the time course from the returned state that holds
-each species to ``rtol`` of its own scale; neither is the run test.
+The models below are the issue's, transcribed to ``.net``, the same with a
+larger species at the start, and a three-species reduction of it. Their steady
+state has a closed form: ``S = bS/dS``, ``G = bG/dG``, ``N = P = 0``. The
+oracles are that closed form, to the criterion's own tolerance, and a run of
+the time course from the returned state; neither is the run test.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import bngsim
@@ -102,8 +105,13 @@ MODELS = {
     # The issue's model with the accumulator started where the issue's solve
     # left it, as a model that had already run would be.
     "apap_ran": APAP_NET.replace("    5 A() 0\n", "    5 A() 3.9e-9\n"),
-    # The issue's model beside a species at 1 that nothing reads or moves.
-    "apap_beside": APAP_NET.replace("    5 A() 0\n", "    5 A() 0\n    6 Z() 1.0\n"),
+    # The issue's model beside a species at the issue's atol that nothing
+    # reads or moves.
+    "apap_beside": APAP_NET.replace("    5 A() 0\n", "    5 A() 0\n    6 Z() 1e-9\n"),
+    # And beside one at 1: there the criterion's own tolerance is 1e-9, the
+    # sulphate and paracetamol are rounding beside Z, as run() holds them,
+    # and the spurious root is within tolerance of the steady state.
+    "apap_at_one": APAP_NET.replace("    5 A() 0\n", "    5 A() 0\n    6 Z() 1.0\n"),
 }
 
 # The closed-form steady state of each species that has one; the accumulator
@@ -113,7 +121,8 @@ ROOTS = {
     "apap": APAP_ROOT,
     "spa": {"S()": 2.65e-14 / 2.0, "P()": 0.0},
     "apap_ran": APAP_ROOT,
-    "apap_beside": {**APAP_ROOT, "Z()": 1.0},
+    "apap_beside": {**APAP_ROOT, "Z()": 1e-9},
+    "apap_at_one": {**APAP_ROOT, "Z()": 1.0},
 }
 
 
@@ -160,18 +169,16 @@ def _off_the_root(name: str, ss, start, atol=ATOL, root=None) -> list[str]:
 
 
 def _run_rests_at(model: bngsim.Model, start, x) -> bool:
-    """Whether a run of the time course from ``x`` rests there: every species
-    the solve measures within its tolerance at the end. The run holds each
-    species to ``rtol`` of its own scale at the start (one at 0 to the
-    smallest any starts at), as a vector, which ``run()`` uses exactly as
-    given. One the solver cannot carry on does not rest."""
+    """Whether a run of the time course from ``x``, at the issue's rtol and
+    atol, rests there: every species the solve measures within its tolerance
+    at the end. ``run()`` reads the scalar as its ceiling, each species held
+    to ``rtol`` of its own scale in ``x`` (issue #1420), by its own code. One
+    the solver cannot carry on does not rest."""
     keep = ~np.asarray(model.is_pure_sink(), dtype=bool)
-    scale = np.abs(np.asarray(start, dtype=float))
-    atol = RTOL * np.maximum(scale, scale[scale > 0].min())
     model.set_state(x)
     try:
         r = bngsim.Simulator(model, method="ode").run(
-            t_span=(0.0, HORIZON), n_points=5, rtol=RTOL, atol=atol
+            t_span=(0.0, HORIZON), n_points=5, rtol=RTOL, atol=ATOL
         )
     except bngsim.SimulationError as e:
         assert e.code.startswith("solver."), e
@@ -191,9 +198,10 @@ def test_converged_is_a_rest_at_the_steady_state(tmp_path, name, method, atol):
     Main returned converged=True on the spurious root, S at -1.46e-14 for
     1.325e-14 (the issue's state), for apap by integration, for spa by Newton
     (S at -1.54e-14), and for apap_ran and apap_beside by integration; a run
-    from each leaves it, or fails on the RHS. The same with the atol given
-    per species. Where it does not converge, the run test or the residual
-    test said so."""
+    from each fails on the RHS. The same with the atol given per species.
+    apap_at_one is converged at that root on both, rightly: within its 1e-9
+    tolerance of the steady state, and a run from it rests. Where the solve
+    does not converge, the run test or the residual test said so."""
     ss, start = _solve(tmp_path, name, method, atol=atol)
     x = np.asarray(ss.concentrations, dtype=float)
     if ss.converged:
@@ -274,3 +282,15 @@ def test_the_issues_corpus_model(tmp_path):
         assert abs(at["Paracetamol_APAP"]) < 1e-18
     else:
         assert ss.continued_run_distance > 1.0 or not ss.residual < 1e-9
+
+
+def test_the_run_tests_share_is_runs():
+    """The run test holds a species as run() would from the same start: the
+    share of the largest species below which a species is held as though at
+    it is Simulator._ATOL_SCALE_RELEVANT on both sides. A finer share in the
+    core (machine epsilon) held BIOMD0000000696's species at 0 to 6e-18 and
+    its run ran out of steps at a stable root."""
+    src = Path(__file__).resolve().parents[2] / "src" / "steady_state.cpp"
+    found = re.findall(r"constexpr double kStartScaleShare = ([0-9.eE+-]+);", src.read_text())
+    assert len(found) == 1, found
+    assert float(found[0]) == bngsim.Simulator._ATOL_SCALE_RELEVANT
