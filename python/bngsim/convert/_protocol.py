@@ -480,6 +480,12 @@ class ProtocolSpec:
     generation_step: int | None = None
     lossy_before_generation: int = 0
     dropped_before_generation: int = 0
+    # Whether parse_bngl_protocol found a model the runs' network is generated from,
+    # not an actions block run on a network loaded on its own or read from a .net
+    # (issue #1687). combine_protocols reads it. It is not part of the spec's value:
+    # not compared, not written by to_dict or to_json, and False in a spec read back
+    # from them or built by hand.
+    _from_a_model: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _hold_plain(self)
@@ -780,9 +786,12 @@ def combine_protocols(
     directives are concatenated, so provenance survives the merge.
 
     ``network_gen`` is the first one any spec names, so a cap survives the merge.
-    The exception is a first spec parsed from a ``.bngl`` with ``None`` there and
-    a run with a network method: BNG2.pl generated the network those runs start
-    from with its defaults, and the merge keeps ``None``.
+    The exception is a first spec that :func:`parse_bngl_protocol` read from a
+    ``.bngl`` with a model, with ``None`` there and a run with a network method:
+    BNG2.pl generated the network those runs start from with its defaults, and the
+    merge keeps ``None``. An actions block run on a network loaded on its own, or
+    read from a ``.net``, generated none, and neither did a spec read back from
+    JSON or built by hand, as far as the merge can tell.
 
     Parameters
     ----------
@@ -814,9 +823,9 @@ def combine_protocols(
     # rest run on the network it leaves, after the reset that separates them.
     generation_step = non_empty[0].generation_step
     first = non_empty[0]
-    if first.network_gen is None and generation_step is not None and _runs_a_network(first):
-        # A .bngl's runs on a network it generated with no call of its own: BNG2.pl's
-        # defaults, which a later spec's cap must not replace.
+    if first.network_gen is None and first._from_a_model and _runs_a_network(first):
+        # A .bngl's runs on a network BNG2.pl generated from its model with no call
+        # of its own: its defaults, which a later spec's cap must not replace.
         network_gen = None
     else:
         # The first contributing spec that names a generate_network carries its cap
@@ -869,13 +878,18 @@ def combine_protocols(
         # The first spec's entries lead the merged lists.
         lossy_before_generation=non_empty[0].lossy_before_generation,
         dropped_before_generation=non_empty[0].dropped_before_generation,
+        _from_a_model=first._from_a_model,
     )
 
 
 def _runs_a_network(spec: ProtocolSpec) -> bool:
     """Whether a run of *spec* runs on a network: one with a method that is not
     network-free (NFsim's ``nf``, RuleMonkey's ``rm``)."""
-    return any(isinstance(s, Experiment) and s.method not in ("nf", "rm") for s in spec.steps)
+    from bngsim._simulator import _NETWORK_FREE_METHODS
+
+    return any(
+        isinstance(s, Experiment) and s.method not in _NETWORK_FREE_METHODS for s in spec.steps
+    )
 
 
 # ─── Parser ─────────────────────────────────────────────────────────────────
@@ -929,6 +943,7 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
     # its own, which a run reads as it stands (issue #1687): the block that
     # omex_to_net writes beside its .net set A and then ran from the .net's A.
     generates = _declares_a_model(text)
+    network_read = False  # the generation point is a .net read whole
     for verb, argstr in _iter_action_calls(text):
         low = verb.lower()
         if low == "quit":
@@ -945,6 +960,7 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
                 if generation_step is None:
                     generation_step = len(steps)
                     lossy_before, dropped_before = len(lossy), len(dropped)
+                    network_read = True
             else:
                 generates = True  # a model, whose first run generates its network
         if generation_step is None and (
@@ -1005,6 +1021,7 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
         generation_step=len(steps) if generation_step is None else generation_step,
         lossy_before_generation=len(lossy) if lossy_before is None else lossy_before,
         dropped_before_generation=len(dropped) if dropped_before is None else dropped_before,
+        _from_a_model=generates and not network_read,
     )
 
 
@@ -1015,14 +1032,18 @@ def _generates_a_network(verb: str, argstr: str) -> bool:
     ``BNGAction.pm``'s ``simulate`` generates it only for the network methods
     (cvode, ssa, pla, psa) and hands ``nf`` to ``simulate_nf``, which generates
     none; a scan runs ``simulate`` at each point, and ``bifurcate`` runs scans.
+    RuleMonkey's ``rm``, and every other method bngsim runs network-free, builds
+    none either.
     ``simulate_protocol`` runs the model's ``begin protocol`` block, which the
     parse does not read, so it counts as a network run. Two actions that are not
     runs generate it too: ``writeMDL`` (``BNGOutput.pm``) and ``visualize`` of
     the ``reaction_network`` type (``Visualization/Viz.pm``).
     """
+    from bngsim._simulator import _NETWORK_FREE_METHODS
+
     low = verb.lower()
     if low in _SIMULATE_VERBS:
-        return _run_method(low, _parse_hash(argstr)) != "nf"
+        return _run_method(low, _parse_hash(argstr)) not in _NETWORK_FREE_METHODS
     if low == "visualize":
         return _parse_hash(argstr).get("type") == "reaction_network"
     return low in ("simulate_protocol", "writemdl")
@@ -1037,11 +1058,13 @@ def _network_generation_call(text: str) -> tuple[str, str] | None:
     method, say. BNG2.pl generates it there with its defaults (``simulate`` calls
     ``generate_network()`` with no arguments), and a later call continues it,
     which adds nothing to a network that is complete, so its ``max_iter`` does not
-    bound it. A network-free run (``simulate_nf``, ``method=>"nf"``) generates
-    nothing, and neither does ``generate_hybrid_model``, which writes a separate
-    model, so the search reads past both. (After a network-free run BNG2.pl also
-    seeds the call with the species the run ends with, by default; those come from
-    running NFsim, which the call's options cannot carry.) It reads past ``quit`` too, as
+    bound it. A network-free run (``simulate_nf``, ``method=>"nf"`` or ``"rm"``)
+    generates nothing, and neither does ``generate_hybrid_model``, which writes a
+    separate model, so the search reads past both. (BNG2.pl also seeds the call
+    after an NF run with the species the run ends with, unless it sets
+    ``get_final_state=>0``, which a ``parameter_scan`` does unless it sets
+    ``reset_conc=>0``; those come from running NFsim, which the call's options
+    cannot carry.) It reads past ``quit`` too, as
     :func:`bngsim._bngl_loader.generation_source` does, which keeps the actions
     after one. Only one call is returned: BNG2.pl continues the network at a later
     ``generate_network`` with ``overwrite=>1``, under that call's limits, and what

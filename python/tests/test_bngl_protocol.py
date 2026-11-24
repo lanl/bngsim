@@ -271,8 +271,12 @@ def test_an_action_that_generates_the_network_leaves_network_gen_none(action) ->
 
 @pytest.mark.parametrize(
     "nf_run",
-    ['simulate({method=>"nf",t_end=>1,n_steps=>1})', "simulate_nf({t_end=>1,n_steps=>1})"],
-    ids=["method-nf", "simulate_nf"],
+    [
+        'simulate({method=>"nf",t_end=>1,n_steps=>1})',
+        "simulate_nf({t_end=>1,n_steps=>1})",
+        'simulate({method=>"rm",t_end=>1,n_steps=>1})',
+    ],
+    ids=["method-nf", "simulate_nf", "method-rm"],
 )
 def test_a_network_free_run_before_generate_network_keeps_its_cap(nf_run) -> None:
     """A network-free run generates no network, so the call after it is where
@@ -590,6 +594,15 @@ def test_combine_protocols_keeps_the_first_specs_network_gen_even_when_none() ->
     nf_only = parse_bngl_protocol(head + "simulate_nf({t_end=>1,n_steps=>1})\n")
     assert nf_only.network_gen is None and nf_only.generation_step is not None
     assert combine_protocols([nf_only, capped]).network_gen == "generate_network({max_agg=>5})"
+    # An actions block with no model runs on a network loaded on its own, and one
+    # that reads a .net first runs on that: neither generated one (issue #1687).
+    no_model = parse_bngl_protocol(run)
+    read_net = parse_bngl_protocol('readFile({file=>"m.net"})\n' + run, strict=False)
+    for spec in (no_model, read_net):
+        assert spec.network_gen is None and spec.generation_step == 0
+        assert combine_protocols([spec, capped]).network_gen == "generate_network({max_agg=>5})"
+    # Which of these a spec is lives outside its value: equal after JSON.
+    assert ProtocolSpec.from_json(run_first.to_json()) == run_first
 
 
 def test_combine_protocols_concatenates_dropped_and_lossy() -> None:

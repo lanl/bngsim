@@ -33,6 +33,7 @@ from bngsim._bngl_loader import (
 )
 from bngsim._bngpath import resolve_bng
 from bngsim._exceptions import ModelError
+from bngsim._simulator import _NETWORK_FREE_METHODS
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -297,15 +298,26 @@ end model
         "simulate_nf({t_end=>1,n_steps=>1})",
         'parameter_scan({method=>"nf",parameter=>"kp",par_min=>1,par_max=>2,'
         "n_scan_pts=>2,t_end=>1,n_steps=>1})",
+        'simulate({method=>"rm",t_end=>1,n_steps=>1})',
+        'parameter_scan({method=>"rm",parameter=>"kp",par_min=>1,par_max=>2,'
+        "n_scan_pts=>2,t_end=>1,n_steps=>1})",
     ],
-    ids=["method-nf", "simulate_nf", "parameter_scan-method-nf"],
+    ids=[
+        "method-nf",
+        "simulate_nf",
+        "parameter_scan-method-nf",
+        "method-rm",
+        "parameter_scan-method-rm",
+    ],
 )
 def test_a_network_free_run_before_generate_network_keeps_its_options(nf_run):
     """A network-free run generates no network (``simulate`` hands ``nf`` to
     ``simulate_nf``), so the ``generate_network`` after it is where BNG2.pl generates
     one, and its ``max_stoich`` is what makes this rule set finite. Without it, the
-    load ran to its timeout. (BNG2.pl seeds that call with the species the NF run
-    ends with too; the load starts from the declared ones, as the first run does.)"""
+    load ran to its timeout. (After an NF run BNG2.pl seeds that call with the
+    species the run ends with too, unless the run sets ``get_final_state=>0``, as a
+    scan does unless it sets ``reset_conc=>0``; the load starts from the declared
+    ones, as the first run does.)"""
     text = (
         _RL_CHAINS
         + nf_run
@@ -349,6 +361,18 @@ def test_a_visualize_that_builds_no_network_keeps_the_options(action):
         'simulate({method=>"ode",t_end=>1})\n'
     )
     assert generate_network_call(text) == "generate_network({max_iter=>3,overwrite=>1})"
+
+
+@pytest.mark.parametrize("method", sorted(_NETWORK_FREE_METHODS))
+def test_every_network_free_method_is_read_past(method):
+    """The search reads past a run with any method ``Simulator`` runs network-free,
+    by the same list: RuleMonkey's ``rm`` stopped it, so the load lost its cap."""
+    text = (
+        _RL_CHAINS
+        + f'simulate({{method=>"{method}",t_end=>1,n_steps=>1}})\n'
+        + "generate_network({max_stoich=>{R=>5}})\n"
+    )
+    assert generate_network_call(text) == "generate_network({max_stoich=>{R=>5},overwrite=>1})"
 
 
 def test_a_generate_network_after_the_first_run_does_not_replace_the_one_before_it():
