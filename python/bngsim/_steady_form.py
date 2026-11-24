@@ -160,7 +160,8 @@ def steady_state_batch(
         "n_unconverged": len(failed),
         "method_used": _counts([r.method_used for r in rows]),
         "root_stability": _counts([r.root_stability for r in rows]),
-        "largest_residual": _float(max(float(r.residual) for r in rows)) if rows else None,
+        # np.max, which a NaN residual makes NaN whatever the rows' order.
+        "largest_residual": _float(np.max([float(r.residual) for r in rows])) if rows else None,
     }
     kinds = _kinds(rows[0], species) if rows else []
     out["kinds"] = kinds
@@ -248,9 +249,19 @@ def steady_state_arrays(ss: Any) -> dict[str, Any]:
     }
 
 
-def steady_state_batch_arrays(rows: Sequence[Any]) -> dict[str, Any]:
-    """Every array of a batch's rows, one row per parameter set."""
+def steady_state_batch_arrays(
+    rows: Sequence[Any], params: Sequence[dict[str, float]] | None = None
+) -> dict[str, Any]:
+    """Every array of a batch's rows, one row per parameter set, and the sets:
+    ``param_names`` and ``params``, NaN where a set gives no value."""
     first = rows[0]
+    extra: dict[str, Any] = {}
+    if params is not None:
+        names = sorted({name for row in params for name in row})
+        extra["param_names"] = _str_array(names)
+        extra["params"] = np.array(
+            [[row.get(name, np.nan) for name in names] for row in params], dtype=np.float64
+        ).reshape(len(params), len(names))
     n_species, n_obs = len(first.species_names), len(first.observable_names)
     return {
         "species_names": _str_array(first.species_names),
@@ -265,6 +276,7 @@ def steady_state_batch_arrays(rows: Sequence[Any]) -> dict[str, Any]:
         "residual": np.array([float(r.residual) for r in rows], dtype=np.float64),
         "method_used": _str_array([r.method_used for r in rows]),
         "root_stability": _str_array([r.root_stability for r in rows]),
+        **extra,
     }
 
 

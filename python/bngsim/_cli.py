@@ -94,8 +94,8 @@ EXIT_CODES: dict[int, str] = {
     EXIT_CHECK_FAILED: "check not ok: the run's answer moved, or could not be checked",
 }
 
-#: The error codes that are refusals of the model. A SensitivityUnsupportedError
-#: or SsaValidationError is a refusal whatever its code.
+#: The error codes that are refusals of the model. A SensitivityUnsupportedError,
+#: SsaValidationError or ConversionError is a refusal whatever its code.
 _REFUSAL_CODES = frozenset(
     {
         "model.unsupported_construct",
@@ -111,6 +111,7 @@ _REFUSAL_CODES = frozenset(
 def exit_code_for(error: BaseException) -> int:
     """The exit code for an error a command raised."""
     from bngsim._exceptions import (
+        ConversionError,
         SensitivityUnsupportedError,
         SimulationError,
         SimulationTimeout,
@@ -121,7 +122,9 @@ def exit_code_for(error: BaseException) -> int:
     code = getattr(error, "code", None)
     if isinstance(error, SimulationTimeout) or code == "run.timeout":
         return EXIT_TIMEOUT
-    if isinstance(error, SensitivityUnsupportedError | SsaValidationError):
+    # A ConversionError: a .bngl file's action BNGsim cannot run as BNG2.pl
+    # would (bngsim run-bngl), refused rather than run approximately.
+    if isinstance(error, SensitivityUnsupportedError | SsaValidationError | ConversionError):
         return EXIT_REFUSED
     if code in _REFUSAL_CODES:
         return EXIT_REFUSED
@@ -425,7 +428,10 @@ def _digest_arguments(p: argparse.ArgumentParser, *, species: bool = True) -> No
     if species:
         p.add_argument("--species", action="store_true", help="digest the species too")
     p.add_argument(
-        "--max-columns", type=int, default=20, help="columns of each kind the digest lists"
+        "--max-columns",
+        type=_count,
+        default=20,
+        help="columns of each kind the digest lists (0 or more)",
     )
 
 
@@ -609,7 +615,9 @@ def _add_run_calls(sub: Any, common: argparse.ArgumentParser) -> None:
     _model_arguments(sss)
     _set_argument(sss, "the search")
     sss.add_argument("--n-starts", type=_positive_int, default=None, help="starts (default 200)")
-    sss.add_argument("--seed", type=int, default=None, help="the seed of the starts (default 0)")
+    sss.add_argument(
+        "--seed", type=_count, default=None, help="the seed of the starts, 0 or more (default 0)"
+    )
     sss.add_argument(
         "--upper",
         type=_positive,
@@ -710,7 +718,13 @@ def _steady_arguments(p: argparse.ArgumentParser, *, params: bool = False) -> No
         default=None,
         help="what converged asks: scaled (default) or residual",
     )
-    _solver_arguments(p, seed=False)
+    p.add_argument("--rtol", type=_positive, default=None, help="the march's relative tolerance")
+    p.add_argument(
+        "--atol",
+        type=_atol,
+        default=None,
+        help="the march's absolute tolerance: a number, 'auto' or 'tracking'",
+    )
     p.add_argument("--max-steps", type=_positive_int, default=None, help="the march's most steps")
 
 
@@ -722,7 +736,7 @@ def _floats(text: str) -> list[float]:
             f"expected numbers separated by commas, not {text!r}"
         ) from None
     if not values:
-        raise argparse.ArgumentTypeError("expected at least one time")
+        raise argparse.ArgumentTypeError("expected at least one number")
     return values
 
 
@@ -733,6 +747,16 @@ def _positive(text: str, what: str = "a number") -> float:
         value = -1.0
     if not value > 0 or not math.isfinite(value):
         raise argparse.ArgumentTypeError(f"expected {what} > 0, not {text!r}")
+    return value
+
+
+def _count(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"expected a whole number >= 0, not {text!r}")
     return value
 
 
@@ -1018,8 +1042,27 @@ def _validate(args: argparse.Namespace) -> None:
         ):
             if value is not None:
                 _refuse(f"--replicates runs run_replicates(), which takes no {flag}", flag)
-    if command == "parameter-scan" and not args.parameter:
-        _refuse("give --parameter NAME, the parameter to scan", "--parameter")
+    if command == "parameter-scan":
+        if not args.parameter:
+            _refuse("give --parameter NAME, the parameter to scan", "--parameter")
+        ranged = (
+            ("--par-min", args.par_min),
+            ("--par-max", args.par_max),
+            ("--n-scan-pts", args.n_scan_pts),
+            ("--log-scale", args.log_scale or None),
+        )
+        if args.par_scan_vals is not None:
+            for flag, value in ranged:
+                if value is not None:
+                    _refuse(f"--par-scan-vals gives the values; it takes no {flag}", flag)
+        else:
+            for flag, value in ranged[:3]:
+                if value is None:
+                    _refuse(
+                        "give the values (--par-scan-vals) or a range: --par-min, "
+                        f"--par-max and --n-scan-pts; {flag} is missing",
+                        flag,
+                    )
     if has("params"):
         _parse_params(args.params)
     if has("stop_when"):
@@ -1134,6 +1177,12 @@ def _parse_params(text: str | None) -> list[dict[str, float]]:
                         "--params",
                     )
                 header = [name.strip() for name in table[0]]
+                twice = sorted({n for n in header if header.count(n) > 1})
+                if twice:
+                    _refuse(
+                        f"--params {source!r} names {', '.join(twice)} more than once",
+                        "--params",
+                    )
                 rows = []
                 for n, cells in enumerate(table[1:], start=2):
                     if len(cells) != len(header):
@@ -1168,7 +1217,9 @@ def _parse_params(text: str | None) -> list[dict[str, float]]:
     return out
 
 
-def _load_for_run(args: argparse.Namespace, *, save: bool = True) -> tuple[Any, dict[str, float]]:
+def _load_for_run(
+    args: argparse.Namespace, *, save: bool = True, rows: list[dict[str, float]] | None = None
+) -> tuple[Any, dict[str, float]]:
     """The model a command runs, with the ``--set`` values, and those values. A
     species set this way becomes the model's initial state
     (``save_concentrations``), so the run starts from its initial state; with
@@ -1178,6 +1229,8 @@ def _load_for_run(args: argparse.Namespace, *, save: bool = True) -> tuple[Any, 
     from bngsim._exceptions import BngsimError, UsageError
 
     model = Model.load(args.model)
+    # Before any --set: what a batch's rows would start from without one.
+    probe = model.clone() if rows is not None else None
     done: dict[str, float] = {}
     species = False
     for name, number in _parse_sets(args.set):
@@ -1199,8 +1252,48 @@ def _load_for_run(args: argparse.Namespace, *, save: bool = True) -> tuple[Any, 
             ) from error
         done[name] = number
     if species and save:
+        if probe is not None and rows is not None:
+            _refuse_lost_doses(probe, rows, args, done)
         model.save_concentrations()
     return model, done
+
+
+def _refuse_lost_doses(
+    probe: Any, rows: list[dict[str, float]], args: argparse.Namespace, done: dict[str, float]
+) -> None:
+    """Refuse a species ``--set`` beside batch rows whose parameters seed a
+    species' starting value. The rows start from the model's initial state,
+    which the species ``--set`` has to become (``save_concentrations``), and
+    that holds every species at the value saved: a row's dose would be dropped.
+    Not saving drops the ``--set`` instead. Neither is the batch asked for."""
+    import numpy as np
+
+    from bngsim._exceptions import BngsimError, UsageError
+
+    for name, number in done.items():
+        if name not in probe.species_names:
+            probe.set_param(name, number)
+    start = np.asarray(probe.get_state(), dtype=float)
+    names = list(probe.species_names)
+    for i, row in enumerate(rows):
+        row_model = probe.clone()
+        try:
+            row_model.set_params(row)
+        except (BngsimError, ValueError):
+            continue  # a name the call refuses, it refuses itself
+        moved = np.asarray(row_model.get_state(), dtype=float) != start
+        if moved.any():
+            dosed = [names[j] for j in np.flatnonzero(moved)]
+            set_species = [n for n in done if n in names]
+            call = args.command.replace("-", "_")
+            raise UsageError(
+                f"--set {', '.join(set_species)} with --params: {call} starts every row "
+                "from the model's initial state, so a species --set has to become that "
+                f"state, and row {i}'s {', '.join(sorted(row))} could then not move "
+                f"{', '.join(dosed)}, whose start it sets. Leave the species out of --set, "
+                "or run that row with `bngsim run`.",
+                details={"argument": "--set", "row": i, "species": dosed},
+            )
 
 
 def _do_run(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
@@ -1408,7 +1501,7 @@ def _stack(rows: list[Any], args: argparse.Namespace, extra: dict[str, Any]) -> 
 def _run_batch(args: argparse.Namespace) -> tuple[Any, str]:
     _validate(args)
     rows = _parse_params(args.params)
-    model, done = _load_for_run(args)
+    model, done = _load_for_run(args, rows=rows)
     sim = _simulator(args, model)
     t_span, n_points = _span(args)
     # run_batch bounds each row by its timeout: share the command's limit
@@ -1544,7 +1637,7 @@ def _steady_state_batch(args: argparse.Namespace) -> tuple[Any, str]:
 
     _validate(args)
     rows = _parse_params(args.params)
-    model, done = _load_for_run(args)
+    model, done = _load_for_run(args, rows=rows)
     kw = _steady_kwargs(args)
     if args.n_workers is not None:
         kw["n_workers"] = args.n_workers
@@ -1561,7 +1654,7 @@ def _steady_state_batch(args: argparse.Namespace) -> tuple[Any, str]:
         "steady_state_batch",
         kw,
         form,
-        _steady_form.steady_state_batch_arrays(found),
+        _steady_form.steady_state_batch_arrays(found, rows),
         done,
     )
     head = f"{form['n_converged']} of {form['n_rows']} rows converged"
@@ -1812,7 +1905,8 @@ def _deadline(seconds: float, call: str) -> Iterator[None]:
                 return
             _expire(call, seconds, time.monotonic() - start)
 
-    watchdog = threading.Timer(seconds, expire)
+    # A limit past what a timer can wait (about 292 years) is no limit.
+    watchdog = threading.Timer(min(seconds, threading.TIMEOUT_MAX), expire)
     watchdog.daemon = True
     watchdog.start()
     try:
@@ -2034,7 +2128,11 @@ def _command_word(argv: list[str]) -> int | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """``bngsim`` and ``python -m bngsim``. Returns the exit code."""
+    """``bngsim`` and ``python -m bngsim``. Returns the exit code, except where
+    a call with no time limit of its own (``run-until``, the steady-state
+    commands, ``run-bngl``) runs past ``--timeout``: the process then ends
+    there with exit 5 (``os._exit``, so no ``atexit`` handler runs), whoever
+    called this, since the call cannot be stopped in its thread."""
     args_list = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in args_list
     if sys.stdout is None or sys.stderr is None:

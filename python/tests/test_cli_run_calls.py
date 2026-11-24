@@ -192,6 +192,43 @@ def test_a_batch_row_past_its_share_of_the_limit_exits_5():
     assert error["details"]["timeout"] == pytest.approx(0.25)
 
 
+_DOSE = "compartment c = 1; species A in c, B in c; A0 = 1; A = A0; B = 0; k = 1; J: A -> B; k*A\n"
+
+
+@pytest.mark.parametrize("command", ["run-batch", "steady-state-batch"])
+def test_a_species_set_beside_rows_that_dose_a_species_is_refused(tmp_path, command):
+    # A0 seeds A. With B set, the rows start from the state saved, where A is
+    # held at its saved value, so A0 = 10 would not move A: the dose would be
+    # dropped without a word. Refused, naming the row and the species.
+    model = tmp_path / "dose.ant"
+    model.write_text(_DOSE)
+    rows = json.dumps([{"k": 1}, {"A0": 10}])
+    window = ["--t-end", "1"] if command == "run-batch" else []
+    error = _error(_bngsim(command, str(model), *window, "--params", rows, "--set", "B=5",
+                           "--json"), _cli.EXIT_USAGE, "usage.invalid_argument")  # fmt: skip
+    assert error["details"]["argument"] == "--set"
+    assert error["details"]["row"] == 1 and error["details"]["species"] == ["A"]
+
+
+def test_a_species_set_beside_rows_that_dose_none_is_where_every_row_starts(tmp_path):
+    model = tmp_path / "dose.ant"
+    model.write_text(_DOSE)
+    rows = [{"k": 1.0}, {"k": 2.0}]
+    d = _json(_bngsim("run-batch", str(model), "--t-end", "1", "--params", json.dumps(rows),
+                      "--set", "B=5", "--set", "A0=3", "--species", "--json"))  # fmt: skip
+    m = Model.load(str(model))
+    m.set_concentration("B", 5.0)
+    m.set_param("A0", 3.0)
+    m.save_concentrations()
+    r = Result.squeeze(list(Simulator(m).run_batch((0, 1), 101, params=rows, timeout=300)))
+    assert d["digest"] == _plain(r.digest(species=True))
+    assert np.asarray(r.species)[:, 0].tolist() == [[3.0, 5.0], [3.0, 5.0]]
+    ss = _json(_bngsim("steady-state-batch", str(model), "--params", json.dumps(rows),
+                       "--set", "B=5", "--species", "--json"))  # fmt: skip
+    by_name = {c["name"]: c for c in ss["result"]["species"]["columns"]}
+    assert by_name["B"]["min"] == pytest.approx(6.0)  # the 1 of A, and the 5 set
+
+
 # ─── parameter-scan ──────────────────────────────────────────────────────────
 
 
@@ -335,6 +372,8 @@ def test_steady_state_batch_gives_statistics_of_the_rows_that_converged(tmp_path
     with np.load(out, allow_pickle=False) as a:
         assert np.array_equal(a["concentrations"], np.array([r.concentrations for r in found]))
         assert list(a["converged"]) == [r.converged for r in found]
+        assert list(a["param_names"]) == ["k1"]
+        assert a["params"].tolist() == [[0.1], [0.2], [0.3]]
 
 
 def test_a_row_that_does_not_converge_is_named_and_left_out_of_the_statistics():
@@ -350,6 +389,21 @@ def test_a_row_that_does_not_converge_is_named_and_left_out_of_the_statistics():
     assert col["n_finite"] == 2
     assert col["mean"] == pytest.approx(np.mean([found[0]._observable_values[0],
                                                  found[2]._observable_values[0]]))  # fmt: skip
+
+
+def test_a_batchs_largest_residual_does_not_depend_on_the_rows_order():
+    from types import SimpleNamespace
+
+    def row(residual):
+        return SimpleNamespace(
+            converged=False, residual=residual, method_used="integration", root_stability="",
+            observable_names=["A"], species_names=["A"], concentrations=np.array([1.0]),
+            _observable_values=np.array([1.0]),
+        )  # fmt: skip
+
+    forms = [_steady_form.steady_state_batch([row(a), row(b)]) for a, b in
+             ((np.nan, 1.0), (1.0, np.nan))]  # fmt: skip
+    assert all(np.isnan(f["largest_residual"]) for f in forms)
 
 
 # ─── steady-states ───────────────────────────────────────────────────────────
@@ -499,6 +553,19 @@ def test_run_bngl_runs_the_actions_as_run_protocol_does(tmp_path):
     assert d["out"] is None
 
 
+def test_an_action_bngsim_cannot_run_as_bng2pl_would_exits_3(tmp_path):
+    bngl = tmp_path / "chain.bngl"
+    bngl.write_text(
+        Path(examples.path("chain", "bngl")).read_text()
+        + 'simulate({method=>"nf",t_end=>1,n_steps=>1})\n'
+    )
+    net = str(examples.path("chain", "net"))
+    run = _bngsim("run-bngl", str(bngl), "--json", script=_NO_BNG2.format(net=net))
+    assert run.returncode == _cli.EXIT_REFUSED, run.stderr
+    assert run.stdout == "" and json.loads(run.stderr)["type"] == "ConversionError"
+    assert _cli.exit_code_for(bngsim.ConversionError("x")) == _cli.EXIT_REFUSED
+
+
 def test_run_bngl_with_no_runs_says_so(tmp_path):
     bngl = tmp_path / "chain.bngl"
     bngl.write_text(Path(examples.path("chain", "bngl")).read_text())
@@ -596,6 +663,13 @@ print("still here")
     assert run.returncode == 0 and run.stdout == "still here\n", run.stderr
 
 
+def test_a_limit_past_what_a_timer_can_wait_is_no_limit():
+    run = _bngsim("steady-state", CHAIN, "--timeout", "1e12", "--json")
+    d = _json(run)
+    assert d["result"]["converged"] is True
+    assert "Exception" not in run.stderr and "Traceback" not in run.stderr
+
+
 def test_run_bngl_is_bounded_too(tmp_path):
     bngl = tmp_path / "long.bngl"
     bngl.write_text(
@@ -649,6 +723,19 @@ _P = json.dumps([{"k1": 1.0}])
           "--steady-state"], "--steady-state"),
         (["parameter-scan", CHAIN, "--t-end", "5", "--parameter", "k1", "--par-scan-vals", "1",
           "--sample-times", "0,1"], "--sample-times"),
+        (["parameter-scan", CHAIN, "--t-end", "5", "--parameter", "k1", "--par-scan-vals", "1,2",
+          "--par-min", "0.1"], "--par-min"),
+        (["parameter-scan", CHAIN, "--t-end", "5", "--parameter", "k1", "--par-scan-vals", "1,2",
+          "--log-scale"], "--log-scale"),
+        (["parameter-scan", CHAIN, "--t-end", "5", "--parameter", "k1", "--par-min", "0.1",
+          "--par-max", "1"], "--n-scan-pts"),
+        (["parameter-scan", CHAIN, "--t-end", "5", "--parameter", "k1"], "--par-min"),
+        (["parameter-scan", CHAIN, "--t-end", "5", "--parameter", "k1", "--par-scan-vals", ","],
+         "--par-scan-vals"),
+        (["steady-state", CHAIN, "--max-columns", "-1"], "--max-columns"),
+        (["run", CHAIN, "--t-end", "5", "--max-columns", "-1"], "--max-columns"),
+        (["steady-states", CHAIN, "--seed", "-1"], "--seed"),
+        (["run-batch", CHAIN, "--t-end", "5", "--params", "twice.csv"], "--params"),
         (["steady-state", CHAIN, "--seed", "1"], "--seed"),
         (["steady-state", CHAIN, "--t-end", "5"], "--t-end"),
         (["steady-state", CHAIN, "--out", "x.h5"], "--out"),
@@ -668,6 +755,7 @@ _P = json.dumps([{"k1": 1.0}])
 )  # fmt: skip
 def test_a_wrong_command_line_exits_2(args, argument, tmp_path):
     (tmp_path / "rows.txt").write_text("k1\n1\n")
+    (tmp_path / "twice.csv").write_text("k1,k1\n1,2\n")
     run = _bngsim(*args, "--json", cwd=tmp_path)
     error = _error(run, _cli.EXIT_USAGE, "usage.invalid_argument")
     assert error["details"].get("argument") == argument, error
