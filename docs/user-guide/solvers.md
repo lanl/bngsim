@@ -46,6 +46,8 @@ integrator (events, rate-law switches).
   Jacobian. `n_jac_formations` counts the Jacobians the solver asked for.
 - `linear_solver` is `0` for the built-in dense LU, `1` for sparse KLU and `2`
   for the BLAS dense factor.
+- `n_roundoff_steps` counts the steps too small to move the clock; see
+  [Steps too small to move the clock](#steps-too-small-to-move-the-clock).
 
 ## The default tolerances, and models in small units
 
@@ -529,13 +531,15 @@ doubles there are 0.125 apart, and each such step was at most 0.0625. ...
 `result.notices` the warning, under the code `solver.roundoff_steps`. A run
 that fails keeps it on its error's `notices`.
 
-A run can take such steps and be right. After a stop, an event or a fast
-transient, CVODE takes steps that short where nothing it reports moves in
-them: `A -> 0` at `k = 1e9` from `t = 1e6` takes 85 and is right at every row.
-The warning cannot tell the two apart. `result.check()` runs the model again at
-a tenth of the tolerance and says whether the answer moved, which it does for
-the decay from `1e15` and not for that one. Tighter tolerances take smaller
-steps and make it worse.
+A run can take such steps and be right at its rows. After a stop, an event or a
+fast transient, CVODE can take steps that short and be past them before the
+next row: `A -> 0` at `k = 1e9` from `t = 1e6` takes dozens as A falls, in its
+first 1e-7, and with rows 0.1 apart every row is right, A being 0 by the first.
+With rows inside that 1e-7 they are not. The warning cannot tell the two apart.
+`result.check()` runs the model again at a tenth of the tolerance and says
+whether the answer moved, which it does for the decay from `1e15` and not for
+the decay at `k = 1e9` on rows 0.1 apart. Tighter tolerances take smaller steps
+and make it worse.
 
 ## When a solve fails on a rate law's domain
 

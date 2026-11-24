@@ -859,11 +859,11 @@ class RoundoffStepWarning(UserWarning):
     Emitted by every ODE run that took one (:meth:`Simulator.run`, and so
     ``run_until``, ``run_batch``, ``parameter_scan`` and
     ``compute_all_sensitivities``), naming how many, the first row recorded
-    after one, and the spacing of the doubles there. Some runs take such a step
-    and come out right: after a stop or an event CVODE restarts with a small
-    step, and a step or two below the spacing of the doubles where the dynamics
-    are slower moves the result by less than the tolerance. The warning cannot
-    tell the two apart, and says what it saw. ``solver_stats["n_roundoff_steps"]``
+    after one, and the spacing of the doubles there. A run can take such steps
+    and be right at its rows: after a stop, an event or a fast transient CVODE
+    can take steps that short and be past them before the next row. The warning
+    cannot tell the two apart; :meth:`Result.check` runs the model again at a
+    tenth of the tolerance and says whether the answer moved. ``solver_stats["n_roundoff_steps"]``
     holds the count, and :attr:`Result.notices` the warning, under the code
     ``solver.roundoff_steps``; a run that fails keeps the notice on its error.
     Tighter tolerances take smaller steps and make it worse. A model that reads

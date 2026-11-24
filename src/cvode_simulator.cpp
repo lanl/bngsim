@@ -16,7 +16,6 @@
 #include "bngsim/atol_vector.hpp"
 #include "bngsim/c_locale_numbers.hpp"
 #include "bngsim/codegen_abi.hpp"
-#include "bngsim/cvodes_roundoff_steps.hpp"
 #include "bngsim/dq_jacobian.hpp"
 #include "bngsim/functional_jac_scatter.hpp"
 #include "bngsim/lapack_dense_linsol.hpp"
@@ -47,6 +46,7 @@
 #include "bngsim/dynamic_library.hpp"
 #include "bngsim/mir_jit.hpp"
 #include "bngsim/sundials_guards.hpp"
+#include "cvodes_roundoff_steps.hpp" // CVODES' count of its t + h == t steps
 
 #include <algorithm>
 #include <array>
@@ -4200,9 +4200,9 @@ struct CvodeSimulator::Impl {
     int roundoff_first_row = -1;
     double roundoff_spacing = 0.0;
     double roundoff_prev_clock = 0.0;
-    // Note row *row*, about to be recorded at *clock* on the integrator's
+    // Note row *row*, about to be recorded at *row_time* on the integrator's
     // clock, as the first past such a step if the run has taken one by now.
-    void note_roundoff_row(void *cvode_mem, int row, double clock) {
+    void note_roundoff_row(void *cvode_mem, int row, double row_time) {
         if (roundoff_first_row < 0 &&
             closed_segments.roundoff_steps + cvodes_roundoff_steps(cvode_mem) > 0) {
             const auto spacing = [](double t) {
@@ -4210,9 +4210,9 @@ struct CvodeSimulator::Impl {
                 return std::nextafter(a, std::numeric_limits<double>::infinity()) - a;
             };
             roundoff_first_row = row;
-            roundoff_spacing = std::max(spacing(roundoff_prev_clock), spacing(clock));
+            roundoff_spacing = std::max(spacing(roundoff_prev_clock), spacing(row_time));
         }
-        roundoff_prev_clock = clock;
+        roundoff_prev_clock = row_time;
     }
     void reset_roundoff_rows(double t_start) {
         roundoff_first_row = -1;

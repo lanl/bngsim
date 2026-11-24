@@ -57,7 +57,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from bngsim import _record
-from bngsim._exceptions import UsageError
+from bngsim._exceptions import RoundoffStepWarning, UsageError
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -347,12 +347,13 @@ def check(
     out["not_resolved"] = []
     out["checks"] = []
 
+    roundoff = any(n.code == "solver.roundoff_steps" for n in result._notices)
     if run is None:
         for name in names:
             out["checks"].append(
                 _verdict(name, "unsupported", note="the result records no run to make again")
             )
-        return _finish(out)
+        return _finish(out, roundoff)
 
     ctx = _Context(result, rec, deadline)
     out["rtol"] = ctx.rtol
@@ -368,10 +369,10 @@ def check(
         out["n_not_resolved"] = len(trace)
         out["not_resolved"] = trace[:MAX_NAMED]
     out["bound"] = TOLERANCE_MOVE
-    return _finish(out)
+    return _finish(out, roundoff)
 
 
-def _finish(out: Report) -> Report:
+def _finish(out: Report, roundoff: bool = False) -> Report:
     statuses = [c["status"] for c in out["checks"]]
     out["ok"] = (
         bool(statuses)
@@ -381,14 +382,27 @@ def _finish(out: Report) -> Report:
     )
     out["n_pass"] = statuses.count("pass")
     out["n_diff"] = statuses.count("diff")
-    out["next"] = _next(out)
+    out["next"] = _next(out, roundoff)
     return out
 
 
-def _next(out: Report) -> str:
-    """What to do next, in one sentence."""
+#: The next step for a run that took steps too small to move its clock
+#: (issue #1837) and moves with the tolerance: a tighter one makes it worse.
+ROUNDOFF_NEXT = (
+    "The answer moves with the tolerance, and the run took steps too small to move "
+    "its clock (its notice solver.roundoff_steps), which a tighter tolerance makes "
+    "worse: read the rows from the time the notice names on as suspect, and run "
+    "nearer t = 0 where the model allows it."
+)
+
+
+def _next(out: Report, roundoff: bool = False) -> str:
+    """What to do next, in one sentence. *roundoff*: the run took steps
+    where t + h == t."""
     diffs = [c for c in out["checks"] if c["status"] == "diff"]
     if diffs and diffs[0]["name"] == "tolerance":
+        if roundoff:
+            return ROUNDOFF_NEXT
         return (
             "The answer moves when the tolerance is tightened: rerun at a tighter rtol and "
             "atol (result.rerun(rtol=..., atol=...)) until it does not, and report that run."
@@ -415,6 +429,8 @@ def _next(out: Report) -> str:
     if any(c["status"] == "exception" for c in out["checks"]):
         return "A changed run raised: read its note before relying on the result."
     if any(c["status"] == "no_base" for c in out["checks"]) or out.get("converged") is False:
+        if roundoff:
+            return ROUNDOFF_NEXT
         return (
             "The run is not converged at its own tolerance, so no path could be judged: "
             "rerun at a tighter rtol and atol and check that."
@@ -517,7 +533,12 @@ class _Context:
             own = self.run.get("timeout")
             changes["timeout"] = left if own is None else min(left, float(own))
         try:
-            return self.result.rerun(**changes)
+            with warnings.catch_warnings():
+                # A rerun's steps where t + h == t are the check's to judge, not
+                # the caller's to be warned of: on a run that took them, every
+                # rerun takes more (issue #1837). They stay on its notices.
+                warnings.simplefilter("ignore", RoundoffStepWarning)
+                return self.result.rerun(**changes)
         except Exception as e:
             if self.deadline is not None and _timed_out(e):
                 raise _Out from e

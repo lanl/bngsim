@@ -97,6 +97,7 @@ from bngsim._result import (
     _resolve_output_selector,
     _state_digest,
     _warn_one_sided,
+    _warnings_held,
 )
 from bngsim._sample_times import (
     normalize_sample_times,
@@ -343,18 +344,28 @@ def _roundoff_steps_message(
 ) -> str:
     """What a run's steps where t + h == t were (issue #1837): *steps* of
     them, the first row recorded after one at *first_row* of *rows* (-1 for
-    none) and the spacing of the doubles there."""
+    none), and *spacing*, the spacing of the doubles on the clock the run was
+    integrated on between that row and the one before."""
     text = (
         f"CVODE took {steps} step{'' if steps == 1 else 's'} too small to move its clock "
         "(t + h == t in double precision)"
     )
     where = ""
+    own_clock = False
     if 0 <= first_row < len(rows):
-        after = f"after t = {float(rows[first_row - 1])!r}, " if first_row > 0 else ""
-        where = f"t = {float(rows[first_row])!r}"
+        at = [float(rows[first_row])]
+        after = ""
+        if first_row > 0:
+            at.append(float(rows[first_row - 1]))
+            after = f"after t = {at[1]!r} and "
+        where = f"t = {at[0]!r}"
+        # A run moved onto a clock counted from its start (a far run of a model
+        # that reads no clock) has finer doubles there than its rows' times.
+        own_clock = spacing < max(float(np.spacing(abs(t))) for t in at)
+        clock = "on the run's own clock, counted from its start, " if own_clock else ""
         text += (
-            f", {after}by {where}: the doubles there are {spacing:.3g} apart, and each "
-            f"such step was at most {spacing / 2:.3g}"
+            f", the first {after}by {where}, where {clock}the doubles are {spacing:.3g} "
+            f"apart, so that such a step is at most {spacing / 2:.3g}"
         )
     if raised:
         text += "; the run then failed." if where else " before the run failed."
@@ -362,16 +373,74 @@ def _roundoff_steps_message(
         rows_on = f"the rows from {where} on" if where else "the rows after them"
         text += (
             ". Such a step moves the state and not the time, so "
-            f"{rows_on} can be wrong, with no solver error."
+            f"{rows_on} can be wrong, with no solver error. Result.check() runs it "
+            "again at a tenth of the tolerance and says whether the answer moved."
         )
-        text += (
-            " Result.check() runs it again at a tenth of the tolerance and says whether "
-            "the answer moved."
-        )
-    return text + (
-        " Tighter tolerances take smaller steps and make it worse; where the model "
-        "allows it, run nearer t = 0, where the doubles are finer."
+    text += " Tighter tolerances take smaller steps and make it worse"
+    if own_clock:
+        return text + "."
+    return text + "; where the model allows it, run nearer t = 0, where the doubles are finer."
+
+
+def _roundoff_steps_of(core: Any) -> str | None:
+    """The message for a returned core result's steps where t + h == t, or
+    None where it took none."""
+    stats = core.solver_stats
+    if stats.n_roundoff_steps <= 0:
+        return None
+    return _roundoff_steps_message(
+        stats.n_roundoff_steps,
+        stats.roundoff_first_row,
+        stats.roundoff_spacing,
+        np.asarray(core.time),
     )
+
+
+def _say_roundoff_steps(core: Any) -> None:
+    """Warn of a returned run's steps where t + h == t, and record them with
+    the call (issue #1837). In a worker thread whose warnings are held, record
+    them only: the caller warns once the results are back on its thread
+    (:func:`_warn_held_roundoff_steps`)."""
+    message = _roundoff_steps_of(core)
+    if message is None:
+        return
+    if _warnings_held():
+        _notices.note(RoundoffStepWarning.__name__, "solver.roundoff_steps", message)
+        return
+    _notices.warn(
+        message, RoundoffStepWarning, code="solver.roundoff_steps", stacklevel=_notices.OUTSIDE
+    )
+
+
+def _note_roundoff_steps_raised(sim: Any, times: Any) -> None:
+    """Record the steps where t + h == t of the run *sim* last made, which
+    raised, with the call, so that they go on its error (issue #1857). Not
+    warned: under -W error a warning raised here would replace the run's own
+    error."""
+    steps, first_row, spacing = sim.last_run_roundoff_steps()
+    if steps > 0:
+        _notices.note(
+            RoundoffStepWarning.__name__,
+            "solver.roundoff_steps",
+            _roundoff_steps_message(steps, first_row, spacing, _grid(times), raised=True),
+        )
+
+
+def _warn_held_roundoff_steps(results: Iterable[Result]) -> None:
+    """Warn, on the caller's thread, of the steps where t + h == t that runs
+    made in worker threads recorded there (issue #1837), as the threads would
+    have warned of them."""
+    for r in results:
+        core = getattr(r, "_core", None)
+        message = None if core is None else _roundoff_steps_of(core)
+        if message is not None:
+            _notices.warn(
+                message,
+                RoundoffStepWarning,
+                code="solver.roundoff_steps",
+                stacklevel=_notices.OUTSIDE,
+                record=False,
+            )
 
 
 def _abbreviate(names: list[str], limit: int = _SKIP_WARN_NAME_LIMIT) -> str:
@@ -5857,29 +5926,9 @@ class Simulator:
         try:
             out = self._ode_attempts(times, opts, restore, sim, core)
         except BaseException:
-            steps, first_row, spacing = sim.last_run_roundoff_steps()
-            if steps > 0:
-                # Recorded on the error, and not warned: under -W error a
-                # warning raised here would replace the run's own error.
-                _notices.note(
-                    RoundoffStepWarning.__name__,
-                    "solver.roundoff_steps",
-                    _roundoff_steps_message(steps, first_row, spacing, _grid(times), raised=True),
-                )
+            _note_roundoff_steps_raised(sim, times)
             raise
-        stats = out.solver_stats
-        if stats.n_roundoff_steps > 0:
-            _notices.warn(
-                _roundoff_steps_message(
-                    stats.n_roundoff_steps,
-                    stats.roundoff_first_row,
-                    stats.roundoff_spacing,
-                    np.asarray(out.time),
-                ),
-                RoundoffStepWarning,
-                code="solver.roundoff_steps",
-                stacklevel=_notices.OUTSIDE,
-            )
+        _say_roundoff_steps(out)
         return out
 
     def _ode_attempts(self, times, opts, restore, sim=None, core=None):
@@ -7161,6 +7210,7 @@ class Simulator:
         if in_workers:
             for r in results:
                 _warn_one_sided(r._one_sided_sensitivities, note=False)
+            _warn_held_roundoff_steps(results)
         if self._atol_is_default(atol):
             self._warn_atol_above_scale(results, "ODE batch", per_result=row_atols)
 
@@ -9387,6 +9437,14 @@ class Simulator:
         )
         stitched._one_sided_sensitivities = _merge_one_sided(chunk_results)
         _warn_one_sided(stitched._one_sided_sensitivities)
+        # Each chunk recorded its steps where t + h == t; all of them integrate
+        # the one trajectory, so the call warns once, of the chunk that took the
+        # most (issue #1837).
+        taken = [r for r in chunk_results if r._solver_stats.get("n_roundoff_steps", 0) > 0]
+        if taken:
+            _warn_held_roundoff_steps(
+                [max(taken, key=lambda r: r._solver_stats["n_roundoff_steps"])]
+            )
         # Carry the #198 support map so an unsupported expression selector raises
         # the specific reason on the stitched result too.
         stitched._expression_sens_support = self._expression_sens_support()
@@ -9623,9 +9681,14 @@ class Simulator:
         except SensitivityUnsupportedError:
             # The solver's refusal of the model mid-run (issue #1279), typed as
             # one raised while the chunk sets up: no column runs alone either.
+            _note_roundoff_steps_raised(sim, ts)
             raise
         except RuntimeError as e:
+            _note_roundoff_steps_raised(sim, ts)
             raise SimulationError(f"Sensitivity chunk failed (params={sens_params}): {e}") from e
+        # Recorded with the chunk, which holds its warnings; the stitched
+        # result warns of them on the caller's thread (issue #1837).
+        _say_roundoff_steps(core_result)
 
         # Against the clone the chunk ran on: the stamp writes each rule target
         # back into the model it names (#1510), and this call never advances

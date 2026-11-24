@@ -336,6 +336,7 @@ LEFT_OUT = (
     "bngsim:ProtocolResult",
     "bngsim:ProtocolRun",
     "bngsim:ReactionKernel",
+    "bngsim:RoundoffStepWarning",
     "bngsim:RuleMonkeySession",
     "bngsim:RuleMonkeyWarning",
     "bngsim:SensitivityRefusedDuringRunError",

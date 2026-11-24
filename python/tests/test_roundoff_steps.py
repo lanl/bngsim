@@ -131,10 +131,11 @@ def test_a_decay_far_out_that_reads_the_clock_warns_of_its_steps(tmp_path, monke
     assert len(found) == 1
     message = str(found[0].message)
     assert f"CVODE took {steps} steps too small to move its clock" in message
-    assert f"by t = {FAR + 5.0!r}" in message and f"after t = {FAR!r}" in message
-    assert f"the doubles there are {SPACING_FAR:.3g} apart" in message
-    assert f"at most {SPACING_FAR / 2:.3g}" in message
+    assert f"the first after t = {FAR!r} and by t = {FAR + 5.0!r}," in message
+    assert f"where the doubles are {SPACING_FAR:.3g} apart" in message
+    assert f"such a step is at most {SPACING_FAR / 2:.3g}" in message
     assert f"the rows from t = {FAR + 5.0!r} on can be wrong" in message
+    assert "run nearer t = 0" in message
     # Named at the caller's line, not inside bngsim.
     assert found[0].filename == __file__
 
@@ -189,7 +190,51 @@ def test_a_late_switch_over_2_46_warns_of_its_steps(tmp_path):
     message = str(found[0].message)
     assert f"CVODE took {steps} steps" in message
     assert f"by t = {span!r}" in message
-    assert f"the doubles there are {SPACING_2_46:.3g} apart" in message
+    # The larger spacing of the two rows', at 2^46 and not at 0.
+    assert f"where the doubles are {SPACING_2_46:.3g} apart" in message
+    assert any(n["code"] == "solver.roundoff_steps" for n in r.notices)
+
+
+def _late_switch(tmp_path: Path, span: float) -> bngsim.Model:
+    path = tmp_path / "late.net"
+    path.write_text(LATE_SWITCH_NET % (span - 2.0,))
+    return bngsim.Model.from_net(str(path))
+
+
+def test_a_run_on_its_own_clock_names_the_spacing_on_that_clock(tmp_path):
+    """The late switch reads no clock (its switch is on the counter C, which
+    starts at 0.5 wherever the run does), so from 1e15 its run is integrated on
+    a clock counted from its start (issue #1681), and the steps it takes 2^46
+    in are where the doubles on that clock are 2^-6 apart, not 0.125 as at
+    1e15."""
+    span = 2.0**46
+    sim = bngsim.Simulator(_late_switch(tmp_path, span), "ode")
+    r, caught = _run(sim, sample_times=[FAR, FAR + span], rtol=1e-10, atol=1e-12)
+    found = _roundoff(caught)
+    assert len(found) == 1 and r.solver_stats["n_roundoff_steps"] > 0
+    message = str(found[0].message)
+    assert (
+        f"where on the run's own clock, counted from its start, the doubles are "
+        f"{SPACING_2_46:.3g} apart" in message
+    )
+    # The run is integrated from 0 already: nothing to move nearer it.
+    assert "nearer t = 0" not in message
+
+
+def test_compute_all_sensitivities_warns_once_of_its_steps(tmp_path):
+    """Its chunks run on their own simulators, held for the caller's thread:
+    the call warns once, at the caller's line, and the result keeps the notice."""
+    span = 2.0**46
+    sim = bngsim.Simulator(_late_switch(tmp_path, span), "ode")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        r = sim.compute_all_sensitivities(
+            params=["sigma", "k"], t_span=(0.0, span), n_points=2, rtol=1e-10, atol=1e-12
+        )
+    found = _roundoff(caught)
+    assert len(found) == 1
+    assert found[0].filename == __file__
+    assert r.solver_stats["n_roundoff_steps"] > 0
     assert any(n["code"] == "solver.roundoff_steps" for n in r.notices)
 
 
@@ -209,9 +254,12 @@ def test_the_steps_before_an_event_are_counted_after_it():
     assert len(_roundoff(caught)) == 1
 
 
-def test_a_run_that_fails_keeps_the_notice_on_its_error(tmp_path):
+@pytest.mark.parametrize("cold", [False, True], ids=["default", "cold-path"])
+def test_a_run_that_fails_keeps_the_notice_on_its_error(tmp_path, monkeypatch, cold):
     """A run that raises has no Result; the steps it took go on its error
     (issue #1857), and no warning is raised beside the error."""
+    if cold:
+        monkeypatch.setenv("BNGSIM_NO_WARM_CVODE", "1")
     sim = bngsim.Simulator(_decay(tmp_path), "ode")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -224,6 +272,80 @@ def test_a_run_that_fails_keeps_the_notice_on_its_error(tmp_path):
     assert "before the run failed" in notes[0]["message"]
     assert _roundoff(caught) == []
     assert any(n["code"] == "solver.roundoff_steps" for n in info.value.to_dict()["notices"])
+
+
+def test_a_run_that_fails_after_a_row_names_it():
+    """The steps came before the row at 1e15 + 5, and the run failed after it,
+    where ln(1e15 + 7 - t) leaves its domain."""
+    b = ModelBuilder()
+    b.add_parameter("k", 1.0)
+    a = b.add_species("A", 1.0)
+    b.add_function("f", "k + 1e-300*ln(1000000000000007 - time())")
+    b.add_reaction([a], [], "functional", "f")
+    sim = bngsim.Simulator(bngsim.Model(_core=b.build()), "ode")
+    with pytest.raises(bngsim.SimulationError) as info:
+        sim.run(sample_times=[FAR, FAR + 5.0, FAR + 10.0])
+    (note,) = [n for n in info.value.notices if n["code"] == "solver.roundoff_steps"]
+    assert f"the first after t = {FAR!r} and by t = {FAR + 5.0!r}," in note["message"]
+    assert "; the run then failed." in note["message"]
+
+
+@pytest.mark.parametrize("threads", [None, 2], ids=["sequential", "threads"])
+def test_a_batch_warns_at_the_callers_line(tmp_path, threads):
+    """Rows run in worker threads record their steps there, and the batch
+    warns of them on the caller's thread, as a sequential batch does: at the
+    caller's line, and, under -W error, as the warning and not a row failure."""
+    sim = bngsim.Simulator(_decay(tmp_path), "ode")
+    kw = {"t_span": (FAR, FAR + 10.0), "n_points": 3, "params": [{"k": 1.0}, {"k": 1e-9}]}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        rows = sim.run_batch(num_processors=threads, **kw)
+    found = _roundoff(caught)
+    assert len(found) == 1
+    assert found[0].filename == __file__
+    assert [n["code"] for n in rows[0].notices].count("solver.roundoff_steps") == 1
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", bngsim.RoundoffStepWarning)
+        with pytest.raises(bngsim.RoundoffStepWarning):
+            sim.run_batch(num_processors=threads, **kw)
+
+
+def test_run_until_and_a_scan_say_so_too(tmp_path):
+    """Each runs through run(), and each result keeps its own notice."""
+    sim = bngsim.Simulator(_decay(tmp_path), "ode")
+    sim.set_time(FAR)
+    r, caught = _run_until(sim, FAR + 5.0)
+    assert r.solver_stats["n_roundoff_steps"] > 0 and len(_roundoff(caught)) == 1
+    sim = bngsim.Simulator(_decay(tmp_path), "ode")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        points = sim.parameter_scan("k", [1.0, 1e-9], t_span=(FAR, FAR + 10.0), n_points=3)
+    assert len(_roundoff(caught)) == 1
+    codes = [[n["code"] for n in p.notices] for p in points]
+    assert "solver.roundoff_steps" in codes[0] and "solver.roundoff_steps" not in codes[1]
+
+
+def _run_until(sim, t):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = sim.run_until(t)
+    return result, caught
+
+
+def test_check_judges_such_a_run_without_warning_of_its_reruns(tmp_path):
+    """Result.check(), which the warning points to, flags the decay from 1e15,
+    tells what to do without the advice to tighten the tolerance, and warns of
+    none of its own reruns' steps, even under -W error."""
+    from bngsim._check import ROUNDOFF_NEXT
+
+    sim = bngsim.Simulator(_decay(tmp_path), "ode")
+    r, _ = _run(sim, sample_times=[FAR, FAR + 5.0, FAR + 10.0])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", bngsim.RoundoffStepWarning)
+        report = r.check(checks=["tolerance"])
+    assert report["ok"] is False
+    assert [c["status"] for c in report["checks"]] == ["diff"]
+    assert report["next"] == ROUNDOFF_NEXT
 
 
 def test_a_batch_puts_each_rows_notice_on_its_own_result(tmp_path):
