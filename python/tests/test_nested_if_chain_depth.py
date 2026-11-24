@@ -137,6 +137,9 @@ S5 = -0.015 * A5
         ("if(a,b,if(c,d,e))", "((a) ? (b) : (c) ? (d) : (e))"),
         ("if(a, b, if (c, d, if(x, y, z)) )", "((a) ? (b) : (c) ? (d) : (x) ? (y) : (z))"),
         ("1+if(a,b,if(c,d,e))*if(p,q,r)", "1+((a) ? (b) : (c) ? (d) : (e))*((p) ? (q) : (r))"),
+        # In brackets that hold nothing else.
+        ("if(a,b,(if(c,d,e)))", "((a) ? (b) : (c) ? (d) : (e))"),
+        ("if(a,b, ( (if(c,d,(if(x,y,z)))) ) )", "((a) ? (b) : (c) ? (d) : (x) ? (y) : (z))"),
     ],
 )
 def test_an_if_that_is_all_of_the_false_branch_continues_the_chain(expr, expect):
@@ -152,6 +155,8 @@ def test_an_if_that_is_all_of_the_false_branch_continues_the_chain(expr, expect)
         # Part of the false branch, not all of it.
         ("if(a,b,if(c,d,e)*2)", "((a) ? (b) : (((c) ? (d) : (e))*2))"),
         ("if(a,b,if(c,d,e)+if(p,q,r))", "((a) ? (b) : (((c) ? (d) : (e))+((p) ? (q) : (r))))"),
+        ("if(a,b,(if(c,d,e))*2)", "((a) ? (b) : ((((c) ? (d) : (e)))*2))"),
+        ("if(a,b,(if(c,d,e))+(x))", "((a) ? (b) : ((((c) ? (d) : (e)))+(x)))"),
     ],
 )
 def test_any_other_if_in_an_if_is_nested_as_before(expr, expect):
@@ -168,10 +173,16 @@ def test_a_chain_reads_its_comparisons_as_the_nested_form_did():
     )
 
 
+def _bracketed_chain(n: int) -> str:
+    """The issue's table with each false branch in brackets of its own."""
+    return "".join(f"if((time()<={i + 1}),{_day_value(i)},(" for i in range(n)) + "0" + "))" * n
+
+
+@pytest.mark.parametrize("chain", [_chain, _bracketed_chain])
 @pytest.mark.parametrize("n", [128, 340])
-def test_the_c_of_a_chain_is_no_deeper_than_of_two_ifs(n):
+def test_the_c_of_a_chain_is_no_deeper_than_of_two_ifs(n, chain):
     def depth(links):
-        return _bracket_depth(cg._expr_to_c(f"k*({_chain(links)})", ["k"], [], [], []))
+        return _bracket_depth(cg._expr_to_c(f"k*({chain(links)})", ["k"], [], [], []))
 
     assert depth(n) == depth(2) < CLANG_BRACKET_LIMIT
 
@@ -225,10 +236,23 @@ def test_the_c_of_a_nested_piecewise_is_no_deeper_than_of_two(n):
 # ── The parse ────────────────────────────────────────────────────────────────
 
 
-def test_the_parse_text_of_a_chain_nests_as_it_always_has():
-    assert cg._translate_bngl_if_to_piecewise("if(a,b,if(c, d, if (x,y,z)))") == (
-        "Piecewise((b, a), (Piecewise((d, c), (Piecewise((y, x), (z, True)), True)), True))"
-    )
+@pytest.mark.parametrize(
+    "expr, expect",
+    [
+        (
+            "if(a,b,if(c, d, if (x,y,z)))",
+            "Piecewise((b, a), (Piecewise((d, c), (Piecewise((y, x), (z, True)), True)), True))",
+        ),
+        # Its brackets too.
+        (
+            "if(a,b,( if(c,d,(if(x,y,z))) ))",
+            "Piecewise((b, a), (( Piecewise((d, c), "
+            "((Piecewise((y, x), (z, True))), True)) ), True))",
+        ),
+    ],
+)
+def test_the_parse_text_of_a_chain_nests_as_it_always_has(expr, expect):
+    assert cg._translate_bngl_if_to_piecewise(expr) == expect
 
 
 def _window(n: int, value) -> str:
@@ -273,14 +297,17 @@ def test_a_chain_of_1000_links_is_walked_without_a_frame_for_each():
     def chain(n):
         return "".join(f"if(time()<{i + 1},{i % 7}," for i in range(n)) + "0" + ")" * n
 
-    text = chain(1000)
-    assert list(_iter_if_conditions(text)) == [f"time()<{i + 1}" for i in range(1000)]
-    assert cg._translate_bngl_if_to_piecewise(text).count("Piecewise(") == 1000
+    def bracketed(n):
+        return "".join(f"if(time()<{i + 1},{i % 7},(" for i in range(n)) + "0" + "))" * n
 
     def depth(c):
         return _bracket_depth(cg._expr_to_c(c, [], [], [], []))
 
-    assert depth(text) == depth(chain(2))
+    for written in (chain, bracketed):
+        text = written(1000)
+        assert list(_iter_if_conditions(text)) == [f"time()<{i + 1}" for i in range(1000)]
+        assert cg._translate_bngl_if_to_piecewise(text).count("Piecewise(") == 1000
+        assert depth(text) == depth(written(2))
 
 
 # ── Models ───────────────────────────────────────────────────────────────────

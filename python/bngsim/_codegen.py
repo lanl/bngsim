@@ -1632,20 +1632,22 @@ def _translate_bngl_if_to_piecewise(expr: str) -> str:
         # Recurse so nested ifs are translated too, except along a chain of
         # false branches that are each all one if(): those are followed here
         # and written in as each other's default, the same nested text without
-        # a Python frame per link (:func:`_if_call_args`).
+        # a Python frame per link (:func:`_bracketed_if_call`).
+        # Each link keeps the brackets its false branch was written in.
         links = []
         while True:
             c_raw, t_raw, f_raw = (a.strip() for a in args)
             c = _translate_bngl_if_to_piecewise(c_raw)
             t = _translate_bngl_if_to_piecewise(t_raw)
-            links.append((c, t))
-            link = _if_call_args(f_raw)
+            link = _bracketed_if_call(f_raw)
             if link is None:
+                links.append((c, t, "", ""))
                 break
-            args = link
+            before, args, after = link
+            links.append((c, t, before, after))
         piecewise = _translate_bngl_if_to_piecewise(f_raw)
-        for c, t in reversed(links):
-            piecewise = f"Piecewise(({t}, {c}), ({piecewise}, True))"
+        for c, t, before, after in reversed(links):
+            piecewise = f"Piecewise(({t}, {c}), ({before}{piecewise}{after}, True))"
         out_parts.append(piecewise)
         cursor = close_paren + 1
     return "".join(out_parts)
@@ -6903,9 +6905,9 @@ def _if_call_args(expr: str) -> list[str] | None:
     the next link of one C ``?:`` chain. Nested, each link cost two levels of
     brackets, and the C passed clang's limit of 256 at 128 links.
 
-    :func:`_translate_bngl_if_to_piecewise` follows the chain with it too, to
-    need no Python frame per link, but writes the nested ``Piecewise`` it always
-    has. One flat ``Piecewise`` is not the same thing to sympy: it merges
+    :func:`_translate_bngl_if_to_piecewise` follows the chain too, to need no
+    Python frame per link, but writes the nested ``Piecewise`` it always has.
+    One flat ``Piecewise`` is not the same thing to sympy: it merges
     neighbouring links of one value into an ``Or`` in normal form, which grows
     exponentially over window conditions, and it drops a link whose condition
     the ones before it leave nothing for, by reasoning that holds only for
@@ -6924,6 +6926,32 @@ def _if_call_args(expr: str) -> list[str] | None:
     return args if len(args) == 3 else None
 
 
+def _bracketed_if_call(expr: str) -> tuple[str, list[str], str] | None:
+    """``(before, [cond, t, f], after)`` where ``expr`` is one ``if(cond, t, f)``
+    call in brackets that hold nothing else, ``((if(c, t, f)))``, or in none;
+    ``before`` and ``after`` are those brackets and the blanks beside them.
+    Else ``None``.
+
+    The false branch of a chain may be written in brackets of its own,
+    ``if(c1, t1, (if(c2, t2, f)))``, and is the next link all the same
+    (:func:`_if_call_args`).
+    """
+    start, end = 0, len(expr)
+    while True:
+        while start < end and expr[start].isspace():
+            start += 1
+        while end > start and expr[end - 1].isspace():
+            end -= 1
+        if start < end and expr[start] == "(" and _find_close_paren_strict(expr, start) == end - 1:
+            start, end = start + 1, end - 1
+            continue
+        break
+    args = _if_call_args(expr[start:end])
+    if args is None:
+        return None
+    return expr[:start], args, expr[end:]
+
+
 def _replace_if_calls(expr: str) -> str:
     """Replace ExprTk if(cond, true_val, false_val) with C ternary.
 
@@ -6931,7 +6959,8 @@ def _replace_if_calls(expr: str) -> str:
     C:      ((cond) ? (t) : (f))
 
     Handles nested if() calls correctly by matching parentheses. An if() that is
-    all of another's false branch continues its chain (:func:`_if_call_args`):
+    all of another's false branch, in brackets of its own or not, continues its
+    chain (:func:`_if_call_args`, :func:`_bracketed_if_call`):
 
     ExprTk: if(c1, t1, if(c2, t2, f))
     C:      ((c1) ? (t1) : (c2) ? (t2) : (f))
@@ -6960,9 +6989,10 @@ def _replace_if_calls(expr: str) -> str:
                     cond = _replace_if_calls(cond.strip())
                     true_val = _replace_if_calls(true_val.strip())
                     links.append(f"({cond}) ? ({true_val}) : ")
-                    args = _if_call_args(false_val.strip())
-                    if args is None:
+                    link = _bracketed_if_call(false_val)
+                    if link is None:
                         break
+                    args = link[1]
                 false_val = _replace_if_calls(false_val.strip())
                 result.append(f"({''.join(links)}({false_val}))")
                 # Find end of the if(...) expression
