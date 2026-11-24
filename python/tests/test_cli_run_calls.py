@@ -275,7 +275,9 @@ def test_steady_state_passes_the_solver_options_and_writes_the_arrays(tmp_path):
     ss = Simulator(m).steady_state(**kw)
     assert d["call"]["kwargs"] == kw
     assert d["result"] == _plain(_steady_form.steady_state(ss))
-    assert d["result"]["method_used"] == ss.method_used
+    assert d["result"]["residual"] == ss.residual > 0  # read from the result, not made up
+    assert d["result"]["method_used"] == ss.method_used == "newton"
+    assert d["result"]["n_steps"] == ss.n_steps
     assert d["result"]["root_stability"] == ss.root_stability
     assert d["parameters"]["k1"] == 0.2
     with np.load(out, allow_pickle=False) as f:
@@ -369,6 +371,25 @@ def test_steady_states_lists_each_root_and_the_species_that_tell_them_apart(tmp_
     with np.load(out, allow_pickle=False) as a:
         assert np.array_equal(a["states"], found.states)
         assert np.array_equal(a["basins"], found.basins)
+
+
+def test_steady_states_lists_the_species_that_differ_between_roots(tmp_path):
+    # C is the same at every root and larger than X; X tells the roots apart.
+    # With room for one column, X is listed.
+    model = tmp_path / "two.ant"
+    model.write_text(
+        "species C, X; J1: 2 X -> 3 X; k1*X^2; J2: 3 X -> 2 X; k2*X^3; J3: -> X; k3;"
+        " J4: X -> ; k4*X; J5: C -> C; kc*C; k1 = 0.075; k2 = 1e-4; k3 = 1000; k4 = 16.5;"
+        " kc = 1; X = 50; C = 1000\n"
+    )
+    d = _json(_bngsim("steady-states", str(model), "--n-starts", "30", "--seed", "3",
+                      "--max-columns", "1", "--json"))  # fmt: skip
+    found = Simulator(Model.load(str(model))).steady_states(n_starts=30, seed=3)
+    block = d["result"]["species"]
+    assert [c["name"] for c in block["columns"]] == ["X"]
+    assert block["columns"][0]["values"] == found.states[:, 1].tolist()
+    assert block["n_left_out"] == 1
+    assert d["result"]["stability"] == {"stable": 2, "unstable": 1}
 
 
 # ─── run-bngl ────────────────────────────────────────────────────────────────
