@@ -445,6 +445,21 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "frame report (issue #1566), which cl gives only under /analyze",
     ),
     (
+        "macOS only",
+        _ANYWHERE,
+        "issue #1759's builds for the other Mac architecture: -arch, a Mach-O "
+        "library, and lipo and nm to read it are Apple's. The commands, the Mach-O "
+        "reader and the message are tested on the Linux legs too, and the CC split "
+        "and the message on windows-tail",
+    ),
+    (
+        "needs Rosetta 2",
+        _ANYWHERE,
+        "issue #1759's end-to-end case loads the library into an x86_64 Python under "
+        "Rosetta, which only an Apple Silicon Mac with Rosetta installed has; what "
+        "was built is read with lipo and nm on any Mac",
+    ),
+    (
         "aarch64 only",
         _ANYWHERE,
         "issue #1575's margin test places a branch to the byte in MIR's aarch64 code; "
