@@ -1,5 +1,5 @@
 ---
-summary: "The bngsim command (also python -m bngsim): doctor, guide, examples, inspect, run, check, convert and cache; one JSON object on standard output with --json, errors as JSON on standard error, and an exit code for each outcome."
+summary: "The bngsim command (also python -m bngsim): doctor, guide, examples, inspect, run, check, run-until, run-batch, parameter-scan, the steady-state calls, run-bngl, convert and cache; one JSON object on standard output with --json, errors as JSON on standard error, and an exit code for each outcome."
 ---
 
 # The `bngsim` command
@@ -20,6 +20,13 @@ of its own, so what it prints is what the call returns.
 | `bngsim inspect MODEL [--limit N\|all]` | what the model is, and which methods it admits and why not. Runs nothing. | `bngsim.Model.load(MODEL).describe()` |
 | `bngsim run MODEL --t-end T [...]` | one run from the model's initial state: its record and a digest of its values, the arrays to `--out` | `bngsim.Simulator(bngsim.Model.load(MODEL), ...).run(...)`, `Result.record`, `Result.digest()` |
 | `bngsim check MODEL --t-end T [...]` | the run, then the run made again with one setting changed; exits 6 when the check is not ok | the same, then `Result.check()` |
+| `bngsim run-until MODEL --t-end T --stop-when EXPR` | a run to `T`, cut at the first output point where a condition holds: a condition met exits 0 with the run it cut | `Simulator.add_stop_condition(EXPR)`, `Simulator.run_until(T)` |
+| `bngsim run-batch MODEL --params ROWS --t-end T` | a run per parameter set, digested as a stack | `Simulator.run_batch(params=ROWS)` |
+| `bngsim parameter-scan MODEL --parameter NAME ...` | a run per value of one parameter, digested as a stack | `Simulator.parameter_scan(NAME, ...)` |
+| `bngsim steady-state MODEL` | the steady state the model reaches: the solver's verdict and the values there | `Simulator.steady_state()` |
+| `bngsim steady-state-batch MODEL --params ROWS` | a steady state per parameter set: how many converged, statistics of the rest | `Simulator.steady_state_batch(ROWS)` |
+| `bngsim steady-states MODEL` | the model's distinct steady states from many starts, with each one's stability | `Simulator.steady_states()` |
+| `bngsim run-bngl FILE.bngl` | the file's own actions, as BNG2.pl runs them: a digest of each run | `bngsim.run_bngl(FILE)` |
 | `bngsim convert TOOL ...` | the converters: `sbml2net`, `net2sbml`, `sbml2bngl`, `validate`, `omex` | `bngsim-sbml2net`, `bngsim-net2sbml`, `bngsim-sbml2bngl`, `bngsim-validate-conversion`, `bngsim-omex` |
 | `bngsim cache ...` | the codegen artifact cache | `bngsim-cache` |
 
@@ -47,8 +54,30 @@ bngsim check model.xml --t-end 100 --checks all --json
 - **Replicates:** `bngsim run --replicates N` makes N stochastic runs (`run_replicates`) and digests them as a stack: statistics across runs at the last time. `--replicates 1` is one run. It takes no `--sample-times` or `--steady-state`, as `run_replicates` takes none.
 - **The arrays:** `--out FILE` writes them, replacing any file of that name: `.npz` with NumPy alone, `.h5` or `.hdf5` with h5py (which `Result.load` reads back), or `.csv`/`.tsv` (one kind of column, `--out-kind observables` or `species`; one run only). Any other name, a directory, a missing directory, or `.h5` without h5py is refused before the run.
 - **A time limit, always:** every run has a wall-clock limit, `--timeout` seconds, 600 by default; past it, exit 5. `--replicates N` shares it: each of the N runs may take `--timeout`/N, and the record's `timeout` says so. Loading the model is not counted (a `.bngl` file's BNG2.pl has its own limit). `check`'s reruns share `--budget` seconds (600 by default), on top of the run's; a check that does not fit is reported as `timeout`, and the check is not ok.
-- **A `.bngl` file** can mean one run of the network BNG2.pl generates, or the file's own actions. `bngsim run` makes the first, and asks for `--network` to say so; the second is `bngsim.run_bngl(path)` in Python.
-- **Not commands yet:** `run_batch`, `parameter_scan`, `run_until` and the `steady_state` family. Use Python for those.
+- **A `.bngl` file** can mean the network BNG2.pl generates, or the file's own actions. `bngsim run` and every other command that runs a model read the first, and ask for `--network` to say so; `bngsim run-bngl` runs the second.
+
+## The other run calls
+
+Each is named for its Python call, with `-` for `_` (`bngsim run_batch` is answered with the right name), and takes the options of `bngsim run` that its call can use, spelled as the call's keywords are: any other option is refused, and named, with exit 2. `--set`, `--json`, `--max-columns` and the exit codes are `run`'s.
+
+```bash
+bngsim run-until model.xml --t-end 1000 --stop-when "A_tot < 10" --json
+bngsim run-batch model.xml --t-end 100 --params '[{"kf": 1}, {"kf": 2}]' --out rows.npz
+bngsim parameter-scan model.xml --t-end 100 --parameter kf --par-min 0.1 --par-max 10 --n-scan-pts 9 --log-scale
+bngsim steady-state model.xml --method newton --species --json
+bngsim steady-state-batch model.xml --params rows.csv --json
+bngsim steady-states model.xml --n-starts 200 --seed 1 --json
+bngsim run-bngl model.bngl --out runs/ --json
+```
+
+- **`run-until`** registers each `--stop-when EXPR` (repeatable, checked in order; the expression reads the observables, a species as its name with `(` and `)` written `_`, and `t`) and runs from the model's initial state to `--t-end`. `run_until` integrates the whole span, then cuts the run at the first output point where a condition holds, so `--n-points` sets how finely the cut falls, and the whole span counts against `--timeout`. A condition met is the answer asked for, not an error: the command exits 0 and prints the cut run, as the `StopConditionMet` carries it, with `"stop_condition"` naming it (`null` when none held). It takes `--n-points` (default one per unit of time), `--seed`, `--rtol` and `--atol`, as `run_until` does, and no `--t-start`, `--sample-times` or `--steady-state`. Its `--method` is `ode`, `ssa` or `psa`, as for `run-batch` and `parameter-scan`: those calls run no network-free engine.
+- **`run-batch`** runs once per row of `--params`, each from the initial state, and **`parameter-scan`** once per value of `--parameter` (`--par-scan-vals 1,2,5`, or all of `--par-min`, `--par-max` and `--n-scan-pts`, with `--log-scale` to space them geometrically; not both; `--no-reset-conc` starts each value where the last ended). Both print what `run --replicates` prints: the record and digest of the rows stacked (`Result.squeeze`), with `"seeds"` for a stochastic method, and for a scan `"parameter"` and `"values"`. `--out` takes `.npz` or `.h5`, one file for every row. They take no `--sample-times` or `--steady-state`: rows a steady state cuts at their own times do not stack, and `steady-state-batch` is the steady state per parameter set. A species `--set` before a scan is the state each value starts from, so a parameter that seeds another species still doses it; a scan of a parameter that seeds a species the `--set` holds is refused, since no value would move it.
+- **`--params ROWS`** is JSON, a list of `{name: value}` objects, or a `.json`, `.csv` or `.tsv` file: a header of names, then a row of numbers per set. A name the model does not have is a usage error, as in `--set`, and so is a name given twice in one row. A species `--set` becomes the initial state every row starts from, so it is refused beside a row whose parameters set a species' starting value: that row's dose would be dropped.
+- **`steady-state`** prints `{"model", "call", "parameters", "result", "out", "set"}`: `call` is the call's name and the keywords given, `parameters` the model's at the call, and `result` the solver's verdict (`converged`, `criterion`, `method_used`, `residual`, `newton_distance`, `continued_run_distance`, `root_stability`, the largest real part of the eigenvalues, the steps) and the values at the state returned: the observables, and with `--species` the species, the largest `--max-columns` of each (default 20), listed in the model's order. It takes `--method integration` or `newton` (the call's `method`, not the simulation method: a steady state is of the ODEs), `--criterion`, `--tol`, `--max-time`, `--max-steps`, `--rtol` and `--atol`. **It exits 0 whether or not the solve converged**: read `converged`.
+- **`steady-state-batch`** solves once per row of `--params` (`--n-workers` threads), and `result` gives how many rows converged, the first unconverged rows, and per column statistics across the rows that converged. **`steady-states`** searches from `--n-starts` starts (`--seed`, `--upper`, `--decades`, `--dedupe-rtol`, `--tol`, `--n-workers`), and `result` gives each root's stability, multiplicity and residual, and the value at every root of the species that differ most between them.
+- **`--out`** of the steady-state commands is a `.npz` file: `species_names`, `concentrations` (a row per parameter set for a batch, with the sets as `param_names` and `params`) or `states` (a row per root), `observable_names` and `observables`, and the rest of each result's arrays.
+- **`run-bngl FILE.bngl`** runs the file's actions as `bngsim.run_bngl` does (`--seed`, `--rtol`, `--atol` a number, `--allow-lossy`; `--seed` is refused for a file with no stochastic run, and `--rtol` and `--atol` for one with no ODE run; an action it cannot run as BNG2.pl would is refused before anything runs, exit 3, and an error an action meets while it runs, such as a species the model lacks, exits 1), and prints `{"model", "runs", "out"}`: each run's `index`, `kind`, `label` (its suffix, or `null`), `method` and `digest`, a scan's `"values"` with a digest of its stack, and a bifurcation's sweep back as `"backward"`. `--out DIR` writes each run's arrays to `DIR/N.npz`, or `N-SUFFIX.npz` for a run with a suffix.
+- **A time limit, always:** `run-batch` and `parameter-scan` share `--timeout` among their rows, as `--replicates` does: each row may take `--timeout` over the number of rows, and the record's `timeout` says so. `run-until`, the steady-state commands and `run-bngl`'s actions take no limit of their own in Python, so the command keeps it: past `--timeout` (600 s by default) it reports a `run.timeout` error, exit 5, and the process ends there, with the call stopped where it was. That holds for a program that calls `bngsim._cli.main()` itself, too: the process ends, and no `atexit` handler runs. Loading the model is not counted, and BNG2.pl, for `run-bngl`, has its own limit.
 
 ## Output a program can read
 
