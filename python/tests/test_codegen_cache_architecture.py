@@ -273,7 +273,7 @@ X86_64, ARM64 = 0x01000007, 0x0100000C
         (_thin(ARM64)[:7], None),
         (_fat([]), None),
         (_fat([ARM64, X86_64])[:-1], None),
-        ((0xCAFEBABE).to_bytes(4, "big") + (65).to_bytes(4, "big") + bytes(64), None),
+        (_fat([ARM64] * 65), None),
     ],
     ids=[
         "x86_64", "arm64", "i386", "ppc-big-endian", "universal", "universal-64",
