@@ -254,8 +254,8 @@ def test_network_gen_reads_past_quit_as_the_loader_does() -> None:
 
 @pytest.mark.parametrize(
     "action",
-    ["writeMDL()", 'visualize({type=>"reaction_network"})'],
-    ids=["writeMDL", "visualize-reaction_network"],
+    ["writeMDL()", 'visualize({type=>"reaction_network"})', "simulate_protocol()"],
+    ids=["writeMDL", "visualize-reaction_network", "simulate_protocol"],
 )
 def test_an_action_that_generates_the_network_leaves_network_gen_none(action) -> None:
     """``writeMDL`` and a ``reaction_network`` ``visualize`` generate the network
@@ -595,14 +595,19 @@ def test_combine_protocols_keeps_the_first_specs_network_gen_even_when_none() ->
     assert nf_only.network_gen is None and nf_only.generation_step is not None
     assert combine_protocols([nf_only, capped]).network_gen == "generate_network({max_agg=>5})"
     # An actions block with no model runs on a network loaded on its own, and one
-    # that reads a .net first runs on that: neither generated one (issue #1687).
+    # that reads a .net first runs on that, with a model block or without: none of
+    # them generated one (issue #1687).
     no_model = parse_bngl_protocol(run)
     read_net = parse_bngl_protocol('readFile({file=>"m.net"})\n' + run, strict=False)
-    for spec in (no_model, read_net):
+    model_read_net = parse_bngl_protocol(head + 'readFile({file=>"m.net"})\n' + run, strict=False)
+    for spec in (no_model, read_net, model_read_net):
         assert spec.network_gen is None and spec.generation_step == 0
         assert combine_protocols([spec, capped]).network_gen == "generate_network({max_agg=>5})"
-    # Which of these a spec is lives outside its value: equal after JSON.
-    assert ProtocolSpec.from_json(run_first.to_json()) == run_first
+    # Which of these a spec is lives outside its value: equal after JSON, and read
+    # back from it, the spec merges as one built by hand, the first named cap winning.
+    read_back = ProtocolSpec.from_json(run_first.to_json())
+    assert read_back == run_first
+    assert combine_protocols([read_back, capped]).network_gen == "generate_network({max_agg=>5})"
 
 
 def test_combine_protocols_concatenates_dropped_and_lossy() -> None:

@@ -329,14 +329,16 @@ def test_a_network_free_run_before_generate_network_keeps_its_options(nf_run):
 
 @pytest.mark.parametrize(
     "action",
-    ["writeMDL()", 'visualize({type=>"reaction_network"})'],
-    ids=["writeMDL", "visualize-reaction_network"],
+    ["writeMDL()", 'visualize({type=>"reaction_network"})', "simulate_protocol()"],
+    ids=["writeMDL", "visualize-reaction_network", "simulate_protocol"],
 )
 def test_an_action_that_generates_the_network_takes_none_of_a_later_calls_options(action):
     """Two actions that are not runs generate the network with BNG2.pl's defaults
     when there is none: ``writeMDL`` (``BNGOutput.pm``) and a ``reaction_network``
-    ``visualize`` (``Visualization/Viz.pm``). The ``generate_network`` after either
-    continues that network, so its ``max_iter=>3`` bounds nothing BNG2.pl runs."""
+    ``visualize`` (``Visualization/Viz.pm``). ``simulate_protocol`` runs the model's
+    ``begin protocol`` block, which the search does not read, so it counts as a
+    network run. The ``generate_network`` after any of them continues that
+    network, so its ``max_iter=>3`` bounds nothing BNG2.pl runs."""
     text = (
         "begin model\nend model\n"
         f"{action}\n"

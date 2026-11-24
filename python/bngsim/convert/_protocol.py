@@ -790,8 +790,10 @@ def combine_protocols(
     ``.bngl`` with a model, with ``None`` there and a run with a network method:
     BNG2.pl generated the network those runs start from with its defaults, and the
     merge keeps ``None``. An actions block run on a network loaded on its own, or
-    read from a ``.net``, generated none, and neither did a spec read back from
-    JSON or built by hand, as far as the merge can tell.
+    read from a ``.net``, generated none. A spec read back from JSON, or built by
+    hand, does not carry what the parse found (it is not part of the spec's
+    value), so it merges with the first cap any spec names winning, whatever its
+    source was.
 
     Parameters
     ----------
