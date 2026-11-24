@@ -650,7 +650,10 @@ def test_a_source_through_a_linked_directory_is_the_file_the_os_opens(
     assert os.path.realpath(tmp_path / "real" / "shared" / "ext.xml") in str(excinfo.value)
 
 
-@symlinks_posix
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-specific: the decoy path is built from a POSIX absolute path",
+)
 def test_the_last_resort_s_file_is_read_even_where_the_plugin_finds_another(
     tmp_path, monkeypatch
 ) -> None:
