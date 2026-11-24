@@ -298,6 +298,42 @@ def test_a_network_free_run_before_generate_network_keeps_its_options(nf_run):
     assert generate_network_call(text) == "generate_network({max_stoich=>{R=>5},overwrite=>1})"
 
 
+@pytest.mark.parametrize(
+    "action",
+    ["writeMDL()", 'visualize({type=>"reaction_network"})'],
+    ids=["writeMDL", "visualize-reaction_network"],
+)
+def test_an_action_that_generates_the_network_takes_none_of_a_later_calls_options(action):
+    """Two actions that are not runs generate the network with BNG2.pl's defaults
+    when there is none: ``writeMDL`` (``BNGOutput.pm``) and a ``reaction_network``
+    ``visualize`` (``Visualization/Viz.pm``). The ``generate_network`` after either
+    continues that network, so its ``max_iter=>3`` bounds nothing BNG2.pl runs."""
+    text = (
+        "begin model\nend model\n"
+        f"{action}\n"
+        "generate_network({max_iter=>3,overwrite=>1})\n"
+        'simulate({method=>"ode",t_end=>1})\n'
+    )
+    assert generate_network_call(text) == "generate_network({overwrite=>1})"
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["visualize()", 'visualize({type=>"contactmap"})'],
+    ids=["visualize-regulatory", "visualize-contactmap"],
+)
+def test_a_visualize_that_builds_no_network_keeps_the_options(action):
+    """Only the ``reaction_network`` type generates one; ``regulatory`` is the
+    default type."""
+    text = (
+        "begin model\nend model\n"
+        f"{action}\n"
+        "generate_network({max_iter=>3})\n"
+        'simulate({method=>"ode",t_end=>1})\n'
+    )
+    assert generate_network_call(text) == "generate_network({max_iter=>3,overwrite=>1})"
+
+
 def test_a_generate_network_after_the_first_run_does_not_replace_the_one_before_it():
     """The network the first run starts from is the first ``generate_network``'s, so
     its ``max_iter`` is the one that applies. The source's last call was forwarded,

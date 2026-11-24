@@ -443,17 +443,18 @@ class ProtocolSpec:
     ``network_gen`` keeps the source model's ``generate_network(...)`` call
     **verbatim** when the ``.bngl`` carried one: the call that builds the network
     its runs start from (:func:`_network_generation_call`), so not one after a run
-    with a network method, where BNG2.pl generates the network with its defaults. That
-    directive is still *dropped* from ``steps`` (it is a build directive, not a
-    simulation action), but its text is retained here because it may carry a
-    **finiteness cap** — ``max_stoich`` / ``max_agg`` / ``max_iter`` — without
-    which a rule-based network generates unbounded. A materializer (e.g.
-    :func:`~bngsim.convert._bngl_writer.write_bngl`) that re-emits an actions block
-    honors this instead of prepending a bare ``generate_network({overwrite=>1})``,
-    so a model that is finite only under its cap stays finite (lanl/PyBNF #485).
+    with a network method or another action where BNG2.pl generates the network
+    with its defaults. That directive is still *dropped* from ``steps`` (it is a
+    build directive, not a simulation action), but its text is retained here
+    because it may carry a **finiteness cap** — ``max_stoich`` / ``max_agg`` /
+    ``max_iter`` — without which a rule-based network generates unbounded. A
+    materializer (e.g. :func:`~bngsim.convert._bngl_writer.write_bngl`) that
+    re-emits an actions block honors this instead of prepending a bare
+    ``generate_network({overwrite=>1})``, so a model that is finite only under its
+    cap stays finite (lanl/PyBNF #485).
     ``None`` when the source had no such call (e.g. a protocol composed from
-    SBML/SED-ML events, or a file whose first network run comes first), in which
-    case the bare default is used.
+    SBML/SED-ML events, or a file with a run with a network method before its
+    first ``generate_network``), in which case the bare default is used.
 
     ``generation_step`` is where in ``steps`` the source's network was generated:
     at its first ``generate_network`` or, before one, at its first run, where
@@ -804,10 +805,20 @@ def combine_protocols(
     sources: list[str] = []
     dropped: list[str] = []
     lossy: list[str] = []
-    network_gen: str | None = None
     # Only the first spec's steps can come before a network is generated: the
     # rest run on the network it leaves, after the reset that separates them.
     generation_step = non_empty[0].generation_step
+    if generation_step is not None:
+        # So its call is the one that builds the network, and a None there is
+        # BNG2.pl's defaults (a run with a network method came first), not "no call".
+        network_gen = non_empty[0].network_gen
+    else:
+        # A spec with no source that generated a network (SED-ML, SBML events):
+        # the first contributing spec that names a generate_network carries its
+        # cap through the merge (independent SED-ML files rarely carry one at all).
+        network_gen = next(
+            (spec.network_gen for spec in non_empty if spec.network_gen is not None), None
+        )
     # The parameters as the first spec found them at its generation point,
     # after its pre-generation actions (which the network holds, and a replay
     # skips), for every later spec to start from: one spec's setParameter
@@ -842,10 +853,6 @@ def combine_protocols(
             sources.append(spec.source)
         dropped.extend(spec.dropped)
         lossy.extend(spec.lossy)
-        # Carry a cap through the merge: the first contributing spec that names a
-        # generate_network wins (independent SED-ML files rarely carry one at all).
-        if network_gen is None and spec.network_gen is not None:
-            network_gen = spec.network_gen
 
     return ProtocolSpec(
         steps=tuple(steps),
@@ -991,32 +998,38 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
 
 
 def _generates_a_network(verb: str, argstr: str) -> bool:
-    """Whether BNG2.pl generates the network at this run (a verb of
-    :data:`_SIMULATE_VERBS`, or ``simulate_protocol``) when it has none yet.
+    """Whether BNG2.pl generates the network at this action, with its defaults,
+    when it has none yet.
 
     ``BNGAction.pm``'s ``simulate`` generates it only for the network methods
     (cvode, ssa, pla, psa) and hands ``nf`` to ``simulate_nf``, which generates
     none; a scan runs ``simulate`` at each point, and ``bifurcate`` runs scans.
     ``simulate_protocol`` runs the model's ``begin protocol`` block, which the
-    parse does not read, so it counts as a network run.
+    parse does not read, so it counts as a network run. Two actions that are not
+    runs generate it too: ``writeMDL`` (``BNGOutput.pm``) and ``visualize`` of
+    the ``reaction_network`` type (``Visualization/Viz.pm``).
     """
     low = verb.lower()
-    if low == "simulate_protocol":
-        return True
-    return _run_method(low, _parse_hash(argstr)) != "nf"
+    if low in _SIMULATE_VERBS:
+        return _run_method(low, _parse_hash(argstr)) != "nf"
+    if low == "visualize":
+        return _parse_hash(argstr).get("type") == "reaction_network"
+    return low in ("simulate_protocol", "writemdl")
 
 
 def _network_generation_call(text: str) -> tuple[str, str] | None:
     """The ``generate_network`` call, as ``(verb, arguments)``, whose options build
     the network the source's runs start from, or ``None`` when no call does.
 
-    That is the first ``generate_network``, unless a run with a network method comes
-    before it: BNG2.pl generates the network there with its defaults (``simulate``
-    calls ``generate_network()`` with no arguments), so a later call's ``max_iter``
-    does not bound it. A network-free run (``simulate_nf``, ``method=>"nf"``)
-    generates nothing, and neither does ``generate_hybrid_model``, which writes a
-    separate model, so the search reads past both. It stops at ``quit``, where
-    BNG2.pl does. Only one call is returned: BNG2.pl continues the network at a later
+    That is the first ``generate_network``, unless an action that generates the
+    network comes before it (:func:`_generates_a_network`): a run with a network
+    method, say. BNG2.pl generates it there with its defaults (``simulate`` calls
+    ``generate_network()`` with no arguments), and a later call continues it,
+    which adds nothing to a network that is complete, so its ``max_iter`` does not
+    bound it. A network-free run (``simulate_nf``, ``method=>"nf"``) generates
+    nothing, and neither does ``generate_hybrid_model``, which writes a separate
+    model, so the search reads past both. It stops at ``quit``, where BNG2.pl
+    does. Only one call is returned: BNG2.pl continues the network at a later
     ``generate_network`` with ``overwrite=>1``, under that call's limits, and what
     that adds is not taken.
     """
@@ -1024,10 +1037,7 @@ def _network_generation_call(text: str) -> tuple[str, str] | None:
         low = verb.lower()
         if low == "generate_network":
             return verb, argstr
-        if low == "quit":
-            return None
-        is_run = low in _SIMULATE_VERBS or low == "simulate_protocol"
-        if is_run and _generates_a_network(low, argstr):
+        if low == "quit" or _generates_a_network(low, argstr):
             return None
     return None
 

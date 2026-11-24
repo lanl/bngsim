@@ -246,6 +246,23 @@ def test_a_network_run_before_generate_network_leaves_network_gen_none() -> None
 
 
 @pytest.mark.parametrize(
+    "action",
+    ["writeMDL()", 'visualize({type=>"reaction_network"})'],
+    ids=["writeMDL", "visualize-reaction_network"],
+)
+def test_an_action_that_generates_the_network_leaves_network_gen_none(action) -> None:
+    """``writeMDL`` and a ``reaction_network`` ``visualize`` generate the network
+    with BNG2.pl's defaults when there is none, like a run with a network method."""
+    text = (
+        "begin model\nend model\n"
+        f"{action}\n"
+        "generate_network({max_iter=>3})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert parse_bngl_protocol(text, strict=False).network_gen is None
+
+
+@pytest.mark.parametrize(
     "nf_run",
     ['simulate({method=>"nf",t_end=>1,n_steps=>1})', "simulate_nf({t_end=>1,n_steps=>1})"],
     ids=["method-nf", "simulate_nf"],
@@ -544,6 +561,23 @@ def test_combine_protocols_skips_empty_specs() -> None:
     assert combine_protocols([empty, real]) is real
     # All-empty → an empty spec (its provenance preserved), never a crash.
     assert combine_protocols([empty, empty]).is_empty
+
+
+def test_combine_protocols_keeps_the_first_specs_network_gen_even_when_none() -> None:
+    """The merged steps run on the network the first spec's source generated. Its
+    ``network_gen`` of None says a run with a network method came first, where
+    BNG2.pl generates with its defaults, so a later spec's cap must not take its
+    place. A spec with no source that generated a network still takes the first cap
+    a spec names."""
+    head = "begin model\nend model\n"
+    run = 'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    run_first = parse_bngl_protocol(head + run + "generate_network({max_iter=>3})\n" + run)
+    capped = parse_bngl_protocol(head + "generate_network({max_agg=>5})\n" + run)
+    assert run_first.network_gen is None and run_first.generation_step is not None
+    assert combine_protocols([run_first, capped]).network_gen is None
+    sedml = ProtocolSpec(steps=(Experiment("simulate", "ode", (0.0, 1.0), 2),))
+    assert sedml.generation_step is None
+    assert combine_protocols([sedml, capped]).network_gen == "generate_network({max_agg=>5})"
 
 
 def test_combine_protocols_concatenates_dropped_and_lossy() -> None:

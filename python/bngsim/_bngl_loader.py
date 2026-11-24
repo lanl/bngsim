@@ -445,10 +445,12 @@ def generate_network_call(text: str) -> str:
     Returns the source's first ``generate_network(...)`` with ``overwrite=>1``
     appended (appended, not prepended, so it wins a duplicate key under Perl's
     last-one-wins hash semantics). When a run with a network method (ode, ssa,
-    pla, psa) comes before it, the bare default is used: BNG2.pl generates that
-    run's network with its defaults (issue #1480), so a later call's ``max_iter``
-    does not bound it. A network-free run generates nothing, and the search reads
-    past it (:func:`~bngsim.convert._protocol._network_generation_call`). Only that
+    pla, psa) comes before it, or another action that generates the network
+    (``writeMDL``, a ``reaction_network`` ``visualize``), the bare default is used:
+    BNG2.pl generates the network there with its defaults (issue #1480), so a
+    later call's ``max_iter`` does not bound it. A network-free run generates
+    nothing, and the search reads past it
+    (:func:`~bngsim.convert._protocol._network_generation_call`). Only that
     one call runs: BNG2.pl continues the network at a later ``generate_network``
     with ``overwrite=>1``, and the loaded network does not have what that adds.
     For a file with none at all — a network-free model that only ever calls
