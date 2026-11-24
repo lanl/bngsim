@@ -18,8 +18,6 @@
 #include "../NFscheduler/NFstream.h"
 #include "../NFscheduler/Scheduler.h"
 
-#define ATOT_TOLERANCE 1e-9
-
 using namespace std;
 using namespace NFcore;
 
@@ -960,8 +958,13 @@ double System::getNextRxn()
 		// Upstream NFsim v1.14.3 consumes and discards the first selector draw
 		// here, then uses the second draw/residual. Keep this only as an
 		// explicit compatibility mode for same-seed parity with that CLI.
-		return selector->getNextReactionClass(nextReaction);
+		x = selector->getNextReactionClass(nextReaction);
 	}
+	// A draw past the last reaction has the selector sum the propensities
+	// afresh and pick from that sum, which a_tot then follows, so the next
+	// waiting time is drawn from it (bngsim GH #1666). With nothing to fire
+	// there the selector picks no reaction.
+	a_tot = selector->getAtot();
 	return x;
 
 
@@ -1023,7 +1026,7 @@ double System::sim(double duration, long int sampleTimes, bool verbose)
 		//   dt = -ln(rand) / a_tot;
 		//Choose a random number on the OPEN interval (0,1) so that we never
 		//have a dt=0 or a dt=infinity
-		if(a_tot>ATOT_TOLERANCE) delta_t = -log(rng_.random_open()) / a_tot;
+		if(a_tot>0) delta_t = -log(rng_.random_open()) / a_tot;
 		else { delta_t=0; current_time=end_time; }
 		if(DEBUG) cout<<"   Determine dt : " << delta_t << endl;
 
@@ -1078,6 +1081,9 @@ double System::sim(double duration, long int sampleTimes, bool verbose)
 		//4: Select next reaction class based on smallest j,
 		//   such that sum of a_j over all j >= r2*a_tot
 		double randElement = getNextRxn();
+		// The selector found nothing to fire in the propensities summed
+		// afresh: draw again from the total it found.
+		if(nextReaction == NULL) continue;
 		
 		if(DEBUG && verbose && iteration < 5) {
 			cout << "Selected: " << (nextReaction ? nextReaction->getName() : "NULL") << endl;
@@ -1505,7 +1511,13 @@ double System::stepTo(double stoppingTime)
 		if(!pendingStepEventValid) {
 			// Preserve the pending waiting-time draw across output boundaries so
 			// repeated stepTo() calls consume the same RNG stream as sim().
-			if(a_tot > ATOT_TOLERANCE) {
+			// Any total above 0 has a reaction to fire: the selector sums the
+			// propensities afresh before rounding can leave a_tot far from
+			// their sum (bngsim GH #1666), and picks nothing where that sum
+			// is 0. A threshold of 1e-9 here, a rate in the model's own time
+			// unit, fired nothing in a model whose total was that small
+			// (bngsim GH #1672).
+			if(a_tot > 0.0) {
 				pendingStepEventTime =
 					current_time + (-log(rng_.random_open()) / a_tot);
 				pendingStepEventValid = true;
@@ -1535,8 +1547,11 @@ double System::stepTo(double stoppingTime)
 		// Select and fire the next reaction
 		double randElement = getNextRxn();
 		if(nextReaction == NULL) {
+			// The selector found nothing to fire in the propensities summed
+			// afresh, so the waiting time was drawn from a stale total: draw
+			// again from the total it found.
 			invalidateStepToCache();
-			break;
+			continue;
 		}
 
 		current_time = pendingStepEventTime;
@@ -1566,7 +1581,7 @@ void System::singleStep()
 
 	recompute_A_tot();
 	cout<<"  -total propensity (a_total) calculated as: "<<a_tot<<endl;
-	if(a_tot>ATOT_TOLERANCE) delta_t = -log(rng_.random_open()) / a_tot;
+	if(a_tot>0) delta_t = -log(rng_.random_open()) / a_tot;
 	else
 	{
 		//Otherwise, we can't react for the rest of this step

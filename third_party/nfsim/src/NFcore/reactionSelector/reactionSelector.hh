@@ -61,7 +61,16 @@ namespace NFcore
 
 
 		protected:
+			/* Sums Atot afresh from the propensity each reaction holds. */
+			void resumPropensities();
+			/* Starts the watch on Atot that has it summed again. */
+			void markSummed();
+
 			double Atot;
+			/* The largest value Atot has held since it was last summed, and
+			 * the value below which it is summed again. */
+			double AtotPeak;
+			double AtotResumBelow;
 			int n_reactions;
 			ReactionClass ** reactionClassList;
 

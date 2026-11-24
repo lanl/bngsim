@@ -176,6 +176,23 @@ Current carry topics:
   pinned base, which has no `selector->updateBatch` and no shared
   `Observable::updateDependentReactions`. Drop it when the base moves past
   `a0bf9134` (GH #519)
+- the selector's running total propensity kept from drifting off the sum of
+  the propensities, and a reaction fired at any total above 0. The total is a
+  running sum, `Atot - oldA + newA`, and a propensity added to a large total is
+  rounded to its spacing and not given back when the large term is taken off:
+  a slow channel at 1e-6 beside a fast one at 1e11 was lost once the fast one
+  was 0, and beside one at 1e10 fired at 1.9 times its rate (GH #1666).
+  `DirectSelector` sums it afresh from each reaction's `get_a()` once it falls
+  below 2^-10 of the largest value it has held since it was last summed, or
+  below 0, and `System::a_tot` follows the selector after each pick. It reads
+  `get_a()`, not `update_a()`, because an update can come mid-firing, where the
+  carry above holds a rate that reads an observable. A NaN is kept, for the
+  host's check to refuse. `stepTo`, `sim` and `singleStep` fired nothing at a
+  total of 1e-9 or less (`ATOT_TOLERANCE`), a rate in the model's own time
+  unit (GH #1672); they test `a_tot > 0` now, and the selector picks nothing
+  from a total that is not above 0. Upstream master still keeps a running
+  total and `ATOT_TOLERANCE`, so this is ported again when the base moves
+  (GH #519)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`
@@ -310,6 +327,8 @@ Expected carry order:
     molecule listed once
 25. a rate that reads an observable held until a firing is done (GH #1818;
     RuleWorld/nfsim#117, merged upstream as `a0bf9134`)
+26. the selector's running total summed afresh once it falls far below its
+    peak, and a reaction fired at any total above 0 (GH #1666, GH #1672)
 
 When you intentionally change the carry stack, regenerate the patch bundle
 afterward.

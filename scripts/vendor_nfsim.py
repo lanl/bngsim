@@ -562,6 +562,43 @@ CARRY_QUEUE = (
             },
         ],
     },
+    {
+        "topic": "bngsim/carry-exact-total-propensity",
+        "kind": "local",
+        "status": (
+            "Keep the selector's running total propensity, Atot - oldA + newA, "
+            "from drifting off the propensities' sum, and fire at any total "
+            "above 0. A propensity added to a large total was rounded to its "
+            "spacing and not given back when the large term was taken off: a "
+            "slow channel at 1e-6 beside a fast one at 1e11 was lost once the "
+            "fast one was 0, and beside one at 1e10 fired at 1.9 times its rate "
+            "(GH #1666). DirectSelector now sums Atot from each reaction's "
+            "get_a() once it falls below 2^-10 of the largest value it has held "
+            "since it was last summed, or below 0; get_a(), not update_a(), "
+            "since an update can come mid-firing, where a rate that reads an "
+            "observable is held (bngsim/carry-hold-observable-rates). A NaN is "
+            "kept, for the host to report. System::getNextRxn takes a_tot from "
+            "the selector after each pick, so a pick that ran past the last "
+            "reaction and summed afresh no longer leaves a stale a_tot. stepTo, "
+            "sim and singleStep fired nothing at a total of 1e-9 or less "
+            "(ATOT_TOLERANCE), a rate in the model's own time unit (GH #1672); "
+            "they test a_tot > 0 now, and the selector picks nothing from a total "
+            "that is not above 0, where random(0) picked the first reaction "
+            "whatever its propensity. Upstream master still keeps a running "
+            "total and ATOT_TOLERANCE, so this is ported again when the base "
+            "moves (GH #519). Fixtures under tests/data/nfsim/ "
+            "(slow_channel_beside_fast, tiny_total_propensity, "
+            "nan_once_the_fast_channel_empties)."
+        ),
+        "commits": [
+            {
+                "commit": "81722c7d2f038c83d4b5e40865fea51af79665dd",
+                "summary": (
+                    "bngsim: sum the total propensity afresh once it falls far, and fire above 0"
+                ),
+            },
+        ],
+    },
 )
 
 SUMMARY_PREVIEW_LIMIT = 12
