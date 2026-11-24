@@ -340,48 +340,49 @@ def test_past_z_minus_20_both_engines_match_the_reference(tmp_path, codegen, a, 
 
 @pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])
 @pytest.mark.parametrize(
-    "a, b, z",
-    [(9.9999999999995e-311, 1e-310, -20.5), (-5e-324, 1e-322, -21.0)],
-    ids=["a positive a one ulp below b", "a <= 0 with a subnormal b"],
+    "a, b, z, true_value",
+    [
+        # Both series summed directly at 60 and 100 digits, which agree.
+        (9.9999999999995e-311, 1e-310, -20.5, 0.9999604811432588),
+        (-5e-324, 1e-322, -21.0, 7.221486122081613e-10),
+        (9.99999994e-316, 1e-315, -20.0, 0.29437439739547216),
+        (5e-324, 1e-322, 10.0, 19.982762895393687),
+    ],
+    ids=[
+        "past z = -20, a one ulp below b",
+        "past z = -20, a <= 0 with a subnormal b",
+        "z = -20",
+        "z > 0",
+    ],
 )
-def test_past_z_minus_20_a_subnormal_b_minus_a_is_refused_on_both_engines(
-    tmp_path, codegen, a, b, z
-):
-    """The series past z = -20 takes b - a only from the smallest normal double
-    up, since a subnormal one rounds the terms every later one is built from:
-    the first was summed 9.6e-7 off and the second 1.1e-4. Both copies of the
-    gate say so, and both engines refuse."""
+def test_a_subnormal_alpha_is_summed_right_on_both_engines(tmp_path, codegen, a, b, z, true_value):
+    """alpha, or alpha*x, subnormal: the denominator's first terms rounded on the
+    subnormal grid and the sums came out 9.6e-7, 1.1e-4, 1.7e-4 and 3.1e-3 off.
+    Both copies now sum the denominator times 2^54 there, and both engines are
+    held to the reference with the constant-rate check above."""
     p = tmp_path / "m1793s.net"
-    p.write_text(CONSTANT_RATE_NET.format(a=a, b=b, z=z, scale=1.0))
+    p.write_text(CONSTANT_RATE_NET.format(a=a, b=b, z=z, scale=1.0 / true_value))
     with contextlib.redirect_stderr(io.StringIO()):
         model = bngsim.Model.from_net(str(p))
         sim = bngsim.Simulator(model, method="ode", codegen=codegen)
-        with pytest.raises(
-            bngsim.SimulationError, match=r"not reliable.*The fraction is reliable for b > 0"
-        ):
-            sim.run(t_span=(0.0, 1.0), n_points=3)
+        result = sim.run(t_span=(0.0, 1.0), n_points=3)
     assert sim.codegen_backend in (("cc", "mir") if codegen else ("exprtk",))
+    assert float(result.species[-1][0]) == pytest.approx(1.0, rel=1e-11, abs=0.0)
 
 
 @pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])
-@pytest.mark.parametrize(
-    "a, b, z",
-    [(9.99999994e-316, 1e-315, -20.0), (5e-324, 1e-322, 10.0)],
-    ids=["z < 0", "z > 0"],
-)
-def test_inside_the_box_a_subnormal_b_beside_a_subnormal_alpha_x_is_refused_on_both_engines(
-    tmp_path, codegen, a, b, z
-):
-    """The series summed these 1.7e-4 and 3.1e-3 off. Both copies of the gate
-    and of the trust rule turn them away, so both engines refuse."""
-    p = tmp_path / "m1793b.net"
-    p.write_text(CONSTANT_RATE_NET.format(a=a, b=b, z=z, scale=1.0))
+def test_with_alpha_past_1_a_subnormal_b_is_refused_on_both_engines(tmp_path, codegen):
+    """Outside the box, with b and alpha*|z| both subnormal, the fraction is
+    not trusted in either copy of the rule: main returned 0.1098 here, where
+    the ratio is 0.1101."""
+    p = tmp_path / "m1793r.net"
+    p.write_text(
+        CONSTANT_RATE_NET.format(a=4.3858021234563624, b=9.4e-323, z=1.73e-322, scale=1.0)
+    )
     with contextlib.redirect_stderr(io.StringIO()):
         model = bngsim.Model.from_net(str(p))
         sim = bngsim.Simulator(model, method="ode", codegen=codegen)
-        with pytest.raises(
-            bngsim.SimulationError, match=r"not reliable.*The fraction is reliable for b > 0"
-        ):
+        with pytest.raises(bngsim.SimulationError, match=r"not reliable.*both below 2.2e-308"):
             sim.run(t_span=(0.0, 1.0), n_points=3)
     assert sim.codegen_backend in (("cc", "mir") if codegen else ("exprtk",))
 

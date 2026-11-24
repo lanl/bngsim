@@ -123,10 +123,12 @@ for arguments the fraction cannot be trusted with. `a = 0` with `b > 0` and
 are summed as power series, because there the fraction loses digits when `a` or
 `b` is tiny (issue #1080). The same goes on past `z = -20` where `0 < b - a < 1`
 and `b < 1`, a positive `a` below `b` as well as a non-positive one
-(issue #1793): the series out to `z = -700`, for a `b - a` no smaller than the
-smallest normal double, 2.2e-308, and the asymptotic expansion beyond. Neither
-the series nor the fraction is used where `b` and `alpha*z` are both below
-2.2e-308, since both lose the ratio in the subnormal range there.
+(issue #1793): the series out to `z = -700`, the asymptotic expansion beyond.
+Where `b < 1` and `alpha` or `alpha*z` is subnormal, below 2.2e-308, the
+series sums its denominator scaled by 2^54, which keeps it off the subnormal
+grid. The fraction is not trusted where `b` and `|alpha*z|` are both subnormal
+and nonzero, unless `a` is a negative integer; inside `|z| <= 20` the series
+takes every one of those with `|alpha| < 1`.
 Arguments none of these can vouch for are refused
 rather than answered, because the fraction is silently wrong there. That
 includes every `b <= 0` the asymptotic expansion cannot answer. See
