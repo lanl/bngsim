@@ -568,12 +568,13 @@ def test_a_long_oscillation_is_judged_as_far_as_the_quotient_resolves_it(
         assert 0.0 < v["allowance"] < 0.02
 
 
-def test_a_column_every_solve_gives_as_zero_is_found(monkeypatch):
-    # A dropped seed or a lost right-hand side term reads as 0: the quotient's
-    # masks follow the quotient's scale, not the run's own.
+@pytest.mark.parametrize("factor", [0.0, 1e-6])
+def test_a_column_every_solve_gives_as_zero_is_found(monkeypatch, factor):
+    # A dropped seed or a lost right-hand side term reads as 0, or next to it:
+    # the quotient's masks follow the quotient's scale, not the run's own.
     r = _decay()
-    _every_solve_off(monkeypatch, 0, 0.0)
-    v = _by_name(_scaled(r, 0, 0.0).check(["sensitivity_fd"]))["sensitivity_fd"]
+    _every_solve_off(monkeypatch, 0, factor)
+    v = _by_name(_scaled(r, 0, factor).check(["sensitivity_fd"]))["sensitivity_fd"]
     assert v["status"] == "diff" and v["worst_column"] == "dA()/dk", v
 
 
