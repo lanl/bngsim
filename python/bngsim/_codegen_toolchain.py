@@ -490,13 +490,18 @@ _CLANG_MACRO_RE = re.compile(r"^#define __clang__\b", re.M)
 def is_clang(compiler: list[str]) -> bool:
     """Whether ``compiler`` is clang, or a compiler built on it that takes its
     flags (Apple's ``cc``, Intel's ``icx``): it defines ``__clang__``. Asked once
-    per compiler and environment (:func:`toolchain_key`); one that cannot say is
-    taken not to be. ``cc`` is clang on one machine and GCC on the next, and its
-    name does not say which."""
+    per compiler and environment (:func:`toolchain_key`). ``cc`` is clang on one
+    machine and GCC on the next, and its name does not say which.
+
+    One that cannot say, or does not say in time, is taken not to be, for this
+    call only: a first ``cc -dM -E`` that ran past its 10 s on a cold file system
+    proves nothing, as a probe build that times out keeps no verdict."""
     key = toolchain_key(compiler)
     known = _clang.get(key)
     if known is None:
         macros = _run([*compiler, "-dM", "-E", "-x", "c", os.devnull])
+        if not macros:
+            return False
         known = _clang[key] = _CLANG_MACRO_RE.search(macros) is not None
     return known
 

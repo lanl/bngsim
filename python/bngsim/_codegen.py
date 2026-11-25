@@ -5203,9 +5203,10 @@ def _frame_limit_flag() -> str:
 #: or brace nested deeper than this, each kind counted on its own, with "bracket
 #: nesting level exceeded maximum of 256". GCC has no such limit.
 _CLANG_BRACKET_DEPTH = 256
-#: What the limit is raised to beyond the source's own depth: headroom for the
-#: brackets the preprocessor adds, which the source's macros (names and
-#: attributes) keep to a few.
+#: Headroom for the brackets the preprocessor adds to what the source shows:
+#: ``NAN`` is ``(__builtin_nanf (""))`` in glibc, and the source's other macros
+#: are names and attributes. A source this close to the limit is given the flag,
+#: and the flag allows this much past the source's own depth.
 _BRACKET_DEPTH_MARGIN = 64
 _C_COMMENT_OR_LITERAL_RE = re.compile(
     r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.S
@@ -5238,16 +5239,21 @@ def _bracket_depth_flags(c_source: str, compiler: list[str]) -> list[str]:
     which keeps the commonest deep nesting shallow, but a model can nest as deep
     any other way: a chain through the true branches, a sum of sums. A plain run
     fell back to the interpreter on such a source, and a forward-sensitivity
-    run, which needs the compiled right-hand side, failed. GCC rejects the flag,
-    and the depth is past the default only for a source that needs it, so every
-    other build's command is what it was. The flag changes what clang reads, not
-    what it emits, so the cache key does not carry it."""
+    run, which needs the compiled right-hand side, failed.
+
+    The depth is measured before the preprocessor runs, which can add a few
+    brackets (``NAN`` at the deepest point adds one), so the flag is given to a
+    source within :data:`_BRACKET_DEPTH_MARGIN` of the limit too: 193 deep or
+    more, where an ordinary model's source is under 10. GCC rejects the flag, and
+    the compiler is not asked what it is about any other source, so every other
+    build's command is what it was. The flag changes what clang reads, not what
+    it emits, so the cache key does not carry it."""
     if Path(compiler[0]).stem.lower() == "cl":
         return []
-    depth = _c_bracket_depth(c_source)
+    depth = _c_bracket_depth(c_source) + _BRACKET_DEPTH_MARGIN
     if depth <= _CLANG_BRACKET_DEPTH or not _toolchain.is_clang(compiler):
         return []
-    return [f"-fbracket-depth={depth + _BRACKET_DEPTH_MARGIN}"]
+    return [f"-fbracket-depth={depth}"]
 
 
 #: The tag both compilers end the report with: Clang ``[-Wframe-larger-than]``,

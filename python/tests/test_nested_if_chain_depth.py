@@ -36,6 +36,8 @@ import math
 import re
 import shlex
 import shutil
+import sys
+import types
 
 import bngsim
 import numpy as np
@@ -45,6 +47,7 @@ from bngsim import _codegen as cg
 pytest.importorskip("sympy")
 import sympy as sp  # noqa: E402
 from bngsim import _jacobian as J  # noqa: E402
+from bngsim import _jax_rhs as jr  # noqa: E402
 from bngsim._switch_sensitivity import _iter_if_conditions  # noqa: E402
 
 _CLANG = shutil.which("clang")
@@ -451,11 +454,50 @@ def test_only_clang_is_given_a_deeper_limit_and_only_for_a_source_past_it(monkey
     assert cg._bracket_depth_flags(deep, ["cc"]) == []
     monkeypatch.setattr(cg._toolchain, "is_clang", lambda compiler: True)
     assert cg._bracket_depth_flags(deep, ["cc"]) == [f"-fbracket-depth={depth + 64}"]
+    # Within the margin of the limit as well, where the preprocessor's brackets
+    # (NAN's) can take a source over it.
+    for nested, flagged in ((192, False), (193, True), (256, True)):
+        src = "double f(void){ return " + "(" * nested + "1" + ")" * nested + "; }"
+        assert cg._c_bracket_depth(src) == nested
+        assert cg._bracket_depth_flags(src, ["cc"]) == (
+            [f"-fbracket-depth={nested + 64}"] if flagged else []
+        )
+
+
+@needs_clang
+@pytest.mark.parametrize("nested", [255, 256])
+def test_nan_at_the_deepest_point_of_a_source_just_under_the_limit_builds(tmp_path, clang, nested):
+    # glibc's NAN is (__builtin_nanf ("")): two brackets deeper than the source
+    # shows, which takes 255 to 257.
+    body = "(" * nested + "NAN" + ")" * nested
+    src = f"#include <math.h>\ndouble f(void) {{ return {body}; }}\n"
+    assert cg._c_bracket_depth(src) == nested
+    assert cg.compile_rhs(src, f"nan_{nested}").exists()
 
 
 def test_a_compiler_that_cannot_say_is_not_taken_for_clang(monkeypatch, tmp_path):
     monkeypatch.setattr(cg._toolchain, "_clang", {})
     assert cg._toolchain.is_clang([str(tmp_path / "no-such-cc")]) is False
+
+
+def test_a_compiler_that_did_not_answer_is_asked_again(monkeypatch):
+    # A first `cc -dM -E` past its timeout on a cold file system said nothing;
+    # kept, every deep build in the process went without the flag.
+    monkeypatch.setattr(cg._toolchain, "_clang", {})
+    answers = iter(["", "#define __clang__ 1\n", "#define __GNUC__ 13\n"])
+    asked = []
+
+    def run(cmd, **kwargs):
+        asked.append(cmd[0])
+        return next(answers)
+
+    monkeypatch.setattr(cg._toolchain, "_run", run)
+    assert cg._toolchain.is_clang(["cc"]) is False
+    assert cg._toolchain.is_clang(["cc"]) is True
+    assert cg._toolchain.is_clang(["cc"]) is True  # kept, not asked
+    assert cg._toolchain.is_clang(["gcc"]) is False
+    assert cg._toolchain.is_clang(["gcc"]) is False  # kept, not asked
+    assert asked == ["cc", "cc", "gcc"]
 
 
 @needs_clang
@@ -500,15 +542,108 @@ def test_a_source_nested_past_clangs_limit_builds_under_clang(
 @needs_clang
 def test_a_failed_build_is_called_the_compiled_right_hand_side(tmp_path, clang, monkeypatch):
     # erf() has no analytic derivative here, so the build is of the right-hand
-    # side alone, and a limit of 6 is past what clang needs for it.
+    # side alone. A limit of 24 is below the 40 brackets of its rate law, and
+    # above what the system headers nest (20 with _FORTIFY_SOURCE in glibc's
+    # <stdlib.h>), which the toolchain probe built after a failure includes: a
+    # probe that failed too would make the failure the toolchain's.
     monkeypatch.setattr(cg._toolchain, "_verdicts", {})
-    monkeypatch.setenv("CC", f"{shlex.quote(_CLANG)} -fbracket-depth=6")
-    model = _load(tmp_path, _deep_net("1").replace("k*v_rate()", "k*erf(Atot)*(((((((Atot)))))))"))
+    monkeypatch.setenv("CC", f"{shlex.quote(_CLANG)} -fbracket-depth=24")
+    law = "k*erf(Atot)*" + "(" * 40 + "Atot" + ")" * 40
+    model = _load(tmp_path, _deep_net("1").replace("k*v_rate()", law))
     with pytest.raises(bngsim.CodegenBuildError) as err:
         _sensitivity(model)
     message = str(err.value)
     assert message.startswith("Failed to build the compiled right-hand side forward sensitivity")
     assert "analytical sensitivity RHS" not in message
+
+
+# ── The JAX right-hand side ──────────────────────────────────────────────────
+
+try:  # JAX is an optional extra
+    import jax  # noqa: F401
+
+    JAX_AVAILABLE = True
+except ImportError:  # pragma: no cover - depends on the environment
+    JAX_AVAILABLE = False
+
+
+@pytest.fixture
+def jnp(monkeypatch):
+    """jax.numpy, or numpy standing in for it where JAX is not installed: the
+    translated text and its helpers ask it for where and logical_and, which
+    mean the same in both."""
+    if JAX_AVAILABLE:
+        jr.jax_available()  # 64-bit, as the RHS runs
+        import jax.numpy
+
+        return jax.numpy
+    monkeypatch.setitem(sys.modules, "jax", types.SimpleNamespace(numpy=np))
+    monkeypatch.setitem(sys.modules, "jax.numpy", np)
+    return np
+
+
+_JAX_OBS = ("a", "b")
+
+
+def _jax_text(expr: str) -> str:
+    return jr._translate_expr_jax(
+        expr, {"k": 0}, {n: i for i, n in enumerate(_JAX_OBS)}, set(), []
+    )
+
+
+def _jax_value(text: str, jnp, t: float, a: float = 0.0, b: float = 0.0) -> float:
+    names = {**jr._JAX_HELPERS, "jnp": jnp, "t": t, "params": np.array([2.0])}
+    names.update(obs=np.array([a, b]), y=np.zeros(1))
+    return float(eval(compile(text, "<jax>", "eval"), {"__builtins__": {}}, names))  # noqa: S307
+
+
+def test_the_jax_translation_of_a_340_link_chain_compiles_and_takes_every_link(jnp):
+    # Nested, each link a jnp.where inside the last: "too many nested
+    # parentheses" from Python's compiler past 199.
+    text = _jax_text(f"k*({_chain(340)})")
+    for i in range(340):
+        assert _jax_value(text, jnp, i + 0.5) == 2.0 * _day_value(i), i
+    assert _jax_value(text, jnp, 340.5) == 0.0
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "if(a>1,k,if(b>1,2*k,0))",
+        "if(a>1 && b<2,k,(if(b>1,a>2,0)))",
+        "if(a<1,k,if(a<2,a>b,if(b<1,2,-1)))+if(b>0,1,if(a>0,2,3))",
+        "if(if(a>1,1,if(b>1,2,3))>1,k,if(a,b,a+b))",
+    ],
+)
+def test_a_jax_chain_is_the_nested_where_calls_it_was(expr, jnp, monkeypatch):
+    flat = _jax_text(expr)
+    assert "__bngsim_where_chain__" in flat
+    monkeypatch.setattr(jr, "_flatten_if_chains", lambda c: c)
+    nested = _jax_text(expr)
+    for a in (-1.0, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0):
+        for b in (-1.0, 0.0, 0.5, 1.0, 2.5):
+            assert _jax_value(flat, jnp, 0.0, a, b) == _jax_value(nested, jnp, 0.0, a, b), (a, b)
+
+
+def test_a_jax_chains_conditions_are_truth_values_and_its_values_numbers():
+    # A comparison read as a number is a double (issue #1495), a condition not.
+    assert _jax_text("if(a>1 && b<2,k,(if(b>1,a>2,0)))") == (
+        "__bngsim_where_chain__(jnp.logical_and(obs[0] > 1.0, obs[1] < 2.0), params[0], "
+        "obs[1] > 1.0, jnp.where(obs[0] > 2.0, 1.0, 0.0), 0.0)"
+    )
+    assert _jax_text("if(a>1,k,0)") == "jnp.where(obs[0]>1.0,params[0],0.0)"
+
+
+@pytest.mark.skipif(not JAX_AVAILABLE, reason="JAX not installed")
+def test_the_jax_jacobian_runs_a_340_link_chain_as_the_default_does(tmp_path):
+    def run(n, **kwargs):
+        sim = bngsim.Simulator(_model(tmp_path, n), method="ode", **kwargs)
+        return np.asarray(sim.run(t_span=(0, 5), n_points=6, rtol=1e-8, atol=1e-10).species)[:, 0]
+
+    with_jax = run(340, jacobian="jax")
+    assert with_jax == pytest.approx(run(340), rel=1e-6)
+    assert with_jax[-1] == pytest.approx(A5, rel=1e-7)
+    assert np.array_equal(with_jax, run(128, jacobian="jax"))
 
 
 # ── Chains a flat Piecewise reads differently ────────────────────────────────
