@@ -338,8 +338,9 @@ level held that was left out.
 
 **SBML Level 3 packages.** A document that marks a package
 `required="true"` is refused by name unless BNGsim supports that package.
-`comp` loads; the model is flattened first. `distrib` loads, and its random
-draws are refused one by one. `multi`, `qual`, `spatial` and the rest are
+`comp` loads; the model is flattened first, and a file a submodel is read
+from is checked the same way. `distrib` loads, and its random draws are
+refused one by one. `multi`, `qual`, `spatial` and the rest are
 refused, because reading only the core species and reactions would build a
 different model. Packages marked `required="false"`, such as `layout`,
 `render` and `fbc`, load as if they weren't there.
