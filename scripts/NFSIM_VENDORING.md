@@ -176,6 +176,41 @@ Current carry topics:
   pinned base, which has no `selector->updateBatch` and no shared
   `Observable::updateDependentReactions`. Drop it when the base moves past
   `a0bf9134` (GH #519)
+- the selector's running total propensity kept from drifting off the sum of the
+  propensities, and a reaction fired at any total above 0. The total is a
+  running sum, `Atot - oldA + newA`, and a propensity added to a large total is
+  rounded to its spacing and not given back when the large term is taken off: a
+  slow channel at 1e-6 beside a fast one at 1e11 was lost once the fast one was
+  0, and beside one at 1e10 fired at 1.9 times its rate (GH #1666). The sum
+  also drifts without a fall where the roundings fall the same way every time,
+  and the reaction listed last loses what it has lost. `DirectSelector` sums it
+  afresh from each reaction's `get_a()` once it has fallen below 2^-10 of the
+  largest value it has held since it was last summed, or below 0, or has taken
+  2^12 updates since then, which holds it within about 2^-40 of its peak: well
+  below the 2^-32 a pick is drawn to near the peak, and 2^-30 of a total at
+  2^-10 of it; `System::a_tot` follows the selector after each pick. The tests
+  are made where the total is read, before a waiting time is drawn
+  (`ReactionSelector::getAtotForDraw()`) and before a pick, not in `update()`,
+  so a total that dips and comes back within a firing costs no pass over the
+  reactions. Each sum is a pass over all N reactions, so a model whose total
+  keeps falling 1024-fold slows at least in proportion to N, and more once the
+  reactions no longer fit in cache: one A flipping at 1e6 and back at 1e-3
+  beside 10,000 births at 1e-9 ran 17 to 28 times as long, on two machines. A
+  total that is not finite is kept, for the host's check to refuse. `stepTo`,
+  `sim` and `singleStep` fired nothing at a total of 1e-9 or less
+  (`ATOT_TOLERANCE`), a rate in the model's own time unit (GH #1672); they test
+  `a_tot > 0` now, and the selector picks nothing from a total that is not
+  above 0. This is RuleWorld/nfsim#123, fixed upstream by RuleWorld/nfsim#128,
+  merged as `7501f675`, written against the pinned base. Upstream makes the
+  same test of the fall before a waiting time is drawn and has the rest, but no
+  count, which RuleWorld/nfsim#130 asks it for: at `7501f675`
+  `drifting_flip.xml` still loses 2.2e-16 a cycle and its last reaction is
+  lost. The carry also keeps the peak at every update, tests before a pick too,
+  and on an empty pick has `stepTo` draw again rather than stop, as the
+  time-table carry above needs. When the base moves past `7501f675`, reduce it
+  to the count, moving `stepTo`'s redraw on an empty pick into the time-table
+  carry (upstream's `stepTo` goes to the stopping time there), and drop it only
+  once RuleWorld/nfsim#130 is fixed upstream (GH #519)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`
@@ -310,6 +345,11 @@ Expected carry order:
     molecule listed once
 25. a rate that reads an observable held until a firing is done (GH #1818;
     RuleWorld/nfsim#117, merged upstream as `a0bf9134`)
+26. the selector's running total summed afresh once it falls far below its
+    peak or has taken many updates, and a reaction fired at any total above 0
+    (GH #1666, GH #1672; RuleWorld/nfsim#123, fixed upstream by
+    RuleWorld/nfsim#128 as `7501f675` without the count, which
+    RuleWorld/nfsim#130 asks for)
 
 When you intentionally change the carry stack, regenerate the patch bundle
 afterward.
