@@ -74,6 +74,12 @@ class CcJit {
         std::string cmd = trim(cc_env ? cc_env : "");
         if (cmd.empty())
             cmd = "cc";
+        // A CC that is itself a compiler's path with a blank or quote in it is
+        // one word, as the Python codegen takes it when shutil.which finds it;
+        // otherwise the shell splits it, so `CC="ccache cc"` still works.
+        if (cmd.find_first_of(" \t'\"") != std::string::npos &&
+            cmd.find('/') != std::string::npos && access(cmd.c_str(), X_OK) == 0)
+            cmd = shell_quote(cmd);
 #if defined(__APPLE__)
         if (std::string(machine()) != "unknown")
             cmd += std::string(" -arch ") + machine();
@@ -100,19 +106,22 @@ class CcJit {
         return b == std::string::npos ? "" : s.substr(b, s.find_last_not_of(ws) - b + 1);
     }
 
-    /// The home directory: HOME, else the password database, as Python's
-    /// Path.home() reads it.
+    /// The home directory: HOME when it is set and not empty, else the
+    /// password database (the Python codegen reads it the same way).
     static std::string home_dir() {
         const char *home = std::getenv("HOME");
         if (home && *home)
             return home;
-        if (const passwd *pw = getpwuid(getuid()); pw && pw->pw_dir)
-            return pw->pw_dir;
+        passwd pw{};
+        passwd *found = nullptr;
+        char buf[4096];
+        if (getpwuid_r(getuid(), &pw, buf, sizeof(buf), &found) == 0 && found && pw.pw_dir)
+            return pw.pw_dir;
         return "/tmp";
     }
 
-    /// A leading ~ or ~user expanded as Python's Path.expanduser() does; a user
-    /// the password database does not know leaves the path as it is.
+    /// A leading ~ or ~user expanded as Python's os.path.expanduser() does; a
+    /// user the password database does not know leaves the path as it is.
     static std::string expand_user(const std::string &path) {
         if (path.empty() || path[0] != '~')
             return path;
@@ -122,20 +131,30 @@ class CcJit {
         const std::string rest = slash == std::string::npos ? "" : path.substr(slash);
         if (user.empty())
             return home_dir() + rest;
-        if (const passwd *pw = getpwnam(user.c_str()); pw && pw->pw_dir)
-            return std::string(pw->pw_dir) + rest;
+        passwd pw{};
+        passwd *found = nullptr;
+        char buf[4096];
+        if (getpwnam_r(user.c_str(), &pw, buf, sizeof(buf), &found) == 0 && found && pw.pw_dir)
+            return std::string(pw.pw_dir) + rest;
         return path;
     }
 
     /// The cache directory: BNGSIM_CODEGEN_CACHE_DIR when set (trimmed, with a
-    /// leading ~ expanded), as the Python codegen reads it, else
+    /// leading ~ expanded, and made absolute so no path the compiler is given
+    /// starts with -), as the Python codegen reads it, else
     /// ~/.cache/bngsim/codegen.
     static std::string cache_dir() {
         const char *env = std::getenv("BNGSIM_CODEGEN_CACHE_DIR");
-        const std::string dir = trim(env ? env : "");
+        std::string dir = trim(env ? env : "");
         if (dir.empty())
             return home_dir() + "/.cache/bngsim/codegen";
-        return expand_user(dir);
+        dir = expand_user(dir);
+        if (dir[0] != '/') {
+            std::error_code ec;
+            const auto cwd = std::filesystem::current_path(ec);
+            dir = (ec ? std::string(".") : cwd.string()) + "/" + dir;
+        }
+        return dir;
     }
 
     /// Stable cache path (no compile). Lets a caller invalidate a cached .so

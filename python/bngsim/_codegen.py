@@ -63,12 +63,41 @@ logger = logging.getLogger("bngsim")
 # location: each build writes a process-unique temp file in this directory and
 # ``os.replace()``s it into the cache atomically (same filesystem), so concurrent
 # jobs racing on the same model can never observe a half-written .so.
+def _home_dir() -> Path:
+    """``HOME`` when it is set and not empty, else the password database.
+
+    ``Path.home()`` returns ``/`` for an empty ``HOME``, which put the cache at
+    the read-only ``/.cache``. Windows keeps ``Path.home()``. ``bngsim::CcJit``
+    reads the home the same way (issue #1927).
+    """
+    if os.name == "nt":
+        return Path.home()
+    home = os.environ.get("HOME", "")
+    if home:
+        return Path(home)
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError, OSError):
+        return Path.home()
+
+
 def _default_cache_dir() -> Path:
-    """Resolve the codegen cache directory, honoring ``BNGSIM_CODEGEN_CACHE_DIR``."""
+    """Resolve the codegen cache directory, honoring ``BNGSIM_CODEGEN_CACHE_DIR``.
+
+    A leading ``~`` is this user's :func:`_home_dir`, and ``~user`` is expanded as
+    :func:`os.path.expanduser` does, which leaves a user it cannot find as
+    written: ``Path.expanduser()`` raised, and ``import bngsim`` failed with it.
+    The result is absolute, so no path handed to the compiler starts with ``-``.
+    ``bngsim::CcJit`` reads the variable the same way (issue #1927).
+    """
     env = os.environ.get("BNGSIM_CODEGEN_CACHE_DIR", "").strip()
-    if env:
-        return Path(env).expanduser()
-    return Path.home() / ".cache" / "bngsim" / "codegen"
+    if not env:
+        return _home_dir() / ".cache" / "bngsim" / "codegen"
+    if env == "~" or env.startswith(("~/", "~" + os.sep)):
+        env = str(_home_dir()) + env[1:]
+    return Path(os.path.abspath(os.path.expanduser(env)))
 
 
 CACHE_DIR = _default_cache_dir()

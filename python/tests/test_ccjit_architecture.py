@@ -21,6 +21,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import bngsim
@@ -232,3 +233,65 @@ def test_a_blank_cc_is_an_unset_one(cc_run, monkeypatch):
     monkeypatch.setenv("CC", "   ")
     assert run().ssa_diagnostics["propensity_backend"] == "cc"
     assert len(_libraries(cache)) == 1
+
+
+@on_posix
+@requires_cc
+def test_a_relative_cache_dir_starting_with_a_dash_is_made_absolute(cc_run, tmp_path, monkeypatch):
+    """``-x`` reached the compiler as an option, not a path (review of #1927)."""
+    run, _, _ = cc_run
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BNGSIM_CODEGEN_CACHE_DIR", "-x")
+    assert run().ssa_diagnostics["propensity_backend"] == "cc"
+    assert len(_libraries(tmp_path / "-x")) == 1
+
+
+@on_posix
+@requires_cc
+def test_a_cc_whose_path_holds_a_blank_is_one_word(cc_run, tmp_path, monkeypatch):
+    run, cache, _ = cc_run
+    tools = tmp_path / "my tools"
+    tools.mkdir()
+    (tools / "cc").symlink_to(shutil.which("cc"))
+    monkeypatch.setenv("CC", str(tools / "cc"))
+    assert run().ssa_diagnostics["propensity_backend"] == "cc"
+    assert len(_libraries(cache)) == 1
+
+
+# ── The Python codegen reads the variable and the home the same way ─────────
+
+
+def _python_cache_dir(env: dict[str, str]) -> str:
+    code = "import bngsim._codegen as c; print(c.CACHE_DIR)"
+    base = {k: v for k, v in os.environ.items() if k not in ("HOME", "BNGSIM_CODEGEN_CACHE_DIR")}
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env={**base, **env},
+        timeout=300,
+    )
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
+
+
+@on_posix
+def test_an_unknown_user_in_the_cache_dir_does_not_break_import(tmp_path):
+    """``Path.expanduser()`` raised for ``~nosuchuser``, and ``import bngsim`` with
+    it; :func:`os.path.expanduser` leaves the path as written, as CcJit does."""
+    got = _python_cache_dir(
+        {"HOME": str(tmp_path), "BNGSIM_CODEGEN_CACHE_DIR": "~nosuchuser-bngsim/c"}
+    )
+    assert got.endswith("/~nosuchuser-bngsim/c") and os.path.isabs(got)
+
+
+@on_posix
+def test_an_empty_home_is_the_password_databases(tmp_path):
+    """``Path.home()`` is ``/`` for an empty HOME, which put the cache at the
+    read-only ``/.cache``."""
+    import pwd
+
+    got = _python_cache_dir({"HOME": ""})
+    assert got == f"{pwd.getpwuid(os.getuid()).pw_dir}/.cache/bngsim/codegen"
+    got = _python_cache_dir({"HOME": str(tmp_path), "BNGSIM_CODEGEN_CACHE_DIR": " ~/c "})
+    assert got == f"{tmp_path}/c"
