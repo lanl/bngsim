@@ -91,6 +91,51 @@ with no reactions (BNG2.pl's `generate_network` stops on one), and what BNGL
 can't express, such as `!=` and non-finite parameters. `strict=False` turns
 these into warnings, as above.
 
+An event at a fixed time becomes a `simulate` up to that time, then a
+`setConcentration` for each assignment. Its trigger time, delay and assigned
+values are read as the run reads them: a parameter that an initialAssignment
+sets has the value the run gives it, and so has one an assignment rule over
+constants sets, where the run computes the rule to the value the model holds
+before it runs. An event that reads one the run computes otherwise is
+refused, as is one whose trigger time, delay or assigned value reads a
+parameter a rate rule or another event changes, since its time or value
+isn't known before the run.
+
+A trigger that is already true at the start of `t_span` fires there only if
+its `initialValue` is false; otherwise the event never fires. A strict
+trigger on the start, `time > 0`, fires just past it, and so does one true
+there whose delay is too small to move it off the start: the actions set its
+values before the first `simulate`, so their first output row has them,
+where BNGsim's first row has the values from before; every later row agrees.
+Events at one time apply in the order BNGsim executes them: in priority
+order, highest first, with no priority counting as 0. Of equal priority,
+delayed events execute in the order they were triggered, and where none of
+the events of that priority that execute or trigger at that time has one (a
+plain 0 counts as none), after the ones that aren't delayed. BNGsim draws among the
+rest at random, and where that draw decides what a species is left at, the
+conversion is refused. So is an event whose delay is too small to move it
+off its trigger's time, which BNGsim executes after the rest of that
+instant, beside one that sets a species to another value there.
+
+Events due very close together BNGsim can execute as one instant or apart, as
+its rounding and its other stops fall: it merges two stops on the clock a few
+doubles apart into the later one, reads a strict trigger such as `time > 1` a
+little past its threshold, reads any trigger a little late just after it
+stops or executes an event, and counts a delay from where it read the
+trigger. So the conversion looks at each species' events that land within
+256·ε·max(|t|, 1) of each other, or 100·ε·(|t| + the run's length) where that
+is more (ε the double precision). One that lands later than another by more
+than that sets the species after it. Those that may set it last are ordered
+as above where they are one instant for certain: all landing on one double,
+or all triggered together on one by triggers that aren't strict, with none
+delayed. Where they aren't, and set the species to different values, the
+conversion is refused.
+Each time, delay, priority and value is BNGsim's own double, as its
+evaluator computes it from the doubles the model holds. Where the SBML's
+arithmetic, folded in another order, gives another, or where it is not a
+finite number, the event is refused, as BNGsim refuses a delay that is
+negative or not finite.
+
 A species set by an assignment rule is handled as in `.net`. Its molecule is
 named after the rule, `@comp1:$__ar_B()`, next to the function `B()`. BNGsim
 reads the pair as the rule when it loads the `.net` BNG2.pl generates, but
