@@ -44,9 +44,14 @@ using namespace NFcore;
  * sum is a pass over every reaction, where a pick stops at the one it draws, so
  * a test in update() would cost such a model a pass per firing. Where the total
  * is read, a sum comes once per 2^12 updates and once per fall by a factor of
- * 1024. A model whose total falls that far at every firing pays a pass at every
- * firing: one A flipping at 1e6 and back at 1e-3 beside 1000 births at 1e-6
- * runs about a third slower for it.
+ * 1024. Each is a pass over all N reactions, so a model whose total keeps
+ * falling that far below its peak slows in proportion to N. One A flipping at
+ * 1e6 and back at 1e-3, so that nearly every other firing is such a fall, ran
+ * 1.8 times as long beside 1000 births at 1e-9 as without the tests, and 17
+ * times as long beside 10,000. The count alone costs a pass per 4096 updates.
+ *
+ * RuleWorld/nfsim#128, merged upstream as 7501f675, makes the same test of the
+ * fall, before a waiting time is drawn, and has no count.
  *
  * The sum reads each reaction's get_a(), the propensities the running sum is
  * made of, rather than computing every rate again as refactorPropensities()

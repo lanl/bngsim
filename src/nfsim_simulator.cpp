@@ -1162,15 +1162,16 @@ static void require_finite_span(const char *where, double t_from, double t_to) {
 // A total propensity that is not finite (issues #1818, #1788). NFsim keeps its
 // total as a running sum, a_tot - old + new, so one non-finite propensity makes
 // it NaN for the rest of the run: the vendored NFsim sums the total afresh once
-// it falls far below its peak (#1666), but keeps a NaN for this check. Then
-// `a_tot > 0` is false, stepTo() takes the system to have nothing left to fire,
-// and every later row repeats the state it stopped in, with no error. The NaN
-// is the model's own: a rate law of sqrt(-1) (#1788, which ssa and ode refuse),
-// or one that divides by an observable in a state where it is 0. (NFsim used to
-// make one itself, reading a rate law while a firing had its molecules out of
-// the observables; the vendored NFsim carries RuleWorld/nfsim#117 for that,
-// #1818.) The reactions whose propensity is non-finite are listed; a propensity
-// can be finite again while the running total is not, so there may be none.
+// it falls far below its peak and every 4096 updates (#1666), but keeps a NaN
+// for this check. Then `a_tot > 0` is false, stepTo() takes the system to have
+// nothing left to fire, and every later row repeats the state it stopped in,
+// with no error. The NaN is the model's own: a rate law of sqrt(-1) (#1788,
+// which ssa and ode refuse), or one that divides by an observable in a state
+// where it is 0. (NFsim used to make one itself, reading a rate law while a
+// firing had its molecules out of the observables; the vendored NFsim carries
+// RuleWorld/nfsim#117 for that, #1818.) The reactions whose propensity is
+// non-finite are listed; a propensity can be finite again while the running
+// total is not, so there may be none.
 //
 // System::get_A_tot() is protected in NFsim, and the vendored tree is changed
 // only through its carry queue (scripts/NFSIM_VENDORING.md). A using-declaration

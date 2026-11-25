@@ -9,7 +9,8 @@ the total starts at kf*1e6 + ks. Once A and B were gone it held 0 at kf = 1e5,
 so D never fired, and 1.907e-6 at kf = 1e4, so D fired at 1.9 times its rate.
 D is born at a rate that reads nothing, so D(t) is Poisson with mean ks*t
 whatever kf is. The total is now summed afresh once it falls far below the
-largest value it has held since it was last summed.
+largest value it has held since it was last summed, and every 4096 updates,
+which bounds the rounding where the total never falls far.
 
 ``stepTo`` also fired nothing while the total was 1e-9 or less, a threshold in
 the model's own time unit: ``0 -> D()`` at 5e-10 gave D = 0 for a mean of 20,

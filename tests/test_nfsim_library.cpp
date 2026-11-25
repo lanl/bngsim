@@ -16,6 +16,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -748,8 +749,11 @@ static bool test_running_total_stays_near_its_sum(const string & /*xml_path*/) {
     }
     s->registerOutputFileLocation("/dev/null");
     s->outputAllObservableNames();
+    // The waiting times and the picks draw from the System's own generator,
+    // seeded here. NFutil's process-wide one only chooses the molecules a
+    // reaction acts on, and here a flip has one A to choose and a birth none.
+    // The result does not hang on the seed: every cycle rounds the same way.
     s->seedRNG(1);
-    NFutil::SEED_RANDOM(1);
     s->prepareForSimulation();
 
     const vector<ReactionClass *> rxns = s->getAllReactions();
@@ -758,11 +762,26 @@ static bool test_running_total_stays_near_its_sum(const string & /*xml_path*/) {
         delete s;
         return false;
     }
+    // 30000 cycles take 2.0e5 on average (1/k0 + 1/k1 = 6.7 each), give or
+    // take 0.4%. A run that has not done them by 3e5 has stopped flipping.
     const int cycles = 30000;
+    const double tCap = 3e5;
     double t = 0.0;
-    while (rxns[0]->getFireCounter() < cycles) {
-        t += 1000.0;
-        s->stepTo(t);
+    try {
+        while (rxns[0]->getFireCounter() < cycles && t < tCap) {
+            t += 1000.0;
+            s->stepTo(t);
+        }
+    } catch (const std::exception &e) {
+        cout << "FAILED (stepTo threw at t = " << t << ": " << e.what() << ")" << endl;
+        delete s;
+        return false;
+    }
+    if (rxns[0]->getFireCounter() < cycles) {
+        cout << "FAILED (" << rxns[0]->getFireCounter() << " of " << cycles
+             << " cycles by t = " << t << ")" << endl;
+        delete s;
+        return false;
     }
 
     const double running = (s->*(&TotalPropensityReader::get_A_tot))();

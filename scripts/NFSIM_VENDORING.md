@@ -192,13 +192,21 @@ Current carry topics:
   are made where the total is read, before a waiting time is drawn
   (`ReactionSelector::getAtotForDraw()`) and before a pick, not in `update()`,
   so a total that dips and comes back within a firing costs no pass over the
-  reactions. A total that is not finite is kept, for the host's check to
-  refuse. `stepTo`, `sim` and `singleStep` fired nothing at a total of 1e-9 or
-  less (`ATOT_TOLERANCE`), a rate in the model's own time unit (GH #1672); they
-  test `a_tot > 0` now, and the selector picks nothing from a total that is not
-  above 0. Filed upstream as RuleWorld/nfsim#123. Upstream master still keeps a
-  running total and `ATOT_TOLERANCE`, so this is ported again when the base
-  moves (GH #519)
+  reactions. Each sum is a pass over all N reactions, so a model whose total
+  keeps falling 1024-fold slows in proportion to N: one A flipping at 1e6 and
+  back at 1e-3 beside 10,000 births at 1e-9 ran 17 times as long. A total that
+  is not finite is kept, for the host's check to refuse. `stepTo`, `sim` and
+  `singleStep` fired nothing at a total of 1e-9 or less (`ATOT_TOLERANCE`), a
+  rate in the model's own time unit (GH #1672); they test `a_tot > 0` now, and
+  the selector picks nothing from a total that is not above 0. This is
+  RuleWorld/nfsim#123, fixed upstream by RuleWorld/nfsim#128, merged as
+  `7501f675`, written against the pinned base. Upstream makes the same test of
+  the fall before a waiting time is drawn and has the rest, but no count: at
+  `7501f675` `drifting_flip.xml` still loses 2.2e-16 a cycle and its last
+  reaction is lost. The carry also keeps the peak at every update, tests before
+  a pick too, and on an empty pick has `stepTo` draw again rather than stop, as
+  the time-table carry above needs. When the base moves past `7501f675`, reduce
+  it to the count rather than drop it (GH #519)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`
@@ -335,7 +343,8 @@ Expected carry order:
     RuleWorld/nfsim#117, merged upstream as `a0bf9134`)
 26. the selector's running total summed afresh once it falls far below its
     peak or has taken many updates, and a reaction fired at any total above 0
-    (GH #1666, GH #1672; RuleWorld/nfsim#123)
+    (GH #1666, GH #1672; RuleWorld/nfsim#123, fixed upstream by
+    RuleWorld/nfsim#128 as `7501f675` without the count)
 
 When you intentionally change the carry stack, regenerate the patch bundle
 afterward.

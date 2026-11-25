@@ -1,6 +1,6 @@
-From d43372eb0e2e82c2f794c792e1df5bfc4293d0fc Mon Sep 17 00:00:00 2001
+From 7e8c9e1be07232b45a262a5aa2d1d31306e5e5c7 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
-Date: Tue, 24 Nov 2026 16:36:00 -0700
+Date: Tue, 24 Nov 2026 18:13:50 -0700
 Subject: [PATCH] bngsim: sum the total propensity afresh once it falls far,
  and fire above 0
 
@@ -35,8 +35,12 @@ reaction before it joins the next, and a sum is a pass over every
 reaction where a pick may stop at the first: tested in update(), it made
 a model with one such molecule beside 300 reactions 25% slower. Tested
 where the total is read, a sum comes once per 2^12 updates and once per
-fall by a factor of 1024; a model whose total falls that far at every
-firing pays a pass at every firing. A total that is not finite is never
+fall by a factor of 1024. Each is a pass over all N reactions, so a
+model whose total keeps falling that far below its peak slows in
+proportion to N: one A flipping at 1e6 and back at 1e-3, nearly every
+other firing a fall, ran 1.8 times as long beside 1000 births at 1e-9 as
+without the tests, and 17 times as long beside 10,000. The count alone
+costs a pass per 4096 updates. A total that is not finite is never
 summed afresh there, and is kept for the host to report.
 System::getNextRxn takes a_tot from the selector after each pick.
 
@@ -49,21 +53,33 @@ picks no reaction from a total that is not above 0: random(0) is 0,
 which the first reaction passes with a propensity of 0. stepTo and sim
 then draw again from the total the selector found.
 
-Filed upstream as RuleWorld/nfsim#123, which covers both. Upstream
-master has rewritten DirectSelector but still keeps a running total and
-ATOT_TOLERANCE, so this carry is to be ported again when the base moves
-(bngsim GH #519).
+This is RuleWorld/nfsim#123, fixed upstream by RuleWorld/nfsim#128,
+merged as 7501f675, and written here against the pinned base. Upstream
+makes the same test of the fall, below 2^-10 of the peak since the last
+sum or below 0, sums afresh from the propensities the selector holds,
+removes ATOT_TOLERANCE, picks nothing from a total that is not above 0,
+and reads a_tot back after a pick. This carry diverges in four ways. It
+also sums the total afresh every 4096 updates, which upstream lacks: at
+7501f675 the running total on bngsim's
+tests/data/nfsim/drifting_flip.xml still loses 2.2e-16 a cycle, and the
+reaction listed last is lost. It keeps the peak at every update, not
+only where the total is read. It also tests before a pick. And where a
+pick finds nothing, stepTo draws again rather than going to the stopping
+time, as the time-table breakpoints of
+bngsim/carry-step-to-time-table-breakpoints need, and sim draws again
+where upstream lets the time pass. When the base moves past 7501f675,
+reduce this carry to the count rather than drop it (bngsim GH #519).
 ---
- .../reactionSelector/directSelector.cpp       | 90 +++++++++++++++++++
+ .../reactionSelector/directSelector.cpp       | 95 +++++++++++++++++++
  .../reactionSelector/reactionSelector.hh      | 18 ++++
- src/NFcore/system.cpp                         | 36 ++++++--
- 3 files changed, 136 insertions(+), 8 deletions(-)
+ src/NFcore/system.cpp                         | 36 +++++--
+ 3 files changed, 141 insertions(+), 8 deletions(-)
 
 diff --git a/src/NFcore/reactionSelector/directSelector.cpp b/src/NFcore/reactionSelector/directSelector.cpp
-index 5f75b1f..b3df794 100644
+index 5f75b1f..7383d45 100644
 --- a/src/NFcore/reactionSelector/directSelector.cpp
 +++ b/src/NFcore/reactionSelector/directSelector.cpp
-@@ -9,10 +9,53 @@
+@@ -9,10 +9,58 @@
  
  #include "reactionSelector.hh"
  
@@ -102,9 +118,14 @@ index 5f75b1f..b3df794 100644
 + * sum is a pass over every reaction, where a pick stops at the one it draws, so
 + * a test in update() would cost such a model a pass per firing. Where the total
 + * is read, a sum comes once per 2^12 updates and once per fall by a factor of
-+ * 1024. A model whose total falls that far at every firing pays a pass at every
-+ * firing: one A flipping at 1e6 and back at 1e-3 beside 1000 births at 1e-6
-+ * runs about a third slower for it.
++ * 1024. Each is a pass over all N reactions, so a model whose total keeps
++ * falling that far below its peak slows in proportion to N. One A flipping at
++ * 1e6 and back at 1e-3, so that nearly every other firing is such a fall, ran
++ * 1.8 times as long beside 1000 births at 1e-9 as without the tests, and 17
++ * times as long beside 10,000. The count alone costs a pass per 4096 updates.
++ *
++ * RuleWorld/nfsim#128, merged upstream as 7501f675, makes the same test of the
++ * fall, before a waiting time is drawn, and has no count.
 + *
 + * The sum reads each reaction's get_a(), the propensities the running sum is
 + * made of, rather than computing every rate again as refactorPropensities()
@@ -117,7 +138,7 @@ index 5f75b1f..b3df794 100644
  
  
  DirectSelector::DirectSelector(vector <ReactionClass *> &rxns, System *sys) :
-@@ -25,6 +68,7 @@ DirectSelector::DirectSelector(vector <ReactionClass *> &rxns, System *sys) :
+@@ -25,6 +73,7 @@ DirectSelector::DirectSelector(vector <ReactionClass *> &rxns, System *sys) :
  		reactionClassList[r] = rxns.at(r);
  		Atot += reactionClassList[r]->get_a();
  	}
@@ -125,7 +146,7 @@ index 5f75b1f..b3df794 100644
  }
  
  
-@@ -42,6 +86,39 @@ double DirectSelector::refactorPropensities()
+@@ -42,6 +91,39 @@ double DirectSelector::refactorPropensities()
  	for(int r=0; r<n_reactions; r++) {
  		Atot += reactionClassList[r]->update_a();
  	}
@@ -165,7 +186,7 @@ index 5f75b1f..b3df794 100644
  	return Atot;
  }
  
-@@ -50,6 +127,11 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
+@@ -50,6 +132,11 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
  {
  	Atot-=oldA;
  	Atot+=newA;
@@ -177,7 +198,7 @@ index 5f75b1f..b3df794 100644
  	return Atot;
  }
  
-@@ -57,6 +139,14 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
+@@ -57,6 +144,14 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
  
  double DirectSelector::getNextReactionClass(ReactionClass *&rc)
  {
