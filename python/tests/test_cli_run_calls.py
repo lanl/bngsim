@@ -137,6 +137,18 @@ def test_a_condition_that_cannot_be_read_is_a_usage_error():
     assert error["details"]["value"] == "nope > 1"
 
 
+def test_an_unavailable_network_free_method_gets_simulators_own_refusal():
+    """run-until runs on the network, so a network-free method is pointed at
+    ``bngsim run --xml``; but nf_fixed is unavailable there too, and the pointer
+    led to a second refusal. Simulator's message says so at once."""
+    net = str(examples.path("binding", "net"))
+    run = _bngsim(
+        "run-until", net, "--method", "nf_fixed", "--t-end", "5", "--stop-when", "A<1", "--json"
+    )
+    error = _error(run, _cli.EXIT_USAGE, "usage.not_supported")
+    assert "unavailable" in error["message"] and "bngsim run" not in error["message"]
+
+
 # ─── run-batch ───────────────────────────────────────────────────────────────
 
 
