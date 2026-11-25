@@ -45,10 +45,13 @@ that checkout, so run the copy in the checkout you mean to change (GH #864).
   its own parity run (GH #519 tracks it), not a carry drop.
 - Vendoring metadata should record canonical upstream remote
   `https://github.com/RuleWorld/nfsim.git`.
-- Every carry in the queue is a required local carry. There are no active
-  upstream-PR carries: the earlier local carries behind RuleWorld/nfsim PRs
-  `#69`, `#70`, `#72`, `#73`, `#74`, `#80`, `#81`, `#82`, `#89`, and `#92` are
-  now in upstream `origin/master` and should stay out of the local carry queue.
+- Every carry in the queue is still live, because the base is still
+  `1a54f387`. Upstream v2.0.1 (`bc0a025a`, released 2026-11-25) holds its own
+  versions of most of them. "Upstream Status (v2.0.1)" below says which carries a
+  refresh to it drops, which ones it changes, and which it keeps (GH #519). The
+  earlier carries behind RuleWorld/nfsim PRs `#69`, `#70`, `#72`, `#73`, `#74`,
+  `#80`, `#81`, `#82`, `#89`, and `#92` are in upstream `origin/master` and
+  should stay out of the local carry queue.
 - RuleWorld/nfsim `#92` merged on 2026-08-31 and took the TotalRate symmetry
   carry upstream (GH #426, GH #428). The queue went from 14 carries to 13 and the
   base moved to that merge commit. Upstream's version is the same guard; only
@@ -68,6 +71,62 @@ that checkout, so run the copy in the checkout you mean to change (GH #864).
 - `bngsim/vendor-next` is retired. Do not use or recreate it.
 
 If this doc and `VENDOR.json` disagree, trust `VENDOR.json`.
+
+## Upstream Status (v2.0.1)
+
+On 2026-11-25 every carry was checked against upstream `a313a9b` (v2.0.0)
+with the upstream CLI. Each defect still present there was filed upstream with a
+measured repro and a PR, and all of those PRs are in v2.0.1 (`bc0a025a`). The
+table is what a refresh to v2.0.1 should do with each carry. Numbers in this
+section are RuleWorld/nfsim's unless they say GH. "Drop" still means
+running the parity checks first; several of the upstream fixes differ from the
+carry they replace.
+
+| carry | RuleWorld/nfsim issue → PR | on a refresh to v2.0.1 |
+|---|---|---|
+| 0003 TFUN comment lines | #150 → #153 | Drop. Upstream reads one point per line, skips `#` comments and blank lines, and refuses a line without exactly two numbers. |
+| 0008 composite reactant-count guard | #151 → #154 | Drop. #154 makes `CompositeFunction::evaluateOn` throw when a composite that reads `reactant_N()` is given no counts, the guard this carry adds. Only the message differs, and bngsim's output-column probe catches any exception. #154 also refuses at load a rate law that reads past its rule's reactants. |
+| 0013 zero-rate rules kept | #137 → #140 | Drop, and change the caller. Upstream has no `keepZeroRateReactions` flag. `NFinput::initializeFromXML` takes `changeableParameters` and keeps a zero-rate rule only when its own rate parameter is named there. `push_overrides_to_system` re-evaluates the whole XML parameter table and writes dependents such as `_rateLawN`, so the session has to pass every parameter name in the XML, not only the ones a user sets. A name left out is a silent no-op again. |
+| 0014, 0015, 0021 mu::Parser shim: `rint`, literals, bracket after a call | #152 → #155 | Rebase; don't drop. Upstream fixed the shim with code of its own. These carries (GH #771, #1013, #1415) forward the same behaviour to the single source `bngsim::expr_compat` (GH #49), so they should replace upstream's copies. #155 refuses a second statement by compiling the expression in brackets, which is broader than 0021's scan, so compare the two before choosing. |
+| 0016, 0017 zero-order rate through its volume conversion | #105 → #111 (in v2.0.0) | Drop. #111 makes a `set` reach a zero-order rule's rate, and `applyZeroOrderVolumeScaling` scales `baseRate` in place and keeps its parameter name, so the symmetry factor is applied once (0017). #105 stays open for a compartment's size, which still can't change after load. |
+| 0018 MM kcat and Km refreshed | #136 → #141 | Drop. |
+| 0020 time-indexed tables | #142 → #143 | Drop. Upstream covers `sim()`, `stepTo()` and `singleStep()`, and refuses a local-function rate law that reads a table of time. Its integration stops with `exit(1)` on a singular rate (two sites in `system.cpp`); see the exit→throw note below the table. |
+| 0022 whole-species deletion and MatchOnce counted once per complex | #148 → #149 | Drop, and close one gap first. Upstream also counts MatchOnce across the permutations of a symmetric reaction centre and over a disjoint pattern's clones. An MM rule that picks a complex holding two or more matches stops with `exit(1)` in `ReactionClass::fire` (`reactionClass.cpp`). `refuse_nfsim_rate_laws` does not catch every such rule: it lets through a one-molecule pattern with no bond sites, and symmetric components give that two matches. `{MatchOnce}S(p~u) + E() -> S(p~p) + E() MM(kcat,Km)` on `S(p~u~p,p~u~p)` passes the refusal, and v2.0.1 stops with "holds 2 matches". That site needs a throw hunk, which no exit→throw carry has, or a wider host check. |
+| 0023 bond partner type checked before indexing | → #113 (in v2.0.0) | Drop. |
+| 0024 product molecularity | #132, #133 → #139, #138 (on top of #103) | Drop only part of it. Upstream runs the product-side test only under complex bookkeeping (`transformationSet.cpp`, #103's `-no-bscb`), where the carry runs it however bookkeeping is set. An `NfsimSession(..., block_same_complex_binding=False)` turns that off, and in that mode upstream would open rings again: keep that half or refuse the mode. Upstream also still fires a rule whose product pattern holds a molecule joined to its reactant pattern by `.` alone (`A(b!1).B(a!1).C(c) -> A(b).C(c) + B(a)` on A-B-C with C bonded to B: 100 → 39 where BioNetGen gives no reaction), so check 0024's fixtures for that shape too. |
+| 0025 rates held until a firing is done | #115 → #117 (in v2.0.0) | Drop. |
+| 0026 total propensity summed afresh | #123, #130 → #128, #131 (in v2.0.0) | Reduce; don't drop yet. #131 adds the update count that #130 asked for. But the carry never sums afresh a total that is not finite, and the host relies on that: its check of a total that is not finite needs the NaN to still be there (the comment above that check in `nfsim_simulator.cpp`, GH #1818, #1788). Upstream's `getCheckedAtot` has no such guard and sums afresh every 4096 updates, so a passing `inf` can be cleared before the host looks (read from the code, not run). Keep that guard. The carry also keeps the peak at every update and tests the fall before a pick as well as before a draw; on an empty pick upstream's plain `stepTo` goes to the stopping time, and only its time-table branch draws again. |
+
+The exit→throw carries (0002, 0005, 0019) have to be audited over the whole
+range a refresh takes, `1a54f387..v2.0.1`, not just v2.0.1's own changes.
+v2.0.0→v2.0.1 adds seven `exit(1)` calls in `src/`: `reactionClass.cpp` (the MM
+stop in 0022's row), `system.cpp` (two, the time-table integration),
+`funcParser.cpp` (three, the ExprTk self-test, which bngsim does not run) and
+`transformationSet.cpp` (a guard against adding to a finalized set).
+`1a54f387..v2.0.0` adds more: five in `DORreaction.cpp`'s energy-pattern
+constructors, which become reachable once the Arrhenius refusal is dropped (GH
+#1057), one in `localFunction.cpp`'s rewritten connected-component evaluation,
+and one in `transformationSet.cpp` (plus one in the self-test and one in the
+CLI's `NFsim.cpp`, which bngsim neither runs nor builds). 0019 says it covers every live site in
+`DORreaction.cpp`, so it has to be extended.
+
+Not tied to a carry, but fixed in v2.0.1 from the same work:
+
+- A Hill rule, which NFsim does not implement, is refused at load (#134 → #135).
+  It used to run without the rule. `refuse_nfsim_rate_laws` refuses it by
+  name before the load and can stay.
+- `System::sim` no longer fires the reaction drawn past its end time (#145 → #146),
+  and RNF commands are told apart by their first word (#144 → #147). bngsim
+  drives `stepTo()` and uses no RNF scripts, so neither touched it.
+
+Still open upstream: on a local-function rule, a pure-context homodimer or ring is
+counted once per molecule when the function reads the other reactant (#156). bngsim's embedded NFsim has the
+same defect and does not refuse it: 1479 and 900 against BioNetGen's 2426
+(GH #1955). Its one-line fix waits on a cached distinct-complex count.
+
+Kept, and not offered upstream: the exit→throw carries (0002, 0005, 0019), which
+#76 defers past 2.0.0, and the bngsim-only carries (0001, 0004,
+0006, 0007, 0009–0012).
 
 ## Source Of Truth
 
@@ -222,7 +281,8 @@ NFsim's energy-rule expansion divides by an `RT` BioNetGen does not apply and
 gets one-way and state-change rules wrong (RuleWorld/nfsim#102); when a refresh
 brings in the upstream fix, drop that half and test NFsim against the generated
 network instead (gated issue #1057 lists the steps). A rate-law type outside Ele, MM, Function and FunctionProduct
-is refused because NFsim implements none: it drops a Hill rule silently.
+is refused because NFsim implements none: it drops a Hill rule silently (upstream v2.0.1
+refuses it at load, RuleWorld/nfsim#135).
 
 Dropped carries that are now upstream include connectivity determinism,
 observable-output accessors, NFsim's library-build/export toggles, the old
