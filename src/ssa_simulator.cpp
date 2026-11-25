@@ -1198,22 +1198,29 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
     // A no-op unless the model has such a species (live_tags) and the size has
     // moved; then the row's species stay as stored, and the report rescales
     // them (Simulator._apply_varvol_*). An observable B := 2*X read 64 for 32
-    // after c: 2 -> 4.
-    std::vector<double> live_view;
+    // after c: 2 -> 4. The size of a compartment an assignment rule sets is the
+    // rule's value at the row's time, read on the concentrations
+    // (NetworkModel::ssa_rule_values), as the ODE run reads it: read on the
+    // counts, c2 := V0 + Y with Y = 20 molecules at c1 = 4 was 13 for 8, and
+    // the row's observable S, p := 2*S and q := S*S/10 read 10, 20 and 10 for
+    // 16.25, 32.5 and 26.41 (issue #1754).
+    std::vector<double> live_view, rule_sizes;
     auto relive_row = [&](int k, double t_eval, const double *cc) {
         if (!live_tags)
             return;
         const double t_abs = origin + t_eval;
         for (int si = 0; si < ns; ++si)
             sp_vec_ref[si].concentration = cc[si];
-        if (live_param_tags) { // the rule's size at the row's time
-            model.update_observables(cc);
-            model.evaluate_functions(t_abs);
-        }
+        if (live_param_tags)
+            rule_sizes = model.ssa_rule_values(t_abs, cc, true);
         live_view.assign(cc, cc + ns);
         bool moved = false;
         for (int si = 0; si < ns; ++si) {
-            const double v = live_size(si, cc);
+            const Species &sv = sp_vec_ref[si];
+            double v = live_size(si, cc);
+            if (sv.ssa_live_volume_idx0 < 0 && sv.ssa_live_volume_param_idx0 >= 0 &&
+                sv.ssa_live_volume_param_idx0 < static_cast<int>(rule_sizes.size()))
+                v = rule_sizes[static_cast<std::size_t>(sv.ssa_live_volume_param_idx0)];
             const double vf = sp_vec_ref[si].volume_factor;
             if (std::isfinite(v) && v > 0.0 && v != vf) {
                 live_view[si] = cc[si] * vf / v;
@@ -1237,6 +1244,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
             sp_vec_ref[si].concentration = cc[si];
         model.update_observables(cc);
         model.evaluate_functions(t_abs);
+        // obs_buf goes back to the stored state's too: a row the stuck loops
+        // record from it without a resize of its own read this row's resized
+        // observables, X = 20 at c's load-time size beside [X] = 10.
+        for (int j = 0; j < n_obs; ++j)
+            obs_buf[j] = model.observables()[j].total;
     };
 
     // Issues #719/#751/#753 — the continuous path (see the loop for models with
@@ -1814,14 +1826,26 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
             // (a resize among them included) apply (issue #741). In a
             // compartment an assignment rule sizes, V_live is the rule's value
             // there; left out, S = 50 at t = 2 in c := 1 + time was stored over
-            // the load-time size 1, [S](3) 12.5 for 37.5 (issue #1659).
+            // the load-time size 1, [S](3) 12.5 for 37.5 (issue #1659). The rule
+            // reads concentrations, so it is evaluated on them, as a row reads
+            // it: read on the counts, c2 := V0 + Y with Y = 20 molecules at
+            // c1 = 4 was 13 for 8, and S = 20 was stored as 260 molecules for
+            // 160 (issue #1754).
+            std::vector<double> rule_sizes;
             for (size_t a = 0; a < assigns.size(); ++a) {
                 const int sp = assigns[a].first;
                 if (sp < 0 || sp >= ns)
                     continue;
-                const double v = live_size(sp, conc.data());
+                const Species &sv = model.species()[static_cast<size_t>(sp)];
+                double v = live_size(sp, conc.data());
+                if (sv.ssa_live_volume_idx0 < 0 && sv.ssa_live_volume_param_idx0 >= 0) {
+                    if (rule_sizes.empty())
+                        rule_sizes = model.ssa_rule_values(origin + t_now, conc.data(), true);
+                    if (sv.ssa_live_volume_param_idx0 < static_cast<int>(rule_sizes.size()))
+                        v = rule_sizes[static_cast<size_t>(sv.ssa_live_volume_param_idx0)];
+                }
                 if (!std::isnan(v))
-                    nv[a] *= v / model.species()[static_cast<size_t>(sp)].volume_factor;
+                    nv[a] *= v / sv.volume_factor;
             }
             auto is_ode_only = [&](size_t a) {
                 return a < ev.assignment_ode_only.size() && ev.assignment_ode_only[a];

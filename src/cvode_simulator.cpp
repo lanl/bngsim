@@ -17540,6 +17540,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     impl_->last_run_roundoff_spacing = 0.0;
     const int ns = model.n_species();
     const int n_obs = model.n_observables();
+    // The run integrates concentrations: an SSA run's counts are read at the
+    // size each compartment has at the start (issue #1754), before anything
+    // reads them.
+    model.ssa_counts_to_concentrations(times.t_start);
 
     // Contradictory linear-solver pin (GH #29). Checked ahead of everything
     // else because it is a property of the request, not of the model: silently
