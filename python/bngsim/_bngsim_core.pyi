@@ -12,6 +12,10 @@ class CvodeSimulator:
         """
         Create an ODE (CVODE) simulator for the given model
         """
+    def last_run_roundoff_steps(self) -> tuple[int, int, float]:
+        """
+        The steps the last run() took where t + h == t, the first row it recorded after one (-1 for none), and the spacing of the doubles there.
+        """
     def run(self, times: TimeSpec, opts: SolverOptions = ...) -> ResultCore:
         """
         Run ODE simulation (releases GIL)
@@ -371,6 +375,10 @@ class NetworkModel:
         """
         Bulk-assign all species concentrations from a 1-D float64 ndarray, ordered like species_names(). O(n_species), one Python call (GH #102).
         """
+    def ssa_start_amounts(self, t: typing.SupportsFloat | typing.SupportsIndex) -> list[float]:
+        """
+        The amount of each species an SSA run starting at t counts, before it rounds them, ordered like species_names(): the stored value times volume_factor, but for a concentration species in a compartment whose size moves, the stored value times the size at t unless the state is an SSA run's counts already (issue #1754). Leaves the model as it was.
+        """
     def state_switch_residual(self, condition_src: str) -> tuple[str, str]:
         """
         Resolve one rate-law condition atom as a state switch (issue #150), returning (residual_source, why_not). A non-empty residual means the solver can locate this crossing as a root and differentiate dt*/dθ there, so the saltation jump (f⁻−f⁺)·dt*/dθ WILL be applied and the condition needs no refusal; an empty one comes with the reason it is not one — a conjunction, a negation, a comparison one of whose sides is itself a comparison (its residual would be a difference of two booleans, a step with no gradient), or a comparison that reads no live model state. The residual identifies the CROSSING rather than its spelling, so `X<1`, `X<=1` and `X==1` all return the same string and callers dedupe on it. An equality is admitted here and refused by the event-trigger path, which needs a rising edge rather than a surface (issue #381). This is the one authority: the codegen gate and the run-time detector both ask it, so neither can classify a condition the other would not.
@@ -402,6 +410,14 @@ class NetworkModel:
         """
         Conservation laws detected from stoichiometry matrix
         """
+    @property
+    def current_time(self) -> float:
+        """
+        The model's clock: the time its stored state is at, which a run's write-back sets and reset() puts at 0. get_concentration and set_concentration read the size of a compartment an assignment rule sets at it, over an SSA run's state (issue #1754). Writable so a primitive that puts a state back can put its time back with it.
+        """
+    @current_time.setter
+    def current_time(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
     @property
     def event_assigned_species(self) -> list[int]:
         """
@@ -1161,6 +1177,12 @@ class SolverStats:
     def n_rhs_evals(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
+    def n_roundoff_steps(self) -> int:
+        ...
+    @n_roundoff_steps.setter
+    def n_roundoff_steps(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
     def n_sens_err_test_fails(self) -> int:
         ...
     @n_sens_err_test_fails.setter
@@ -1177,6 +1199,18 @@ class SolverStats:
         ...
     @n_steps.setter
     def n_steps(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def roundoff_first_row(self) -> int:
+        ...
+    @roundoff_first_row.setter
+    def roundoff_first_row(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def roundoff_spacing(self) -> float:
+        ...
+    @roundoff_spacing.setter
+    def roundoff_spacing(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
     def steady_state_residual(self) -> float:

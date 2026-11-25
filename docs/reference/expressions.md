@@ -192,7 +192,37 @@ term, a dosing schedule, or a measured time course. After load it can take
 other data, over the same index, without editing the model:
 
 ```python
-model = bngsim.Model.from_net("model.net")  # declares signal() and drive() as tfuns
+from pathlib import Path
+
+import bngsim
+
+# A model whose functions block declares signal() and drive() as tfuns, and a
+# .tfun file of new data for signal().
+Path("model.net").write_text(
+    """\
+begin parameters
+    1 k  1.0
+end parameters
+begin species
+    1 A()  0
+end species
+begin functions
+    1 signal()  tfun([0, 10], [0, 1], time)
+    2 drive()   tfun([0, 10], [1, 1], time)
+    3 rate()    k*signal()*drive()
+end functions
+begin reactions
+    1 0 1 rate
+end reactions
+begin groups
+    1 A 1
+end groups
+""",
+    encoding="utf-8",
+)
+Path("signal_2021.tfun").write_text("# time  signal\n0  0\n5  2\n10  1\n", encoding="utf-8")
+
+model = bngsim.Model.from_net("model.net")
 model.add_table_function("signal", file="signal_2021.tfun")
 model.add_table_function("drive", times=[0, 1, 2, 5, 10], values=[0, 0, 1, 5, 5])
 ```

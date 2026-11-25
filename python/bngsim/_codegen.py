@@ -25,6 +25,7 @@ import operator
 import os
 import platform
 import re
+import shlex
 import signal
 import struct
 import subprocess
@@ -335,7 +336,13 @@ _compile_counter = itertools.count()
 # (issue #1507). The key also names the architecture now (issue #1486). The
 # source digest already moves for all of it; the bump is for an install whose
 # digest is empty. Invalidate v42.
-_CODEGEN_VERSION = "43"
+# v44: lanl/bngsim #1759 — on macOS every compile and link asks for the
+# interpreter's architecture with -arch. Under Rosetta a v43 compile built arm64
+# for an x86_64 Python and cached it under the x86-64 key, where every later run
+# failed at dlopen. The source digest already moves; the bump is for an install
+# whose digest is empty, which would go on loading those libraries. Invalidate
+# v43.
+_CODEGEN_VERSION = "44"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -416,18 +423,28 @@ def _codegen_arch_tag(machine: str | None = None) -> str:
     one it can load, as a key field carries it (issue #1486).
 
     ``platform.machine()`` of the running interpreter: ``arm64`` for a native
-    Python on Apple Silicon, ``x86_64`` for one under Rosetta (whose compiler
-    builds for x86_64 too), ``aarch64`` or ``x86_64`` on Linux. Written in
-    lowercase with every run of other characters as one ``-``, so that it adds
-    nothing :data:`_KEY_FIELD_UNSAFE` would rewrite and the key stays its own
-    field: ``x86_64`` is ``x86-64``.
+    Python on Apple Silicon, ``x86_64`` for one under Rosetta, ``aarch64`` or
+    ``x86_64`` on Linux. Written in lowercase with every run of other characters
+    as one ``-``, so that it adds nothing :data:`_KEY_FIELD_UNSAFE` would rewrite
+    and the key stays its own field: ``x86_64`` is ``x86-64``.
+
+    On macOS the compiler is told to build for that machine (:func:`_arch_flags`),
+    because Apple's ``cc`` builds for the hardware it runs on, not for the
+    process that starts it: under Rosetta it built arm64 for an x86_64 Python
+    (issue #1759).
     """
     raw = platform.machine() if machine is None else machine
     return re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-") or "unknown"
 
 
+#: The machine this process runs as, as ``platform.machine()`` names it. The
+#: architecture field of the cache key spells it (:data:`_CODEGEN_ARCH`), and on
+#: macOS every codegen compile and link asks for it with ``-arch``
+#: (:func:`_arch_flags`), so a library is named for the machine it is built for.
+_CODEGEN_MACHINE = platform.machine()
+
 #: This process's :func:`_codegen_arch_tag`.
-_CODEGEN_ARCH = _codegen_arch_tag()
+_CODEGEN_ARCH = _codegen_arch_tag(_CODEGEN_MACHINE)
 
 
 # The token every codegen cache key mixes in. Use this, never ``_CODEGEN_VERSION``
@@ -1606,12 +1623,26 @@ def _translate_bngl_if_to_piecewise(expr: str) -> str:
             out_parts.append(expr[m.start() : close_paren + 1])
             cursor = close_paren + 1
             continue
-        c_raw, t_raw, f_raw = (a.strip() for a in args)
-        # Recurse so nested ifs are translated too.
-        c = _translate_bngl_if_to_piecewise(c_raw)
-        t = _translate_bngl_if_to_piecewise(t_raw)
-        f = _translate_bngl_if_to_piecewise(f_raw)
-        out_parts.append(f"Piecewise(({t}, {c}), ({f}, True))")
+        # Recurse so nested ifs are translated too, except along a chain of
+        # false branches that are each all one if(): those are followed here
+        # and written in as each other's default, the same nested text without
+        # a Python frame per link (:func:`_bracketed_if_call`).
+        # Each link keeps the brackets its false branch was written in.
+        links = []
+        while True:
+            c_raw, t_raw, f_raw = (a.strip() for a in args)
+            c = _translate_bngl_if_to_piecewise(c_raw)
+            t = _translate_bngl_if_to_piecewise(t_raw)
+            link = _bracketed_if_call(f_raw)
+            if link is None:
+                links.append((c, t, "", ""))
+                break
+            before, args, after = link
+            links.append((c, t, before, after))
+        piecewise = _translate_bngl_if_to_piecewise(f_raw)
+        for c, t, before, after in reversed(links):
+            piecewise = f"Piecewise(({t}, {c}), ({before}{piecewise}{after}, True))"
+        out_parts.append(piecewise)
         cursor = close_paren + 1
     return "".join(out_parts)
 
@@ -5006,6 +5037,17 @@ def _shared_lib_suffix() -> str:
         return ".so"
 
 
+class _UnreadableCC(RuntimeError):
+    """``CC`` cannot be split into a command line (an unclosed quote): the
+    environment's mistake, which no installed compiler would fix."""
+
+
+def _shell_would_change(text: str) -> bool:
+    """Whether splitting ``text`` as the shell does could make of it anything but
+    itself: it has a blank, a quote or a backslash in it."""
+    return any(ch.isspace() or ch in "'\"\\" for ch in text)
+
+
 def _find_c_compiler() -> list[str]:
     """Find the best available C compiler and return its base command.
 
@@ -5016,15 +5058,39 @@ def _find_c_compiler() -> list[str]:
       2. Platform defaults:
          - Windows: cl.exe (MSVC), then gcc (MinGW)
          - Unix: cc
+
+    On Linux and macOS ``CC`` is a command line, split as the shell splits it,
+    as make and CMake read it: ``CC="ccache cc"`` or ``CC="cc -arch x86_64"``
+    is a compiler and its arguments (issue #1759). A path with a space in it is
+    quoted, except that a ``CC`` which as a whole names an executable (a path
+    with a space, a quote or a backslash in it) is that executable, as it was
+    before ``CC`` was split. On Windows it is one path,
+    as it always was, since a path there often has a space in it and a
+    backslash, which the shell's rules would take as an escape. A ``CC`` that
+    is empty or only blanks is not set.
+
+    Raises :class:`_UnreadableCC`, a ``RuntimeError``, when ``CC`` cannot be
+    split (an unclosed quote), and ``RuntimeError`` on Windows when neither
+    ``cl`` nor ``gcc`` is found.
     """
     import shutil
 
     # Honor CC environment variable
-    cc_env = os.environ.get("CC")
-    if cc_env:
-        return [cc_env]
-
+    cc_env = os.environ.get("CC", "")
     system = platform.system()
+    if cc_env.strip():
+        if system == "Windows" or (_shell_would_change(cc_env) and shutil.which(cc_env)):
+            return [cc_env]
+        try:
+            tokens = shlex.split(cc_env)
+        except ValueError as err:
+            raise _UnreadableCC(
+                f"CC={cc_env!r} cannot be read as a command line ({err}). Set CC to a "
+                "compiler, with any arguments after it, as a shell would run it."
+            ) from None
+        if tokens:
+            return tokens
+
     if system == "Windows":
         # Try MSVC cl.exe first, then MinGW gcc
         if shutil.which("cl"):
@@ -5133,6 +5199,63 @@ def _frame_limit_flag() -> str:
     return f"-Wframe-larger-than={_CODEGEN_MAX_FRAME_BYTES}"
 
 
+#: clang's default ``-fbracket-depth``: it stops at a parenthesis, square bracket
+#: or brace nested deeper than this, each kind counted on its own, with "bracket
+#: nesting level exceeded maximum of 256". GCC has no such limit.
+_CLANG_BRACKET_DEPTH = 256
+#: Headroom for the brackets the preprocessor adds to what the source shows:
+#: ``NAN`` is ``(__builtin_nanf (""))`` in glibc, and the source's other macros
+#: are names and attributes. A source this close to the limit is given the flag,
+#: and the flag allows this much past the source's own depth.
+_BRACKET_DEPTH_MARGIN = 64
+_C_COMMENT_OR_LITERAL_RE = re.compile(
+    r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.S
+)
+
+
+def _c_bracket_depth(c_source: str) -> int:
+    """The deepest that one kind of bracket nests in ``c_source``, outside its
+    comments and literals: what clang holds to ``-fbracket-depth``."""
+    import numpy as np
+
+    code = np.frombuffer(
+        _C_COMMENT_OR_LITERAL_RE.sub(" ", c_source).encode("utf-8"), dtype=np.uint8
+    )
+    deepest = 0
+    for opening, closing in (b"()", b"[]", b"{}"):
+        brackets = code[(code == opening) | (code == closing)]
+        if brackets.size:
+            steps = np.where(brackets == opening, 1, -1)
+            deepest = max(deepest, int(np.cumsum(steps).max()))
+    return deepest
+
+
+def _bracket_depth_flags(c_source: str, compiler: list[str]) -> list[str]:
+    """``["-fbracket-depth=<N>"]`` where clang is to build a source nested past
+    its default limit, and nothing for any other source or compiler (issue
+    #1814).
+
+    An ``if()`` chain is written as one ``?:`` chain (:func:`_replace_if_calls`),
+    which keeps the commonest deep nesting shallow, but a model can nest as deep
+    any other way: a chain through the true branches, a sum of sums. A plain run
+    fell back to the interpreter on such a source, and a forward-sensitivity
+    run, which needs the compiled right-hand side, failed.
+
+    The depth is measured before the preprocessor runs, which can add a few
+    brackets (``NAN`` at the deepest point adds two), so the flag is given to a
+    source within :data:`_BRACKET_DEPTH_MARGIN` of the limit too: 193 deep or
+    more, where an ordinary model's source is under 10. GCC rejects the flag, and
+    the compiler is not asked what it is about any other source, so every other
+    build's command is what it was. The flag changes what clang reads, not what
+    it emits, so the cache key does not carry it."""
+    if Path(compiler[0]).stem.lower() == "cl":
+        return []
+    depth = _c_bracket_depth(c_source) + _BRACKET_DEPTH_MARGIN
+    if depth <= _CLANG_BRACKET_DEPTH or not _toolchain.is_clang(compiler):
+        return []
+    return [f"-fbracket-depth={depth}"]
+
+
 #: The tag both compilers end the report with: Clang ``[-Wframe-larger-than]``,
 #: GCC ``[-Wframe-larger-than=]``. Its presence is what refuses a library; the
 #: function name and size are read only to say which. The bracket is part of it:
@@ -5208,8 +5331,43 @@ def _refuse_oversized_frames(stderr: str, opt_flag: str, what: str) -> None:
     )
 
 
+#: The machines Apple's compilers take as an ``-arch`` value, by the name
+#: ``platform.machine()`` gives each on macOS.
+_DARWIN_ARCH_NAMES = frozenset({"arm64", "x86_64"})
+
+
+def _arch_flags() -> list[str]:
+    """``["-arch", <this process's machine>]`` for a GCC/Clang compile or link on
+    macOS; nothing elsewhere, or for a machine Apple's compilers have no name for
+    (issue #1759).
+
+    Apple's ``cc`` is one binary for both architectures, and it builds for the
+    hardware it runs on, not for the process that starts it. Under Rosetta 2 an
+    x86_64 Python's compile built arm64, a library that process cannot load. A
+    library is only of use to the process that builds it (its cache name says so,
+    :data:`_CODEGEN_ARCH`), so every compile and link names that process's
+    machine. On a native build the flag names what the compiler builds anyway,
+    and the library is byte for byte the one it built without it. CPython passes
+    the same flag when it builds an extension on macOS.
+
+    A ``CC`` that names another ``-arch`` gets both, in one universal library;
+    one that names a ``-target`` gets this one, which clang takes over it.
+    A compiler that builds for another machine all the same (GCC warns and
+    ignores an ``-arch`` it cannot build) is caught before its library is
+    installed (:func:`bngsim._codegen_toolchain.foreign_library`). Linux and
+    Windows compilers build for their own architecture, and take no such flag.
+    """
+    if platform.system() != "Darwin" or _CODEGEN_MACHINE not in _DARWIN_ARCH_NAMES:
+        return []
+    return ["-arch", _CODEGEN_MACHINE]
+
+
 def _build_compile_cmd(
-    c_path: Path, so_path: Path, opt_flag: str, compiler: list[str] | None = None
+    c_path: Path,
+    so_path: Path,
+    opt_flag: str,
+    compiler: list[str] | None = None,
+    extra_flags: tuple[str, ...] | list[str] = (),
 ) -> list[str]:
     """Build the platform-specific compile command.
 
@@ -5223,6 +5381,9 @@ def _build_compile_cmd(
         Optimization flag for the detected compiler (e.g. "-O3" / "/O2").
     compiler : list[str], optional
         The compiler's base command; :func:`_find_c_compiler` when not given.
+    extra_flags : sequence of str, optional
+        Flags this source needs of a GCC/Clang compile
+        (:func:`_bracket_depth_flags`).
 
     Returns
     -------
@@ -5244,11 +5405,14 @@ def _build_compile_cmd(
             "/DLL",
         ]
     else:
-        # GCC / Clang (Unix): cc <opt> -shared -fPIC -o <output> <input> -lm
-        return compiler + [
+        # GCC / Clang (Unix): cc [-arch <machine>] <opt> -shared -fPIC -o <output> <input> -lm
+        return [
+            *compiler,
+            *_arch_flags(),
             opt_flag,
             _FP_CONTRACT_OFF,
             _frame_limit_flag(),
+            *extra_flags,
             "-shared",
             "-fPIC",
             "-o",
@@ -5829,6 +5993,23 @@ class _CompileFailed(RuntimeError):
     raises it on as a :class:`CodegenBuildError`, still a ``RuntimeError``."""
 
 
+def _refuse_foreign_library(tmp_so_path: Path, stderr: str | None) -> None:
+    """Raise :class:`_CompileFailed` when the library just built holds no code for
+    the machine this process runs as (issue #1759), so it is not installed under
+    that machine's name, where every later run would load it and fail. The
+    toolchain probe then says whose failure it is: a probe library built for the
+    other machine too makes it the toolchain's, and the verdict names the cause.
+    ``stderr`` is what the compiler printed, quoted when the probe disagrees."""
+    held = _toolchain.foreign_library(tmp_so_path)
+    if held is None:
+        return
+    printed = f"\n{stderr}" if stderr and stderr.strip() else ""
+    raise _CompileFailed(
+        "Codegen built a library this Python cannot load, and did not install it. "
+        f"{_toolchain.foreign_library_reason(held)}{printed}"
+    )
+
+
 def _compile_one_object(
     compiler: list[str],
     opt_flag: str,
@@ -5836,16 +6017,21 @@ def _compile_one_object(
     c_name: str,
     o_name: str,
     timeout: float | None,
+    extra_flags: tuple[str, ...] | list[str] = (),
 ) -> None:
-    """Compile one ``.c`` to ``.o`` (``cc <opt> -fPIC -c``) from within ``work``
-    using relative names, then normalize the object's mtime. Relative names +
-    fixed mtimes keep the linked .so reproducible (the linker would otherwise
-    embed absolute input paths and per-build timestamps). Raises on failure, and
-    on a function whose stack frame is past the limit (issue #1566)."""
-    cmd = compiler + [
+    """Compile one ``.c`` to ``.o`` (``cc [-arch <machine>] <opt> -fPIC -c``) from
+    within ``work`` using relative names, then normalize the object's mtime.
+    Relative names + fixed mtimes keep the linked .so reproducible (the linker
+    would otherwise embed absolute input paths and per-build timestamps). Raises
+    on failure, and on a function whose stack frame is past the limit (issue
+    #1566)."""
+    cmd = [
+        *compiler,
+        *_arch_flags(),
         opt_flag,
         _FP_CONTRACT_OFF,
         _frame_limit_flag(),
+        *extra_flags,
         "-fPIC",
         "-c",
         "-o",
@@ -5867,6 +6053,7 @@ def _compile_sharded(
     jobs: int,
     timeout: float | None,
     compiler: list[str],
+    extra_flags: tuple[str, ...] | list[str] = (),
 ) -> None:
     """Compile the driver + shard units to ``.o`` with up to ``jobs`` concurrent
     ``cc -c`` processes, then link them into ``tmp_so_path``.
@@ -5900,7 +6087,9 @@ def _compile_sharded(
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
             futures = [
-                ex.submit(_compile_one_object, compiler, opt_flag, work, cn, on, timeout)
+                ex.submit(
+                    _compile_one_object, compiler, opt_flag, work, cn, on, timeout, extra_flags
+                )
                 for cn, on in names
             ]
             # Surface the first failure (cancels not-yet-started compiles).
@@ -5910,6 +6099,7 @@ def _compile_sharded(
         linked = f"linked{tmp_so_path.suffix}"
         link_cmd = (
             compiler
+            + _arch_flags()
             + ["-shared", "-fPIC"]
             + _repro_link_flags()
             + ["-o", linked]
@@ -6005,6 +6195,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
     # marker is on the first lines of the combined source (RHS is always first).
     chunked = _CHUNK_MARKER in c_source[:512]
     opt_flag = _resolve_opt_flag(compiler_name, len(c_source), chunked=chunked)
+    extra_flags = _bracket_depth_flags(c_source, compiler)
     timeout = _resolve_codegen_timeout()
 
     # Decide serial vs. sharded parallel compile. MSVC keeps the single-shot
@@ -6022,7 +6213,10 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
                 len(units),
                 jobs,
             )
-            _compile_sharded(driver_src, units, tmp_so_path, opt_flag, jobs, timeout, compiler)
+            _compile_sharded(
+                driver_src, units, tmp_so_path, opt_flag, jobs, timeout, compiler, extra_flags
+            )
+            _refuse_foreign_library(tmp_so_path, "")
             os.replace(tmp_so_path, so_path)
             _compile_installs.last = str(so_path)
         else:
@@ -6031,7 +6225,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
             # default (cp1252 on Windows) would raise UnicodeEncodeError.
             c_path.write_text(c_source, encoding="utf-8")
             try:
-                cmd = _build_compile_cmd(c_path, tmp_so_path, opt_flag, compiler)
+                cmd = _build_compile_cmd(c_path, tmp_so_path, opt_flag, compiler, extra_flags)
                 logger.info("Compiling codegen RHS (%s): %s", opt_flag, " ".join(cmd))
                 # Removed by the supervisor if this process dies mid-compile, as
                 # the finally clauses here remove them otherwise (issue #1552).
@@ -6043,6 +6237,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
                 _refuse_oversized_frames(
                     result.stderr, opt_flag, f"a {len(c_source):,}-byte C source"
                 )
+                _refuse_foreign_library(tmp_so_path, result.stderr)
                 os.replace(tmp_so_path, so_path)
                 _compile_installs.last = str(so_path)
             finally:
@@ -6764,13 +6959,81 @@ def _double_valued_logic(c: str) -> str:
     return "".join(out)
 
 
+_IF_HEAD_RE = re.compile(r"if\s*\(")
+
+
+def _if_call_args(expr: str) -> list[str] | None:
+    """``[cond, t, f]`` where ``expr`` is one ``if(cond, t, f)`` call and nothing
+    else, else ``None``.
+
+    A table of values over time is a chain of such calls, each the false branch
+    of the one before, one link a day; the Mallela 2024 ``phoenix`` model's
+    ``v_rate()`` has 340 (issue #1814). :func:`_replace_if_calls` writes such a false branch as
+    the next link of one C ``?:`` chain. Nested, each link cost two levels of
+    brackets, and the C passed clang's limit of 256 at 128 links.
+
+    :func:`_translate_bngl_if_to_piecewise` follows the chain too, to need no
+    Python frame per link, but writes the nested ``Piecewise`` it always has.
+    One flat ``Piecewise`` is not the same thing to sympy: it merges
+    neighbouring links of one value into an ``Or`` in normal form, which grows
+    exponentially over window conditions, and it drops a link whose condition
+    the ones before it leave nothing for, by reasoning that holds only for
+    numbers: ``if(x<1, a, if(x>=1, b, c))`` loses ``c``, which the C takes where
+    ``x`` is NaN. So the parse text still nests two parentheses a link, and a
+    chain of 99 or more still passes Python's limit of 200 and is not
+    differentiated.
+    """
+    m = _IF_HEAD_RE.match(expr)
+    if m is None:
+        return None
+    close = _find_close_paren_strict(expr, m.end() - 1)
+    if close != len(expr) - 1:
+        return None
+    args = _split_top_level_commas(expr[m.end() : close])
+    return args if len(args) == 3 else None
+
+
+def _bracketed_if_call(expr: str) -> tuple[str, list[str], str] | None:
+    """``(before, [cond, t, f], after)`` where ``expr`` is one ``if(cond, t, f)``
+    call in brackets that hold nothing else, ``((if(c, t, f)))``, or in none;
+    ``before`` and ``after`` are those brackets and the blanks beside them.
+    Else ``None``.
+
+    The false branch of a chain may be written in brackets of its own,
+    ``if(c1, t1, (if(c2, t2, f)))``, and is the next link all the same
+    (:func:`_if_call_args`).
+    """
+    start, end = 0, len(expr)
+    while True:
+        while start < end and expr[start].isspace():
+            start += 1
+        while end > start and expr[end - 1].isspace():
+            end -= 1
+        if start < end and expr[start] == "(" and _find_close_paren_strict(expr, start) == end - 1:
+            start, end = start + 1, end - 1
+            continue
+        break
+    args = _if_call_args(expr[start:end])
+    if args is None:
+        return None
+    return expr[:start], args, expr[end:]
+
+
 def _replace_if_calls(expr: str) -> str:
     """Replace ExprTk if(cond, true_val, false_val) with C ternary.
 
     ExprTk: if(cond, t, f)
     C:      ((cond) ? (t) : (f))
 
-    Handles nested if() calls correctly by matching parentheses.
+    Handles nested if() calls correctly by matching parentheses. An if() that is
+    all of another's false branch, in brackets of its own or not, continues its
+    chain (:func:`_if_call_args`, :func:`_bracketed_if_call`):
+
+    ExprTk: if(c1, t1, if(c2, t2, f))
+    C:      ((c1) ? (t1) : (c2) ? (t2) : (f))
+
+    which C reads as it reads the nested form, since ``?:`` groups from the
+    right, at the same bracket depth however long the chain.
     """
     result = []
     i = 0
@@ -6785,12 +7048,20 @@ def _replace_if_calls(expr: str) -> str:
             paren_start = i + m.end() - 1  # position of '('
             args = _split_if_args(expr, paren_start)
             if args and len(args) == 3:
-                cond, true_val, false_val = args
-                # Recursively process each argument
-                cond = _replace_if_calls(cond.strip())
-                true_val = _replace_if_calls(true_val.strip())
+                # Recursively process each argument, following the chain of
+                # false branches that are if()s of their own.
+                links = []
+                while True:
+                    cond, true_val, false_val = args
+                    cond = _replace_if_calls(cond.strip())
+                    true_val = _replace_if_calls(true_val.strip())
+                    links.append(f"({cond}) ? ({true_val}) : ")
+                    link = _bracketed_if_call(false_val)
+                    if link is None:
+                        break
+                    args = link[1]
                 false_val = _replace_if_calls(false_val.strip())
-                result.append(f"(({cond}) ? ({true_val}) : ({false_val}))")
+                result.append(f"({''.join(links)}({false_val}))")
                 # Find end of the if(...) expression
                 end = _find_matching_paren(expr, paren_start)
                 i = end + 1

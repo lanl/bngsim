@@ -606,6 +606,7 @@ def test_a_no_ground_truth_row_is_drawn_as_that():
     import rr_run
 
     assert gm.NO_GROUND_TRUTH_LABEL == rr_run.NO_GROUND_TRUTH_LABEL
+    assert gm.NO_GROUND_TRUTH_APPLIED.pattern == rr_run.NO_GROUND_TRUTH_APPLIED.pattern
     comment = (
         f"{rr_run.NO_GROUND_TRUTH_LABEL}: no tolerance pins the phase | was DIFF at max_rel=0.52"
     )
@@ -615,6 +616,129 @@ def test_a_no_ground_truth_row_is_drawn_as_that():
     assert not gm.is_no_ground_truth({"outcome": "DIFF", "comment": comment})
     note = gm.humanize_comment(row)
     assert note.startswith("No ground truth — non-scoring: no tolerance pins the phase")
+
+
+# Every branch of rr_run._apply_no_ground_truth: (natural outcome, max_rel, applied).
+_NO_TRUTH_BRANCHES = [
+    ("DIFF", 0.52, True),
+    ("PASS", 1e-6, True),
+    ("DIFF", float("inf"), False),
+    ("DIFF", float("nan"), False),
+    ("BAD_TEST", None, False),
+    ("EXCEPTION", None, False),
+    ("REFERENCE_FAILED", None, False),
+    ("TIMEOUT", None, False),
+]
+
+
+@pytest.mark.parametrize("issue", ["#1631", None], ids=["tagged", "untagged"])
+@pytest.mark.parametrize("natural,value,applied", _NO_TRUTH_BRANCHES)
+def test_a_row_reads_no_truth_only_where_its_entry_applied(natural, value, applied, issue):
+    """rr_run's note that an entry did not apply opens with the same label
+    ("no ground truth entry ... did not apply"). Where both engines raised, the
+    row has no comment of its own, so that note is all of it, and the row is
+    still two engines that rejected the model (issue #1719)."""
+    import rr_run
+    from _core import Outcome
+
+    outcome, comment, was_applied = rr_run._apply_no_ground_truth(
+        Outcome(natural), value, "no tolerance pins the phase", issue, ""
+    )
+    assert was_applied is applied
+    assert gm.is_no_ground_truth({"outcome": str(outcome), "comment": comment}) is applied
+
+
+def test_every_authored_no_ground_truth_entry_reads_as_one_where_it_applies():
+    """The reader matches an issue tag up to its closing parenthesis, so an entry's
+    own issue text must not end the tag early.
+
+    Loaded by path: bng_parity has an ``overrides`` module too."""
+    import importlib.util
+    from pathlib import Path
+
+    import rr_run
+    from _core import Outcome
+
+    path = Path(gm.__file__).with_name("overrides.py")
+    spec = importlib.util.spec_from_file_location("rr_parity_overrides_1719", path)
+    ov = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ov)
+
+    assert ov.NO_GROUND_TRUTH
+    for key, entry in ov.NO_GROUND_TRUTH.items():
+        outcome, comment, applied = rr_run._apply_no_ground_truth(
+            Outcome.DIFF, 0.5, entry["reason"], entry.get("issue"), ""
+        )
+        assert applied
+        assert gm.is_no_ground_truth({"outcome": str(outcome), "comment": comment}), key
+
+
+@pytest.mark.parametrize(
+    "natural,value", [(n, v) for n, v, applied in _NO_TRUTH_BRANCHES if not applied]
+)
+def test_a_note_that_an_entry_did_not_apply_is_not_called_non_scoring(natural, value):
+    """Where an entry did not apply, the row keeps its own outcome, and a
+    non-finite DIFF, an EXCEPTION or a TIMEOUT still scores: the note must not
+    read as an applied entry's "No ground truth — non-scoring" (issue #1719). It
+    is shown as written."""
+    import rr_run
+    from _core import Outcome
+
+    _o, comment, applied = rr_run._apply_no_ground_truth(
+        Outcome(natural), value, "no tolerance pins the phase", "#1631", ""
+    )
+    assert not applied
+    note = gm.humanize_comment({"outcome": natural, "comment": comment})
+    assert "non-scoring" not in note
+    assert note == comment
+
+
+def test_the_ode_page_draws_a_both_raised_row_beside_an_entry_as_that(tmp_path):
+    """Where both engines raised on a model with an entry, the entry did not apply:
+    its cells say both engines rejected the model, and wear no NO TRUTH badge
+    (issue #1719)."""
+    import json
+
+    import rr_run
+    from _core import Outcome
+
+    reason = "no tolerance pins the phase"
+    _o, applied, _a = rr_run._apply_no_ground_truth(Outcome.DIFF, 0.52, reason, "#1631", "")
+    _o, not_applied, _a = rr_run._apply_no_ground_truth(
+        Outcome.BAD_TEST, None, reason, "#1631", ""
+    )
+    _s, exception = rr_run._classify_failure("bngsim: SimulationError: x", "roadrunner: y")
+    rows = [
+        {
+            "model_id": "MODEL0000000001",
+            "method": "ode",
+            "reference_engine": "roadrunner",
+            "outcome": "BAD_TEST",
+            "comment": applied,
+        },
+        {
+            "model_id": "MODEL0000000002",
+            "method": "ode",
+            "reference_engine": "roadrunner",
+            "outcome": "BAD_TEST",
+            "comment": not_applied,
+            "exception": exception,
+        },
+    ]
+    meta = {
+        "tally": {"BAD_TEST": 2},
+        "n_jobs": 2,
+        "elapsed_sec": 1.0,
+        "versions": {"bngsim": "0", "roadrunner": "0", "python": "3", "platform": "x"},
+    }
+    report = tmp_path / "report_ode.json"
+    report.write_text(json.dumps({"_meta": meta, "results": rows}))
+    out = tmp_path / "m.html"
+    gm.generate_html(report, out)
+    html = out.read_text()
+    assert html.count(">NO TRUTH<") == 2  # the applied row's two badges, and no more
+    assert html.count("neither agrees with itself as the tolerance tightens") == 1
+    assert html.count("Both engines rejected this model") == 2  # the both-raised row
 
 
 def test_an_invalid_reference_row_is_drawn_as_that():

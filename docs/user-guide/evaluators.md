@@ -14,7 +14,8 @@ runs, so it gives what a solve sees.
 import numpy as np
 import bngsim
 
-m = bngsim.Model.from_net("model.net")
+# Schlogl's bistable switch, one of the models that ship with BNGsim
+m = bngsim.Model.from_sbml(bngsim.examples.path("schlogl", "sbml"))  # or your own model
 y = m.get_state()                    # or any (n_species,) array of your own
 
 S = m.stoichiometry_matrix()         # (n_species, n_reactions), net coefficients
@@ -28,7 +29,8 @@ Watch out:
 - The state is in `species_names` order. A state of the wrong length raises
   `ValueError`.
 - None of them changes the model's stored state: `get_state()` is the same
-  afterwards.
+  afterwards. The model's clock goes back to where it was too, so a `t` given
+  here does not become the time the model reads its state at.
 - They read the model's current parameters, so call `set_param` between calls
   to scan a parameter.
 - A row of `Result.species` is not always a valid state for them. Use
@@ -140,6 +142,7 @@ loaded from disk or stacked from a batch raises `ValueError` for it.
 ```python
 from scipy.optimize import fsolve
 
+y_guess = [380.0]                    # near the upper of its stable states, X = 400
 root = fsolve(lambda y: m.rhs(y), y_guess)
 ev = np.linalg.eigvals(m.jacobian(root))
 stable = np.all(ev.real < 0)

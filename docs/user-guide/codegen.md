@@ -11,7 +11,10 @@ whatever it was loaded from: `.net`, BNGL, SBML, Antimony or `ModelBuilder`.
 ## Turning it on
 
 ```python
-model = bngsim.Model.from_net("model.net")  # or from_bngl, from_sbml, ...
+import bngsim
+
+# The bundled A + B <-> C model; or from_bngl, from_sbml, ... on your own
+model = bngsim.Model.from_net(bngsim.examples.path("binding"))
 
 sim = bngsim.Simulator(model, method="ode", codegen=True)
 result = sim.run(t_span=(0, 100), n_points=101)
@@ -35,6 +38,14 @@ What to watch out for:
 - **You need a C compiler:** `cc` on macOS and Linux, `cl` or `gcc` on Windows,
   or `$CC`. Without one, `codegen=True` and forward sensitivities raise
   `bngsim.CodegenToolchainError`, and large models fall back to the interpreter.
+  On macOS and Linux `CC` is a command line, split as the shell splits it, so it
+  can carry arguments (`CC="ccache cc"`): quote a path with a space in it,
+  unless `CC` is that path and nothing else. On Windows it is one path.
+- **clang stops at brackets nested more than 256 deep, and BNGsim raises that
+  limit (`-fbracket-depth`) for a source that needs it,** such as a long
+  `if()` chain written through its true branches. A chain through the false
+  branches, the usual way to write a table of values, is written flat. GCC has
+  no such limit, and every other build's command is unchanged.
 - **On a cluster, compute nodes often have no compiler on `PATH`,** even when
   the login node does. Load one in the batch job (`module load gcc`), or turn
   codegen off with `BNGSIM_NO_CODEGEN=1`.
@@ -64,7 +75,11 @@ import, so `export` it before starting Python.
 
 One cache can serve two architectures: a native and a Rosetta Python on an
 Apple Silicon Mac, or x86-64 and aarch64 nodes sharing a home directory. Each
-builds and loads only its own libraries.
+builds and loads only its own libraries. On macOS every compile asks for the
+Python's own architecture (`-arch arm64` or `-arch x86_64`; the
+`BNGSIM_SSA_PROP_CC=1` ablation does not), because Apple's
+`cc` otherwise builds for the hardware it runs on: an x86_64 Python under
+Rosetta got arm64 libraries it could not load.
 
 ### Managing the artifact cache
 
@@ -203,6 +218,12 @@ compiler is handled the same way.
 One known case: conda-forge's ld64-956.6 with the macOS 27 SDK cannot read the
 SDK's `libSystem.tbd` and links nothing.
 `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk` links.
+
+A compiler that builds for another architecture than the Python's is a broken
+toolchain too. Homebrew's GCC on an Apple Silicon Mac, for one, ignores
+`-arch x86_64` with a warning and builds arm64. Its library is not put in the
+cache, and the message names both architectures, quotes the warning and says
+what to set `CC` to.
 
 On Linux and macOS a compile does not outlive the Python process that started
 it. If the process dies, even by `SIGKILL`, the compiler is killed and its

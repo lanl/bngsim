@@ -1010,7 +1010,11 @@ class Model:
         since those are what make an
         unbounded rule set finite. Everything after it is dropped. A file with no
         ``generate_network`` before its first run stops at that run, the state
-        the run starts from. Pass
+        the run starts from. A run with a network method (ode, ssa, pla, psa),
+        ``writeMDL`` or a ``reaction_network`` ``visualize`` before the first
+        ``generate_network`` generates the network with BNG2.pl's defaults, and
+        so does the load; a network-free run generates none, so the call after
+        it still sets the limits. Pass
         ``protocol=True`` to get the actions back as a
         :class:`~bngsim.convert.ProtocolSpec` rather than lose them, and
         :func:`bngsim.run_protocol` to run them as BNG2.pl does
@@ -2359,6 +2363,13 @@ class Model:
         :meth:`save_concentrations` after it to make it the state :meth:`reset`
         returns to.
 
+        After an SSA or PSA run, a concentration species in a compartment whose
+        size moves (an event resizes it, or a rate rule or an assignment rule
+        sets it) is stored as its count over the compartment's load-time size.
+        The value is a concentration there too, at the size the compartment has
+        now, and is stored as that count, which :meth:`get_concentration` reads
+        back (issue #1754). :meth:`set_state` writes the stored values.
+
         For forward sensitivity, this is a **literal** initial condition:
         ``∂x_k(0)/∂θ = 0``. It therefore supersedes whatever the species' declared
         initial condition depended on — if the ``.net`` set it from a parameter
@@ -2394,7 +2405,11 @@ class Model:
             convention (amount over the compartment's static size), before a
             variable-volume ``Result`` rescales it to the live size (issue
             #1510). :meth:`Simulator.steady_state` writes no species, so it
-            leaves a rule species as the last run did.
+            leaves a rule species as the last run did. After an SSA or PSA
+            run, a concentration species in a compartment whose size moves
+            is stored as its count over the compartment's load-time size, and
+            this is that count over the size the compartment has now (issue
+            #1754); :meth:`get_state` returns the stored values.
 
         Raises
         ------
@@ -2434,6 +2449,11 @@ class Model:
         call marshals the entire state, so per-step exchange cost stays
         negligible next to the ODE solve even at ~100K species.
 
+        The values are as stored. After an SSA or PSA run, a concentration
+        species in a compartment whose size moves holds its count over the
+        compartment's load-time size, where :meth:`get_concentration` reads it
+        at the size the compartment has (issue #1754).
+
         See Also
         --------
         set_state : the inverse bulk assignment.
@@ -2450,7 +2470,10 @@ class Model:
             1-D array of length :attr:`n_species`, ordered like
             :attr:`species_names`. Copied into the model's live concentrations;
             observables and other derived state are recomputed on the next RHS
-            or observable evaluation.
+            or observable evaluation. The values are taken as stored, as
+            :meth:`get_state` returns them: after an SSA or PSA run, a count
+            over the load-time size for a concentration species in a
+            compartment whose size moves (issue #1754).
 
         Raises
         ------

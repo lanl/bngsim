@@ -12,11 +12,23 @@ each format needs.
 `Model.load` picks the loader from the file's suffix:
 
 ```python
+import shutil
+from pathlib import Path
+
 import bngsim
+
+# The bundled binding model, A + B <-> C, in three formats, copied here.
+shutil.copy(bngsim.examples.path("binding", "net"), "model.net")
+shutil.copy(bngsim.examples.path("binding", "sbml"), "model.xml")
+shutil.copy(bngsim.examples.path("binding", "antimony"), "model.ant")
 
 model = bngsim.Model.load("model.net")    # Model.from_net
 model = bngsim.Model.load("model.xml")    # Model.from_sbml (.sbml too)
 model = bngsim.Model.load("model.ant")    # Model.from_antimony
+```
+
+```python
+shutil.copy(bngsim.examples.path("binding", "bngl"), "model.bngl")
 model = bngsim.Model.load("model.bngl")   # Model.from_bngl (needs BNG2.pl)
 ```
 
@@ -32,7 +44,7 @@ with `NfsimSession` or `RuleMonkeySession`, or pass it as `xml_path=` to a
 `Simulator` built from the `.net` written beside it
 ([Network-free simulation](network-free.md)).
 
-SBML and Antimony also load from a string, and BioModels entries load by id:
+SBML and Antimony also load from a string:
 
 ```python
 model = bngsim.Model.from_antimony_string("""
@@ -41,9 +53,13 @@ model = bngsim.Model.from_antimony_string("""
     J1: S1 -> S2; k1 * S1;
     J2: S2 -> S1; k2 * S2;
 """)
+
+sbml_xml_text = Path("model.xml").read_text(encoding="utf-8")
 model = bngsim.Model.from_sbml_string(sbml_xml_text)
-model = bngsim.Model.from_biomodels("BIOMD0000000010")
 ```
+
+BioModels entries load by id, with `Model.from_biomodels("BIOMD0000000010")`
+(see [Models from BioModels](#models-from-biomodels)).
 
 Every model runs the same way after it loads:
 
@@ -157,10 +173,20 @@ expression is cut at 200 characters. `describe(limit=None)` lists everything.
 ## BNGL models
 
 BNGsim simulates reaction networks. BNGL describes rules. BNG2.pl turns rules
-into a network, so `Model.from_bngl` runs BNG2.pl:
+into a network, so `Model.from_bngl` runs BNG2.pl. Here the bundled binding
+model's BNGL gets an experiment of two runs:
 
 ```python
-model = bngsim.Model.from_bngl("egfr.bngl")
+from pathlib import Path
+
+bngl = bngsim.examples.path("binding", "bngl").read_text(encoding="utf-8")
+Path("binding.bngl").write_text(bngl + """\
+simulate({method=>"ode", t_end=>50, n_steps=>50, suffix=>"bind"})
+setConcentration("B(a)", 160)
+simulate({method=>"ode", t_end=>100, n_steps=>50, continue=>1, suffix=>"dose"})
+""", encoding="utf-8")
+
+model = bngsim.Model.from_bngl("binding.bngl")
 ```
 
 You need BNG2.pl and Perl. The extra installs PyBioNetGen, which bundles
@@ -195,9 +221,29 @@ the first `generate_network`, with that action's own `max_iter`, `max_agg` and
 `max_stoich`, and stops. If there is no `generate_network` before the first
 run, it stops at that run.
 
+If a run with a network method (ODE, SSA, PLA or PSA) comes before the first
+`generate_network`, BNG2.pl generates the network at that run with its
+defaults, and so does `from_bngl`. `writeMDL()` and
+`visualize({type=>"reaction_network"})` generate it the same way.
+`simulate_protocol()`, and a `parameter_scan` with `method=>"protocol"`, run
+the `begin protocol` block. A line there whose action has `simulate` in its
+name counts by the method its own hash names, or a `poplevel`, which makes it
+PSA, and not by the action: a `simulate_ode` line names no method, which
+BNG2.pl refuses, so it generates nothing. Other lines count as they do outside
+the block. A network-free run (`simulate_nf`, or `method=>"nf"` or `"rm"`
+without a `poplevel`) generates no network, so the `generate_network` after it
+still sets the limits. After an NF run, BNG2.pl also adds the species the run ends with to
+the model before that call, unless the run sets `get_final_state=>0`; a
+`parameter_scan` adds them only with `reset_conc=>0`. The network you get is
+generated from the declared seed species, as the first run starts from them.
+Only one `generate_network` runs. BNG2.pl continues the
+network at a later one that has `overwrite=>1`, and the network you get
+doesn't include what that adds.
+
 - Actions before that point are applied, as BNG2.pl applies them. A
   `setParameter` or `setConcentration` there changes the network you get. File
-  writes, `setOutputDir` and `quit` are skipped.
+  writes, `setOutputDir`, `quit` and `LinearParameterSensitivity`, which runs
+  simulations, are skipped.
 - Actions from that point on are dropped.
 
 If the dropped actions change a parameter or a concentration before the first
@@ -208,8 +254,8 @@ state; a value set and then set back is not one. Pass `protocol=True` to get
 the actions as a `ProtocolSpec`:
 
 ```python
-model, spec = bngsim.Model.from_bngl("egfr.bngl", protocol=True)
-[e.t_span for e in spec.experiments]   # the simulate(...) calls
+model, spec = bngsim.Model.from_bngl("binding.bngl", protocol=True)
+[e.t_span for e in spec.experiments]   # [(0.0, 50.0), (50.0, 100.0)]: the simulate calls
 ```
 
 See [Interchange](interchange.md) for what a `ProtocolSpec` holds.
@@ -221,8 +267,9 @@ See [Interchange](interchange.md) for what a `ProtocolSpec` holds.
 the model:
 
 ```python
-out = bngsim.run_bngl("egfr_path.bngl")   # equilibrate without EGF, then add it
-out[1].result.observables["Sos_act"]      # the second run
+out = bngsim.run_bngl("binding.bngl")     # bind, then add B and run on
+out[1].result.observables["C"]            # the second run
+out["dose"].result.observables["C"]       # the same run, by its suffix
 out.model                                 # the model in the state the file leaves it
 ```
 
@@ -277,7 +324,7 @@ from the model's directory.
 To keep the `.net` yourself, pass `net_out=`:
 
 ```python
-model = bngsim.Model.from_bngl("egfr.bngl", net_out="egfr.net")
+model = bngsim.Model.from_bngl("binding.bngl", net_out="binding.net")
 ```
 
 `cache=False` generates into a temporary directory for this process.
@@ -311,8 +358,9 @@ level held that was left out.
 
 **SBML Level 3 packages.** A document that marks a package
 `required="true"` is refused by name unless BNGsim supports that package.
-`comp` loads; the model is flattened first. `distrib` loads, and its random
-draws are refused one by one. `multi`, `qual`, `spatial` and the rest are
+`comp` loads; the model is flattened first, and a file a submodel is read
+from is checked the same way. `distrib` loads, and its random draws are
+refused one by one. `multi`, `qual`, `spatial` and the rest are
 refused, because reading only the core species and reactions would build a
 different model. Packages marked `required="false"`, such as `layout`,
 `render` and `fbc`, load as if they weren't there.

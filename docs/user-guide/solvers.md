@@ -8,6 +8,47 @@ This page covers the settings of the ODE solver (CVODE): tolerances, step
 limits, the Jacobian, the linear solver, and what to expect from rate laws that
 switch on time, runs that start far from 0, and solves that fail.
 
+The examples share one small model whose species span ten decades, as they do
+in a signaling model in molar units (see
+[Per-species absolute tolerance](#per-species-absolute-tolerance)):
+
+```python
+from pathlib import Path
+
+import bngsim
+
+Path("model.net").write_text(
+    """\
+begin parameters
+    1 k1    1e-8      # IRSiP -> IRp, /s
+    2 k2    1.0       # IRp -> IRSiP, /s
+    3 kx    0.1       # X -> 0, /s
+    4 IRp0  1.763e-9  # initial amounts
+    5 IRS0  0.133
+    6 X0    10
+end parameters
+begin species
+    1 IRp    IRp0
+    2 IRSiP  IRS0
+    3 X      X0
+end species
+begin reactions
+    1 2 1 k1
+    2 1 2 k2
+    3 3 0 kx
+end reactions
+begin groups
+    1 IRp    1
+    2 IRSiP  2
+    3 X      3
+end groups
+""",
+    encoding="utf-8",
+)
+model = bngsim.Model.load("model.net")
+sim = bngsim.Simulator(model, method="ode")
+```
+
 ## Set tolerances and step limits
 
 ```python
@@ -21,7 +62,7 @@ result = sim.run(
 )
 
 print(result.solver_stats)
-# {'n_steps': 1247, 'n_rhs_evals': 2891, 'n_jac_evals': 43, ...}
+# e.g. {'n_steps': 690, 'n_rhs_evals': 722, 'n_jac_evals': 55, ...}
 ```
 
 Things to know:
@@ -33,6 +74,10 @@ Things to know:
   `bngsim.ExactAtol(value)` to hold every species to exactly that number.
 - `max_step=` bounds the size of a single step. Use it for a narrow pulse the
   solver could step over.
+- `timeout=` bounds a run's wall-clock time, in seconds, and raises
+  `bngsim.SimulationTimeout` past it. An ODE run reads it at each output point
+  and, inside the solver, every 256 right-hand-side evaluations, so a run that
+  spends it between two output points stops too.
 
 ### Solver statistics
 
@@ -46,6 +91,8 @@ integrator (events, rate-law switches).
   Jacobian. `n_jac_formations` counts the Jacobians the solver asked for.
 - `linear_solver` is `0` for the built-in dense LU, `1` for sparse KLU and `2`
   for the BLAS dense factor.
+- `n_roundoff_steps` counts the steps too small to move the clock; see
+  [Steps too small to move the clock](#steps-too-small-to-move-the-clock).
 
 ## The default tolerances, and models in small units
 
@@ -105,8 +152,11 @@ that `bngsim.convert.read_sedml` reads.
 To hold every species to exactly the number you give, say so:
 
 ```python
-result = sim.run(t_span=(0, 100), rtol=1e-6, atol=bngsim.ExactAtol(1e-9))
+result = sim.run(t_span=(0, 100), rtol=1e-6, atol=bngsim.ExactAtol(1e-9), start="initial")
 sim.set_tolerances(rtol=1e-8, atol=bngsim.ExactAtol(1e-8))
+
+# A SED-ML file, here one BNGsim writes, read back with its atol held exactly
+bngsim.convert.write_sedml(bngsim.EvaluationSpec("model.net", atol=1e-9), "simulation.sedml")
 spec = bngsim.convert.read_sedml("simulation.sedml", exact_atol=True)
 ```
 
@@ -198,7 +248,7 @@ atol_i(y) = clamp(rtol * |y_i|, ceiling_i * 10**-decades, ceiling_i)
 # Alternatives, each from the initial conditions.
 result = sim.run(t_span=(0, 30), atol="tracking", start="initial")  # decades=12
 result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(decades=6), start="initial")
-result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(ceiling=my_vector), start="initial")
+result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(ceiling=atol), start="initial")  # the vector above
 ```
 
 `ceiling` defaults to `"auto"`. Tracking is never looser than its ceiling, and
@@ -232,16 +282,18 @@ every time:
 ```python
 import bngsim
 
-model = bngsim.Model.load("model.xml")
+model = bngsim.Model.load("model.net")
 sim = bngsim.Simulator(model, method="ode")
 
 RTOL = 1e-8
 nominal = model.get_state()                          # before anything is fitted
 atol = bngsim.derive_atol(nominal, RTOL)             # fixed for the whole fit
 
+search = [{"X0": x0, "k2": k2} for x0 in (5.0, 20.0) for k2 in (0.5, 2.0)]
 for theta in search:
     model.set_params(theta)                          # may move initial conditions
-    result = sim.run(t_span=(0, 100), rtol=RTOL, atol=atol)
+    result = sim.run(t_span=(0, 100), rtol=RTOL, atol=atol,
+                     start="initial")                # each point from its own start
 ```
 
 The rule and the `floor` default are the same as `auto_atol`'s. If you build
@@ -255,7 +307,7 @@ was built.
 Choose how the Jacobian ∂f/∂y is computed with `jacobian=`:
 
 ```python
-sim = bngsim.Simulator(model, method="ode")                         # "auto"
+sim = bngsim.Simulator(model, method="ode")                         # jacobian="auto"
 sim = bngsim.Simulator(model, method="ode", jacobian="analytical")  # exact
 sim = bngsim.Simulator(model, method="ode", jacobian="fd")          # finite differences
 ```
@@ -499,8 +551,9 @@ Exceptions:
 **A model that reads the clock** keeps it, far or not: a function of `time()`,
 a table function over time, a discontinuity trigger, or any event. Its steps are only as fine as the
 doubles there, with no error. A decay whose rate reads `time()` is 1.8e-3 off
-at `t = 1e12` and off by a factor of 11 at `1e15`. Run such a model from near 0,
-with the offset written into the model. SSA and PSA count their own clock from
+at `t = 1e12` and off by a factor of 11 at `1e15`. Both runs warn
+`RoundoffStepWarning` (below). Run such a model from near 0, with the offset
+written into the model. SSA and PSA count their own clock from
 a far start for every model.
 
 **A switch on a counter clock** (an `if()` on a species with `C' = 1`) is
@@ -508,10 +561,58 @@ placed from the counter, so a far start does not move it. Its stop still sits
 on the run's clock, so from `1e16` on a far run can differ slightly from the
 run from 0. Late switches in a very long run are taken where the clock is
 coarse, and their sensitivities can be badly wrong, or lost, with no error. A
+run whose steps there were too small to move the clock warns
+`RoundoffStepWarning`. A
 sensitivity run is refused with `SensitivityRefusedForParametersError` (a
 `SensitivityUnsupportedError`) if a counter crossing inside the run, which
 moves a requested column, rounds onto the start or past the run's end. A
 column the crossing does not move can still be run alone.
+
+**A run CVODE cannot step through ends with an error.** CVODE is given no
+largest step unless `max_step=` asks for one, and grows its step up to tenfold
+a step, ten thousandfold after its first. In a run long enough, or far enough
+from 0, the step, or the clock (t + h), can pass the largest double (about
+1.8e308) before the run ends. Such a run raises `bngsim.UsageError` (a
+`ValueError`, with the code `usage.span_out_of_reach`) where CVODE's step is no
+longer finite, or where it keeps a step to a time past the largest double,
+instead of hanging past `timeout=` or returning NaN rows. A step CVODE tries
+past it and throws away is no error: `A' = 1/(1 + t/1e308)` over
+`(0, 1.79e308)` returns its rows to 3e-8. Where it happens turns on the model
+as much as on the span: `A' = 1` returns `A = t` over `(0, 1e306)`, and a
+species that does not change, whose steps CVODE grows the fastest, fails
+there. A `run_batch` row or a scan point that fails so is named in the error.
+A grid of three or more output points over a span longer than the largest
+double, such as `(-1e308, 1e308)`, is refused before it starts: its output
+times are not finite. Measure time in a larger unit instead.
+
+### Steps too small to move the clock
+
+Before each step CVODE checks whether `t + h == t` in double precision. Where
+it is, it takes the step anyway: the state moves by `h` and the clock does not,
+so the rows after it can be wrong, with no solver error. An ODE run that takes
+such a step warns `bngsim.RoundoffStepWarning`, naming how many it took, the
+first row after one, and the spacing of the doubles there:
+
+```
+CVODE took 83 steps too small to move its clock (t + h == t in double
+precision), the first after t = 1000000000000000.0 and by t =
+1000000000000005.0, where the doubles are 0.125 apart, so that such a step is
+at most 0.0625. ...
+```
+
+`result.solver_stats["n_roundoff_steps"]` holds the count, and
+`result.notices` the warning, under the code `solver.roundoff_steps`. A run
+that fails keeps it on its error's `notices`.
+
+A run can take such steps and be right at its rows. After a stop, an event or a
+fast transient, CVODE can take steps that short and be past them before the
+next row: `A -> 0` at `k = 1e9` from `t = 1e6` takes dozens as A falls, in its
+first 1e-7, and with rows 0.1 apart every row is right, A being 0 by the first.
+With rows inside that 1e-7 they are not. The warning cannot tell the two apart.
+`result.check()` runs the model again at a tenth of the tolerance and says
+whether the answer moved, which it does for the decay from `1e15` and not for
+the decay at `k = 1e9` on rows 0.1 apart. Tighter tolerances take smaller steps
+and make it worse.
 
 ## When a solve fails on a rate law's domain
 
@@ -575,7 +676,10 @@ are such that t + h = t on the next step. The solver will continue anyway.
 ```
 
 Both `[ERROR]` and `[WARNING]` lines go to **standard error**. A warning can
-come from a run that is right; the one above is. Two SUNDIALS environment
+come from a run that is right; the one above is. The "t + h = t" lines, which
+SUNDIALS stops printing after ten, are counted and warned of as
+`RoundoffStepWarning` whether or not they are printed (see
+[Steps too small to move the clock](#steps-too-small-to-move-the-clock)). Two SUNDIALS environment
 variables redirect them, and BNGsim respects them when set:
 
 ```bash
@@ -600,4 +704,6 @@ BNGsim drops the warnings itself for runs whose rate laws switch on state, or
 on time in an SBML model, since they restart at each switch, and for KINSOL
 solves, unless `SUNLOGGER_WARNING_FILENAME` is set. A BNGL rate law that
 switches on time keeps its warnings. The `[ERROR]` lines of a solve BNGsim
-expects to fail and recovers from are always dropped.
+expects to fail and recovers from are always dropped, and so is the one of a
+solver call that `timeout=` ends, or that BNGsim ends because CVODE's step
+passed the largest double: the run raises its own error.

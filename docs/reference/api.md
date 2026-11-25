@@ -12,7 +12,7 @@ Factory methods:
 - **`Model.load(path)`** — Load any supported file, dispatching on its suffix
   (`.ant`, `.xml`/`.sbml`, `.net`, `.bngl`); raises `ModelError` for anything else
 - **`Model.from_net(path)`** — Load from BNG `.net` file
-- **`Model.from_bngl(path, *, protocol=False, bng2_pl=None, net_out=None, timeout=600, cache=True)`** — Load from BNGL `.bngl` by running `BNG2.pl generate_network` (requires `bngsim[bngl]`, or `$BNGPATH`/`$BNG2_PL`, plus `perl`). The file's experiment is **not** run: its actions before the first `generate_network` (or, without one, its first run) are applied, except file writes, and `generate_network` carries the source's own `max_iter`/`max_agg`/`max_stoich`. `protocol=True` returns `(model, ProtocolSpec)` so the actions are recovered rather than discarded, and `bngsim.run_protocol` runs them. Generated networks are cached under `~/.cache/bngsim/networks` (`$BNGSIM_BNGL_CACHE_DIR`), keyed on the flattened model text and the BNG2.pl that produced it
+- **`Model.from_bngl(path, *, protocol=False, bng2_pl=None, net_out=None, timeout=600, cache=True)`** — Load from BNGL `.bngl` by running `BNG2.pl generate_network` (requires `bngsim[bngl]`, or `$BNGPATH`/`$BNG2_PL`, plus `perl`). The file's experiment is **not** run: its actions before the first `generate_network` (or, without one, its first run) are applied, except file writes, and `generate_network` carries that call's own `max_iter`/`max_agg`/`max_stoich`, or BNG2.pl's defaults when a run with a network method (ode, ssa, pla, psa), or another action that generates the network, comes before it. `protocol=True` returns `(model, ProtocolSpec)` so the actions are recovered rather than discarded, and `bngsim.run_protocol` runs them. Generated networks are cached under `~/.cache/bngsim/networks` (`$BNGSIM_BNGL_CACHE_DIR`), keyed on the flattened model text and the BNG2.pl that produced it
 - **`Model.from_antimony(path)`** — Load from Antimony `.ant` file (requires `antimony`, `python-libsbml`)
 - **`Model.from_antimony_string(text)`** — Load from Antimony string
 - **`Model.from_sbml(path)`** — Load from SBML `.xml` file (requires `python-libsbml`)
@@ -91,11 +91,12 @@ Simulation:
 When the budget is exceeded, `run` / `run_batch` raise
 `bngsim.SimulationTimeout` (a typed `BngsimError`) carrying `timeout`
 (the configured limit) and `elapsed` (actual wall-clock time at the trip).
-Supported on every backend (ODE, SSA, PSA, NFsim, RuleMonkey). NFsim and
-RuleMonkey poll the budget at a coarser granularity than ODE/SSA/PSA
-(between `stepTo()` output points for NFsim; every ~1024 SSA events for
-RuleMonkey, via its upstream cancellation hook), so the surfaced elapsed
-time may overshoot the budget by one such interval.
+Supported on every backend (ODE, SSA, PSA, NFsim, RuleMonkey). ODE reads
+the budget at each output point and, inside the solver, every 256
+right-hand-side evaluations. NFsim and RuleMonkey poll it at a coarser
+granularity than ODE/SSA/PSA (between `stepTo()` output points for NFsim;
+every ~1024 SSA events for RuleMonkey, via its upstream cancellation hook),
+so the surfaced elapsed time may overshoot the budget by one such interval.
 
 Interactive:
 - **`run_until(t, *, n_points, seed)`** → `Result`
@@ -369,6 +370,14 @@ Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
   and one cannot be moved alone by any requested parameter (`sigma = t0 +
   t_delta` at `t_delta = 0`). Names each parameter and the direction its column
   is for; `Result.one_sided_sensitivities` lists the same (GH #1822).
+
+- **`RoundoffStepWarning`** — an ODE run's solver took steps too small to move
+  its clock (`t + h == t` in double precision), which move the state and not
+  the time, so the rows after them can be wrong with no solver error. Names how
+  many, the first row after one and the spacing of the doubles there;
+  `solver_stats["n_roundoff_steps"]` holds the count. A run can take them and
+  be right: `Result.check()` says whether the answer moves at a tighter
+  tolerance (issue #1837).
 
 - **`RuleMonkeyWarning`** — `method="rm"` or a `RuleMonkeySession` loaded a model
   for which RuleMonkey reports a warning-level diagnostic: how it reads a rule

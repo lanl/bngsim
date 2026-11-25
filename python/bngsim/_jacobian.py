@@ -3289,19 +3289,31 @@ def _make_c_printer():
             return f"pow({self._print(b)}, {self._print(e)})"
 
         def _print_Piecewise(self, expr):
-            # ((v1, c1), …, (vn, True)) → (c1) ? (v1) : ((c2) ? (v2) : … : else)
+            # ((v1, c1), …, (vn, True)) → ((c1) ? (v1) : (c2) ? (v2) : … : (else)),
+            # one chain, which C groups from the right as it would the nested
+            # form. A Piecewise that is all of the else joins the chain, which is
+            # how the parse builds an if() chain. Nested, each piece cost two
+            # levels of brackets: a table of 98 links, the most the parse reads,
+            # came to 200 of clang's limit of 256 (issue #1814).
+            from sympy import Piecewise
+
             args = list(expr.args)
             else_str = "0.0"
-            pieces = []
-            for val, cond in args:
+            links = []
+            i = 0
+            while i < len(args):
+                val, cond = args[i]
+                i += 1
                 if cond is True or (hasattr(cond, "is_Boolean") and cond == True):  # noqa: E712
+                    if isinstance(val, Piecewise):
+                        args, i = list(val.args), 0
+                        continue
                     else_str = self._print(val)
                     break
-                pieces.append((self._print(cond), self._print(val)))
-            out = else_str
-            for cond_s, val_s in reversed(pieces):
-                out = f"(({cond_s}) ? ({val_s}) : ({out}))"
-            return out
+                links.append(f"({self._print(cond)}) ? ({self._print(val)}) : ")
+            if not links:
+                return else_str
+            return f"({''.join(links)}({else_str}))"
 
         def _print_Relational(self, expr):
             # As in the ExprTk printer: StrPrinter's ``Eq(a, b)`` / ``Ne(a, b)``

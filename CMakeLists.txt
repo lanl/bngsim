@@ -521,6 +521,11 @@ else()
             "it once with that OFF, so the stale fetch is replaced.")
     endif()
     set(BNGSIM_SUNDIALS_CARRIES_1301 ON)
+    # The fetched source's private CVODES headers, which
+    # src/cvodes_roundoff_steps.c reads its count of t + h == t steps through
+    # (issue #1837). A system SUNDIALS installs none.
+    set(BNGSIM_SUNDIALS_PRIVATE_INCLUDE_DIRS
+        "${sundials_SOURCE_DIR}/src/cvodes" "${sundials_SOURCE_DIR}/src/sundials")
 
     if(ENABLE_KLU)
         set(BNGSIM_LINK_KLU ON)
@@ -853,6 +858,14 @@ set(BNGSIM_SOURCES
     src/lapack_dense_linsol.cpp
 )
 
+# CVODES' count of the steps too small to move its clock (issue #1837), read
+# through the fetched source's private header. Only that one file sees it.
+if(BNGSIM_SUNDIALS_PRIVATE_INCLUDE_DIRS)
+    list(APPEND BNGSIM_SOURCES src/cvodes_roundoff_steps.c)
+    set_source_files_properties(src/cvodes_roundoff_steps.c PROPERTIES
+        INCLUDE_DIRECTORIES "${BNGSIM_SUNDIALS_PRIVATE_INCLUDE_DIRS}")
+endif()
+
 # Conditionally add NFsim simulator wrapper
 if(BNGSIM_BUILD_NFSIM)
     list(APPEND BNGSIM_SOURCES src/nfsim_simulator.cpp)
@@ -1000,6 +1013,18 @@ else()
         "System SUNDIALS lacks the lanl/bngsim#1301 fix to CVODES's staggered "
         "sensitivity corrector: a forward-sensitivity run whose RHS refuses a state "
         "can come back wrong. Use the fetched SUNDIALS for sensitivity work.")
+endif()
+
+# Whether a run counts the steps CVODE takes where t + h == t, and says so
+# (issue #1837): the fetched SUNDIALS only, whose private header holds the count.
+if(BNGSIM_SUNDIALS_PRIVATE_INCLUDE_DIRS)
+    target_compile_definitions(bngsim PRIVATE BNGSIM_SUNDIALS_COUNTS_ROUNDOFF_STEPS=1)
+else()
+    message(WARNING
+        "System SUNDIALS installs no private CVODES header, so a run counts none of "
+        "the steps CVODE takes where t + h == t (lanl/bngsim#1837): such a run "
+        "returns with no RoundoffStepWarning, and solver_stats['n_roundoff_steps'] "
+        "reads 0. Use the fetched SUNDIALS to be told of them.")
 endif()
 
 # MIR micro-JIT backend (GH #78). Linked PRIVATE — the JIT is an internal

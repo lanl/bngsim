@@ -6618,6 +6618,29 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
     // tested the wrong species.
     const ResidualSubspace sub = make_subspace(opts, ns);
 
+    // The solvers read the state as concentrations: an SSA run's counts are
+    // read at the size each compartment has now (issue #1754). From c = 3.9,
+    // where the counts are over the load-time 2, [X] settled at 48.8 for 25.
+    // A solve writes no species, so the state goes back as it was stored, on
+    // every exit.
+    struct KeepSsaCounts {
+        NetworkModel &model;
+        std::vector<double> stored;
+        ~KeepSsaCounts() {
+            if (stored.empty())
+                return;
+            auto &species = const_cast<std::vector<Species> &>(model.species());
+            for (std::size_t i = 0; i < stored.size(); ++i)
+                species[i].concentration = stored[i];
+            model.set_ssa_counts_stored(true);
+        }
+    } keep_ssa_counts{model, {}};
+    if (model.ssa_counts_stored()) {
+        keep_ssa_counts.stored.resize(static_cast<std::size_t>(ns));
+        model.get_state_into(keep_ssa_counts.stored.data());
+        model.ssa_counts_to_concentrations(0.0); // where the solvers read f(y)
+    }
+
     // Issue #1001: whether the Newton step steers where the solve stops.
     // Above kNewtonDistanceMost unknowns it is not taken, and the solve stops
     // by the residual test alone: KINSOL's stopping rule, the ladder's floor

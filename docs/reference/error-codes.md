@@ -9,6 +9,10 @@ summary: "The code every BNGsim error and run notice carries, what each means an
 Every BNGsim error carries a `code`, a string that stays the same across releases where the message may change. A program should branch on the code, not on the message.
 
 ```python
+import bngsim
+
+model = bngsim.examples.load("binding")  # parameters kf, kr, A0 and B0
+
 try:
     model.set_param("kff", 1.0)
 except bngsim.BngsimError as e:
@@ -196,6 +200,13 @@ Build the Simulator with the method the remedy names, or leave the option out.
 Raised as `NotSupportedError` or `UsageError`. A call or option this object does not offer, as written.
 
 Read the message for what does.
+
+(code-usage-span-out-of-reach)=
+### `usage.span_out_of_reach`
+
+Raised as `UsageError`. An ODE run CVODE cannot step through: a grid of three or more output points spans more than the largest double, or CVODE's step, or its clock (t + h), passed it before the run ended. Whether a run gets there can turn on the model and its values.
+
+Measure time in a larger unit, so that the run's times are smaller.
 
 (code-env-feature-not-built)=
 ### `env.feature_not_built`
@@ -413,6 +424,7 @@ A run's warnings and fallbacks are kept on `result.notices`, and on the error of
 | `sens.parameters_skipped` | Parameters were left out of a sensitivity request because their columns could not mean what they say. | The message names the parameters left out and why; the result has no sensitivities for them. |
 | `sens.rhs_difference_quotient` | The analytic sensitivity right-hand side was declined; CVODES' difference quotient carried the sensitivity columns. | Nothing to fix: the sensitivities stand, computed more slowly. |
 | `smooth_pulse.event_reset` | A smooth bump on a variable an event assigns is placed from the variable's start and rate. | Check the pulse's placement where the event assigns the variable. |
+| `solver.roundoff_steps` | The ODE solver took steps too small to move its clock (t + h == t); the rows after them can be wrong. | Call `result.check()`, which runs again at a tenth of the tolerance and says whether the answer moved, and read the rows from the time the message names on as suspect until it passes. Where the model allows it, run nearer t = 0, where the doubles are finer; tighter tolerances take smaller steps and make it worse. |
 | `ssa.negative_count` | A species count went negative in a stochastic run. | Fix the rate laws that let a count go negative; the trajectory past it is not a stochastic process. |
 | `ssa.reverse_fire` | A reaction fired in reverse because its rate law evaluated negative. | Nothing to fix if the negative rate is meant: the reaction runs in reverse so the mean tracks the ODE. Otherwise fix the rate law so it cannot go negative. |
 | `ssa.rounded_counts` | Molecule counts that were not whole numbers were rounded at the start. | Give whole-number initial counts where the rounding matters. |

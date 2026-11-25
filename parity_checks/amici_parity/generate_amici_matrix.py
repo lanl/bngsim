@@ -42,9 +42,10 @@ import sys as _sys  # noqa: E402
 
 from _sbml_features import extract_sbml_features  # noqa: E402
 
-# The label an authored NO_GROUND_TRUTH disposition opens its row comment with,
-# from the module rather than a literal so the two cannot drift.
-from amici_dispositions import NO_GROUND_TRUTH_LABEL  # noqa: E402
+# How an applied NO_GROUND_TRUTH disposition opens its row comment, from the module
+# rather than a literal so the two cannot drift. The label alone would not do: the
+# note on an entry that did not apply begins with it too.
+from amici_dispositions import NO_GROUND_TRUTH_APPLIED  # noqa: E402
 
 # How the runner's note on an unjudged strict-onset sample begins (issue #1557),
 # from the runner for the same reason.
@@ -118,9 +119,11 @@ def is_no_ground_truth(result: dict) -> bool:
     Both engines ran, and the model has no solution over the job's horizon for
     either answer to be checked against. Drawn as that, not as the default
     BAD_TEST reading of two engines that refused the model, which neither did.
+    A disposition that did not apply, as where both engines raised, leaves that
+    reading alone.
     """
-    return result.get("outcome") == "BAD_TEST" and (result.get("comment") or "").startswith(
-        NO_GROUND_TRUTH_LABEL
+    return result.get("outcome") == "BAD_TEST" and bool(
+        NO_GROUND_TRUTH_APPLIED.match(result.get("comment") or "")
     )
 
 

@@ -72,6 +72,7 @@ from bngsim._exceptions import (
     ModelError,
     NotFoundError,
     NotSupportedError,
+    RoundoffStepWarning,
     ScanDoseWarning,
     SensitivityRefusedDuringRunError,
     SensitivityRefusedForParametersError,
@@ -96,6 +97,7 @@ from bngsim._result import (
     _resolve_output_selector,
     _state_digest,
     _warn_one_sided,
+    _warnings_held,
 )
 from bngsim._sample_times import (
     normalize_sample_times,
@@ -324,6 +326,124 @@ _SKIP_WARN_NAME_LIMIT = 8
 _CVODE_FAILURES = ("CVODE integration failed at t=", "CVODE made no progress ")
 
 
+def _grid(times: Any) -> np.ndarray:
+    """The rows a core ``TimeSpec`` asks for, as ``TimeSpec::output_times``
+    makes them."""
+    if times.sample_times:
+        return np.asarray(times.sample_times, dtype=np.float64)
+    n = int(times.n_points)
+    dt = (times.t_end - times.t_start) / (n - 1) if n > 1 else 0.0
+    grid = times.t_start + np.arange(n, dtype=np.float64) * dt
+    if n > 1:
+        grid[-1] = times.t_end
+    return grid
+
+
+def _roundoff_steps_message(
+    steps: int, first_row: int, spacing: float, rows: np.ndarray, *, raised: bool = False
+) -> str:
+    """What a run's steps where t + h == t were (issue #1837): *steps* of
+    them, the first row recorded after one at *first_row* of *rows* (-1 for
+    none), and *spacing*, the spacing of the doubles on the clock the run was
+    integrated on between that row and the one before."""
+    text = (
+        f"CVODE took {steps} step{'' if steps == 1 else 's'} too small to move its clock "
+        "(t + h == t in double precision)"
+    )
+    where = ""
+    own_clock = False
+    if 0 <= first_row < len(rows):
+        at = [float(rows[first_row])]
+        after = ""
+        if first_row > 0:
+            at.append(float(rows[first_row - 1]))
+            after = f"after t = {at[1]!r} and "
+        where = f"t = {at[0]!r}"
+        # A run moved onto a clock counted from its start (a far run of a model
+        # that reads no clock) has finer doubles there than its rows' times.
+        own_clock = spacing < max(float(np.spacing(abs(t))) for t in at)
+        clock = "on the run's own clock, counted from its start, " if own_clock else ""
+        text += (
+            f", the first {after}by {where}, where {clock}the doubles are {spacing:.3g} "
+            f"apart, so that such a step is at most {spacing / 2:.3g}"
+        )
+    if raised:
+        text += "; the run then failed." if where else " before the run failed."
+    else:
+        rows_on = f"the rows from {where} on" if where else "the rows after them"
+        text += (
+            ". Such a step moves the state and not the time, so "
+            f"{rows_on} can be wrong, with no solver error. Result.check() runs it "
+            "again at a tenth of the tolerance and says whether the answer moved."
+        )
+    text += " Tighter tolerances take smaller steps and make it worse"
+    if own_clock:
+        return text + "."
+    return text + "; where the model allows it, run nearer t = 0, where the doubles are finer."
+
+
+def _roundoff_steps_of(core: Any) -> str | None:
+    """The message for a returned core result's steps where t + h == t, or
+    None where it took none."""
+    stats = core.solver_stats
+    if stats.n_roundoff_steps <= 0:
+        return None
+    return _roundoff_steps_message(
+        stats.n_roundoff_steps,
+        stats.roundoff_first_row,
+        stats.roundoff_spacing,
+        np.asarray(core.time),
+    )
+
+
+def _say_roundoff_steps(core: Any) -> None:
+    """Warn of a returned run's steps where t + h == t, and record them with
+    the call (issue #1837). In a worker thread whose warnings are held, record
+    them only: the caller warns once the results are back on its thread
+    (:func:`_warn_held_roundoff_steps`)."""
+    message = _roundoff_steps_of(core)
+    if message is None:
+        return
+    if _warnings_held():
+        _notices.note(RoundoffStepWarning.__name__, "solver.roundoff_steps", message)
+        return
+    _notices.warn(
+        message, RoundoffStepWarning, code="solver.roundoff_steps", stacklevel=_notices.OUTSIDE
+    )
+
+
+def _note_roundoff_steps_raised(sim: Any, times: Any) -> None:
+    """Record the steps where t + h == t of the run *sim* last made, which
+    raised, with the call, so that they go on its error, as issue #1857 made a
+    failed run's notices do. Not
+    warned: under -W error a warning raised here would replace the run's own
+    error."""
+    steps, first_row, spacing = sim.last_run_roundoff_steps()
+    if steps > 0:
+        _notices.note(
+            RoundoffStepWarning.__name__,
+            "solver.roundoff_steps",
+            _roundoff_steps_message(steps, first_row, spacing, _grid(times), raised=True),
+        )
+
+
+def _warn_held_roundoff_steps(results: Iterable[Result], *, record: bool = False) -> None:
+    """Warn, on the caller's thread, of the steps where t + h == t that runs
+    made in worker threads recorded there (issue #1837), as the threads would
+    have warned of them; with *record*, record them with the call too."""
+    for r in results:
+        core = getattr(r, "_core", None)
+        message = None if core is None else _roundoff_steps_of(core)
+        if message is not None:
+            _notices.warn(
+                message,
+                RoundoffStepWarning,
+                code="solver.roundoff_steps",
+                stacklevel=_notices.OUTSIDE,
+                record=record,
+            )
+
+
 def _abbreviate(names: list[str], limit: int = _SKIP_WARN_NAME_LIMIT) -> str:
     """``['a', 'b', ...]`` for a warning, truncated with a count past ``limit``."""
     if len(names) <= limit:
@@ -355,6 +475,9 @@ _NF_METHOD_ALIASES: dict[str, str] = {
     "dynstoc": "nf_fixed",
     "ds": "nf_fixed",
 }
+#: Every method name that runs network-free, as ``Simulator`` and a BNGL
+#: ``method=>`` spell it: the one list the CLI and the protocol parse read.
+_NETWORK_FREE_METHODS = frozenset(_NF_METHOD_ALIASES)
 
 _available_nf_methods = {"nf_reject"}
 _unavailable_nf_methods: dict[str, str] = {}
@@ -439,6 +562,11 @@ _PASSED_THROUGH = (SimulationTimeout, SensitivityUnsupportedError, SparseJacobia
 # run's `except RuntimeError` arm would wrap them in a SimulationError, which
 # they fell past before. The run paths pass them through unchanged instead.
 _ONCE_PLAIN = (UsageError, ArgumentTypeError, NotFoundError, InvalidModelError, NotSupportedError)
+
+# Issue #1838: the code of an ODE run CVODE cannot step through, a UsageError
+# the engine raises. Whether a run gets there can turn on the model's values, so
+# a batch row and a scan point name themselves on it, as on a refusal mid-run.
+_SPAN_OUT_OF_REACH = "usage.span_out_of_reach"
 
 
 def normalize_method(requested: str) -> tuple[str, str]:
@@ -3642,8 +3770,8 @@ class Simulator:
             # differentiability issue. Refuse loudly rather than silently fall to
             # the finite-difference sensitivity path (GH #214).
             raise BngsimError(
-                "Failed to build the analytical sensitivity RHS required for "
-                f"forward sensitivity ({type(e).__name__}: {e}). This needs a "
+                "Failed to build the compiled right-hand side forward sensitivity "
+                f"requires ({type(e).__name__}: {e}). This needs a "
                 "codegen backend: a C compiler, or BNGSIM_CODEGEN_JIT=mir for the "
                 "in-process MIR JIT."
             ) from e
@@ -3681,9 +3809,12 @@ class Simulator:
                 # Same envelope as the try/except above — a build that failed,
                 # whatever swallowed the exception on the way out. A toolchain
                 # that builds nothing keeps its type (issue #1544).
+                # The build compiles the model's right-hand side, and its
+                # analytical sensitivity RHS where the rate laws differentiate;
+                # where they did not, the right-hand side alone failed.
                 message = (
-                    "Failed to build the analytical sensitivity RHS required for "
-                    f"forward sensitivity ({type(cause).__name__}: {cause}). This "
+                    "Failed to build the compiled right-hand side forward "
+                    f"sensitivity requires ({type(cause).__name__}: {cause}). This "
                     "is a BUILD failure, not a statement about the model's "
                     "differentiability."
                 )
@@ -5787,7 +5918,7 @@ class Simulator:
             self._restore_carryover_state(start_carry)
 
         try:
-            return self._ode_attempts(times, opts, restore)
+            return self._ode_run(times, opts, restore)
         except BaseException:
             # A run that raises leaves the model as it found it, whatever raised:
             # a retry that failed too, a refusal, a timeout, an explicit jacobian
@@ -5796,6 +5927,29 @@ class Simulator:
             # still clear, so nothing refused or warned.
             restore()
             raise
+
+    def _ode_run(self, times, opts, restore, sim=None, core=None):
+        """:meth:`_ode_attempts`, and what the run's steps were.
+
+        Every ODE run passes through here, so this is where the steps CVODE
+        took where t + h == t are said (issue #1837), of the attempt whose
+        result is returned or whose error is raised: an analytical-Jacobian
+        attempt the FD retry replaced is not the run.
+        """
+        sim = self._sim if sim is None else sim
+        try:
+            out = self._ode_attempts(times, opts, restore, sim, core)
+        except _ONCE_PLAIN:
+            # A refusal of the run's arguments, its span among them (issue
+            # #1838): there are no rows for such steps to be wrong in, and over
+            # (1e308, 1.7e308) the steps where t + h == t were the far span's
+            # own doing, which the refusal says.
+            raise
+        except BaseException:
+            _note_roundoff_steps_raised(sim, times)
+            raise
+        _say_roundoff_steps(out)
+        return out
 
     def _ode_attempts(self, times, opts, restore, sim=None, core=None):
         """The attempts :meth:`_run_ode_with_jacobian_fallback` makes, with
@@ -6093,9 +6247,12 @@ class Simulator:
         ValueError
             If t_span, n_points or sample_times are invalid (a time that is
             not finite, ``t_end <= t_start``, ``n_points < 2``, fewer than two
-            sample times), if ``start`` is not ``None``, ``"live"`` or
-            ``"initial"``, or ``"initial"`` with ``carry_sensitivities=True``,
-            or if output sensitivities
+            sample times; for an ODE run, a grid of three or more points
+            whose length is past the largest double, or a run whose step or
+            clock CVODE takes past it before the run ends, which it cannot
+            step through), if ``start`` is
+            not ``None``, ``"live"`` or ``"initial"``, or ``"initial"`` with
+            ``carry_sensitivities=True``, or if output sensitivities
             were requested (``sensitivity_params`` / ``sensitivity_ic``,
             including the ``carry_sensitivities`` path) on a model that
             contains events. Events reinitialise the CVODE state
@@ -7076,6 +7233,7 @@ class Simulator:
         if in_workers:
             for r in results:
                 _warn_one_sided(r._one_sided_sensitivities, note=False)
+            _warn_held_roundoff_steps(results)
         if self._atol_is_default(atol):
             self._warn_atol_above_scale(results, "ODE batch", per_result=row_atols)
 
@@ -7939,11 +8097,11 @@ class Simulator:
 
     def _capture_carryover_state(
         self, core: Any = None
-    ) -> tuple[np.ndarray | None, list[str], bool, Any, bool]:
-        """Snapshot the model's carry-over state: the sensitivity seed (issue #81)
-        and the event state a continuing run starts from (issue #693). ``core``
-        defaults to this Simulator's model; a :meth:`run_batch` row passes its
-        clone's."""
+    ) -> tuple[np.ndarray | None, list[str], bool, Any, bool, float]:
+        """Snapshot the model's carry-over state: the sensitivity seed (issue #81),
+        the event state a continuing run starts from (issue #693), and the
+        model's clock. ``core`` defaults to this Simulator's model; a
+        :meth:`run_batch` row passes its clone's."""
         core = self._model._core if core is None else core
         seed = (
             np.array(core.pending_sensitivity_seed(), dtype=np.float64)
@@ -7958,14 +8116,22 @@ class Simulator:
             # ...and the initial-condition axis's own flag (issue #1528): whether
             # a run had moved the state off the IC baseline.
             bool(core.advanced_since_baseline),
+            # ...and the time the state is at, the model's clock, at which
+            # get_concentration reads a compartment an assignment rule sizes
+            # (issue #1754). Left where a run in between ended, after
+            # run_replicates over (4, 8) it read [S] at c(8) = 11 for c(4) = 7.
+            float(core.current_time),
         )
 
     def _restore_carryover_state(
-        self, snapshot: tuple[np.ndarray | None, list[str], bool, Any, bool], core: Any = None
+        self,
+        snapshot: tuple[np.ndarray | None, list[str], bool, Any, bool, float],
+        core: Any = None,
     ) -> None:
         """Put back what :meth:`_capture_carryover_state` captured."""
-        seed, names, dirty, events, advanced = snapshot
+        seed, names, dirty, events, advanced, clock = snapshot
         core = self._model._core if core is None else core
+        core.current_time = clock
         if seed is None:
             core.set_pending_sensitivity_seed(np.zeros((0, 0), dtype=np.float64), [])
         else:
@@ -8273,8 +8439,11 @@ class Simulator:
             self._model._core.ic_state_dirty = False
             self._model._core.advanced_since_baseline = False
             # Every point starts from the events' state at invocation too, not
-            # from where the previous point's run left them (issue #693).
+            # from where the previous point's run left them (issue #693), and
+            # from the model's clock then, at which an on_point hook's
+            # set_concentration reads a rule-sized compartment (issue #1754).
             self._model._core.set_event_carry_state(invocation_sens[3])
+            self._model._core.current_time = invocation_sens[5]
             if use_named:
                 # The carry above brings the invocation's storage flag; the
                 # snapshot's is the one that goes with its state (issue #1463).
@@ -8413,6 +8582,15 @@ class Simulator:
                         # a continuation scan continues the last point on purpose.
                         start="live",
                     )
+                except UsageError as e:
+                    if e.code != _SPAN_OUT_OF_REACH:
+                        raise
+                    # Whether a point gets there turns on its value: named, as a
+                    # run_batch row is (issue #1838).
+                    raise UsageError(
+                        f"scan point {i} ({parameter} = {float(value)!r}): {e}",
+                        code=_SPAN_OUT_OF_REACH,
+                    ) from None
                 except StopConditionMet as stop:
                     # One point's stop is not the scan's (issue #1369): the point
                     # comes back cut, as a run_batch row does. run() integrated the
@@ -8687,7 +8865,7 @@ class Simulator:
                     row_core.set_state(start_state)
                     self._restore_carryover_state(start_carry, row_core)
 
-                core_result = self._ode_attempts(times, opts, restore, sim=sim, core=row_core)
+                core_result = self._ode_run(times, opts, restore, sim=sim, core=row_core)
                 row_jacobian = self._jacobian_used(opts, row_core)
 
             elif self._method in ("ssa", "psa"):
@@ -8724,6 +8902,12 @@ class Simulator:
             # can turn on the row's values, and a scan has to say which row. A
             # runtime_error said so as "Batch simulation N failed".
             raise type(e)(f"run_batch row {index}: {e}") from None
+        except UsageError as e:
+            if e.code != _SPAN_OUT_OF_REACH:
+                raise
+            # Over (0, 3e306) a row at k = 1 returns and one at k = 1e-300 does
+            # not: the row is named, as for a refusal partway (issue #1838).
+            raise UsageError(f"run_batch row {index}: {e}", code=_SPAN_OUT_OF_REACH) from None
         except _PASSED_THROUGH + _ONCE_PLAIN:
             # A timeout or a refusal is the row's, as it is from run().
             raise
@@ -9237,6 +9421,10 @@ class Simulator:
             # (issue #1857): it rode on the error, and goes on the recovered
             # columns or on the error raised here.
             _notices.carry(exc)
+            if isinstance(exc, _ONCE_PLAIN):
+                # A refusal of the call's arguments, its span among them (issue
+                # #1838): a column alone is refused too.
+                raise exc
             if isinstance(exc, _ConditionReadOtherwise):
                 # No column runs alone either: the code is not the code for the
                 # model as it is, and the pass ahead of the chunks did not say.
@@ -9295,13 +9483,26 @@ class Simulator:
 
         # Stitch sensitivity tensors along param axis
         stitched = self._stitch_sensitivity_results(chunk_results, target_params)
-        # The chunks' notices, but for their one-sided switches, each said of a
-        # chunk's columns: the stitched result says them once, of all of them.
+        # The chunks' notices, but for their one-sided switches and their
+        # steps where t + h == t, each said of a chunk's run: the stitched
+        # result says them once, of all of them.
         stitched._notices = _notices.unique(
-            n for r in chunk_results for n in r._notices if n.code != "sens.one_sided"
+            n
+            for r in chunk_results
+            for n in r._notices
+            if n.code not in ("sens.one_sided", "solver.roundoff_steps")
         )
         stitched._one_sided_sensitivities = _merge_one_sided(chunk_results)
         _warn_one_sided(stitched._one_sided_sensitivities)
+        # All the chunks integrate the one trajectory, so the call warns of the
+        # chunk that took the most steps where t + h == t, records that one, and
+        # reports its count (issue #1837).
+        taken = [r for r in chunk_results if r._solver_stats.get("n_roundoff_steps", 0) > 0]
+        if taken:
+            most = max(taken, key=lambda r: r._solver_stats["n_roundoff_steps"])
+            stitched._solver_stats = dict(stitched._solver_stats)
+            stitched._solver_stats["n_roundoff_steps"] = most._solver_stats["n_roundoff_steps"]
+            _warn_held_roundoff_steps([most], record=True)
         # Carry the #198 support map so an unsupported expression selector raises
         # the specific reason on the stitched result too.
         stitched._expression_sens_support = self._expression_sens_support()
@@ -9385,6 +9586,9 @@ class Simulator:
                         )
                     )
                 except Exception as solo:  # noqa: BLE001 — classified, then reported below
+                    if isinstance(solo, _ONCE_PLAIN):
+                        # A refusal of the call's arguments (issue #1838).
+                        raise solo from None
                     if isinstance(solo, SensitivityUnsupportedError) and not isinstance(
                         solo, SensitivityRefusedForParametersError
                     ):
@@ -9535,12 +9739,22 @@ class Simulator:
 
         try:
             core_result = sim.run(ts, opts)
+        except _ONCE_PLAIN:
+            # A refusal of the chunk's arguments, its span among them (issue
+            # #1838), as run() passes it: wrapped below, it was a "Sensitivity
+            # chunk failed" whose columns were retried and blamed on tolerance.
+            raise
         except SensitivityUnsupportedError:
             # The solver's refusal of the model mid-run (issue #1279), typed as
             # one raised while the chunk sets up: no column runs alone either.
+            _note_roundoff_steps_raised(sim, ts)
             raise
         except RuntimeError as e:
+            _note_roundoff_steps_raised(sim, ts)
             raise SimulationError(f"Sensitivity chunk failed (params={sens_params}): {e}") from e
+        # Recorded with the chunk, which holds its warnings; the stitched
+        # result warns of them on the caller's thread (issue #1837).
+        _say_roundoff_steps(core_result)
 
         # Against the clone the chunk ran on: the stamp writes each rule target
         # back into the model it names (#1510), and this call never advances
@@ -12473,10 +12687,13 @@ class Simulator:
         """
         self._require_interactive_backend_support()
 
-        # Save model state: all species concentrations + params
-        species_state = {
-            name: self._model.get_concentration(name) for name in self._model.species_names
-        }
+        # Save model state: all species concentrations + params. The values as
+        # stored, which the SSA counts mark in "events" says how to read: after
+        # an SSA run, get_concentration reads a species in a compartment whose
+        # size moves at the size it has now (issue #1754).
+        species_state = dict(
+            zip(self._model.species_names, self._model._core.get_state().tolist(), strict=True)
+        )
         param_state = {name: self._model.get_param(name) for name in self._model.param_names}
         snap = {
             "current_time": self._current_time,
@@ -12485,6 +12702,8 @@ class Simulator:
             # The triggers' truth and the pending delayed executions, so that
             # rewinding rewinds the events too (issue #693).
             "events": self._model._core.event_carry_state(),
+            # The model's clock, the time the state is at (issue #1754).
+            "clock": float(self._model._core.current_time),
             # Whether a run advanced the state, so a restore after reset() does
             # not take it for a fresh start (issue #1528).
             "ic_state_dirty": bool(self._model._core.ic_state_dirty),
@@ -12535,7 +12754,10 @@ class Simulator:
             with contextlib.suppress(Exception):
                 self._model.set_param(name, value)
 
-        # Restore species concentrations
+        # Restore species concentrations, as they were stored: written with the
+        # SSA counts mark clear, so that none is read at a compartment's size,
+        # and the mark goes back with the events below (issue #1754).
+        self._model._core.ssa_counts_stored = False
         for name, value in snapshot["species"].items():
             with contextlib.suppress(Exception):
                 self._model.set_concentration(name, value)
@@ -12543,6 +12765,9 @@ class Simulator:
         # ...and the event state the snapshot's run left (issue #693). A
         # snapshot from before that existed has none: a fresh start.
         self._model._core.set_event_carry_state(snapshot.get("events"))
+        # ...and the model's clock, at which get_concentration reads a
+        # compartment an assignment rule sizes (issue #1754).
+        self._model._core.current_time = snapshot.get("clock", snapshot["current_time"])
         # ...and the carried-over mark of a state a run advanced (issue #1528):
         # set_concentration above leaves the flag as it is, so after a reset()
         # the restored x(θ) was seeded as a fresh start with dx(0)/dθ = 0. Set
@@ -12569,7 +12794,11 @@ class Simulator:
         a stateful ``run_until``/``run`` the model holds the final state (the
         ODE/SSA backends write it back), so this returns the post-step state.
         It is the per-step ``get`` half of driving bngsim as a reaction kernel
-        from an external orchestrator; pair with :meth:`set_state`.
+        from an external orchestrator; pair with :meth:`set_state`. The values
+        are as stored: after an SSA or PSA run, a concentration species in a
+        compartment whose size moves holds its count over the compartment's
+        load-time size, which ``Model.get_concentration`` reads at the size the
+        compartment has (issue #1754).
         """
         return self._model.get_state()
 
@@ -12580,7 +12809,8 @@ class Simulator:
         model's current concentrations as the initial condition at the start of
         the next ``run_until``/``run``, so a bulk ``set_state`` between steps is
         the per-step ``set`` half of the kernel exchange (e.g. injecting the
-        SSA-subset coupling species before advancing the ODE subset).
+        SSA-subset coupling species before advancing the ODE subset). The
+        values are taken as stored, as :meth:`get_state` returns them.
 
         ``time``, when given, also sets :attr:`current_time` (see
         :meth:`set_time`), so the state and the clock it belongs to move
@@ -12621,7 +12851,10 @@ class Simulator:
         # Rolled back to where an earlier run ended, the events go back with the
         # clock: the next run continues the triggers and pending executions as
         # they were then (issue #693). At any other time it is a fresh start.
+        # The model's clock goes with it: get_concentration reads a compartment
+        # an assignment rule sizes at the time the state is at (issue #1754).
         self._current_time = t
+        self._model._core.current_time = t
         # Issue #1701: the caller says the state this Simulator's last run left
         # is at t, so a run from t continues it, and is not one with its clock
         # set back. Only this Simulator's: another one's clock, set to 0, does

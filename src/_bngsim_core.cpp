@@ -138,6 +138,20 @@ state_arg(const bngsim::NetworkModel &model,
     return y.data();
 }
 
+// A public evaluator reads the model at the (t, conc) it is given, which moves
+// the model's clock to t; the clock goes back when the call returns, raised or
+// not. Left at t, the next read of the model's time saw it: after a run to
+// t = 4 in c := V0 + time, rhs(y, 0.0) left get_concentration reading the
+// compartment at 3 for 7 (issue #1754).
+struct KeepModelClock {
+    bngsim::NetworkModel &model;
+    double t;
+    explicit KeepModelClock(bngsim::NetworkModel &m) : model(m), t(m.current_time()) {}
+    ~KeepModelClock() { model.set_current_time(t); }
+    KeepModelClock(const KeepModelClock &) = delete;
+    KeepModelClock &operator=(const KeepModelClock &) = delete;
+};
+
 // A column-major n×n buffer (jac[j*n + i] = ∂f_i/∂x_j, the SUNDIALS layout every
 // C++ fill writes) as a C-ordered (n, n) ndarray with J[i, j] = ∂f_i/∂x_j.
 static py::array_t<double> colmajor_to_ndarray_2d(const std::vector<double> &jac, int n) {
@@ -874,8 +888,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
     // and re-raises as bngsim.ModelError / ParameterError / SimulationError.
     //
     // Exceptions, translated here: bngsim::TimeoutError,
-    // bngsim::SparseJacobianUnavailable, bngsim::SensitivityUnsupported and
-    // its bngsim::SensitivityRefusedForParameters.
+    // bngsim::SparseJacobianUnavailable, bngsim::TimeSpanOutOfReach,
+    // bngsim::SensitivityUnsupported and its
+    // bngsim::SensitivityRefusedForParameters.
     // The Python-side `SimulationTimeout` class carries `timeout` and
     // `elapsed` attributes which the wrapper layer can't reconstruct from a
     // generic RuntimeError message — those would round-trip lossily. We
@@ -901,6 +916,14 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::object cls =
                 py::module_::import("bngsim._exceptions").attr("SparseJacobianUnavailableError");
             py::object exc = cls(py::str(e.what()));
+            PyErr_SetObject(cls.ptr(), exc.ptr());
+        } catch (const bngsim::TimeSpanOutOfReach &e) {
+            // Issue #1838: a span an ODE run cannot step through, an argument
+            // the run cannot take, typed as Python's own refusals of a span are.
+            // Its own code, since whether a run reaches it can turn on the
+            // model's values, which a batch row and a scan point name.
+            py::object cls = py::module_::import("bngsim._exceptions").attr("UsageError");
+            py::object exc = cls(py::str(e.what()), py::arg("code") = "usage.span_out_of_reach");
             PyErr_SetObject(cls.ptr(), exc.ptr());
         } catch (const bngsim::SensitivityRefusedForParameters &e) {
             // Issue #1435: a refusal mid-run whose condition turns on the
@@ -937,6 +960,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("n_nonlin_conv_fails", &bngsim::SolverStats::n_nonlin_conv_fails)
         .def_readwrite("n_sens_err_test_fails", &bngsim::SolverStats::n_sens_err_test_fails)
         .def_readwrite("n_sens_nonlin_conv_fails", &bngsim::SolverStats::n_sens_nonlin_conv_fails)
+        .def_readwrite("n_roundoff_steps", &bngsim::SolverStats::n_roundoff_steps)
+        .def_readwrite("roundoff_first_row", &bngsim::SolverStats::roundoff_first_row)
+        .def_readwrite("roundoff_spacing", &bngsim::SolverStats::roundoff_spacing)
         .def_readwrite("linear_solver", &bngsim::SolverStats::linear_solver)
         .def_readwrite("n_dense_blas_factorizations",
                        &bngsim::SolverStats::n_dense_blas_factorizations)
@@ -964,6 +990,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
             d["n_nonlin_conv_fails"] = s.n_nonlin_conv_fails;
             d["n_sens_err_test_fails"] = s.n_sens_err_test_fails;
             d["n_sens_nonlin_conv_fails"] = s.n_sens_nonlin_conv_fails;
+            d["n_roundoff_steps"] = s.n_roundoff_steps;
+            d["roundoff_first_row"] = s.roundoff_first_row;
+            d["roundoff_spacing"] = s.roundoff_spacing;
             d["linear_solver"] = s.linear_solver;
             d["steady_state_reached"] = s.steady_state_reached;
             d["steady_state_residual"] = s.steady_state_residual;
@@ -2254,6 +2283,19 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "Bulk-assign all species concentrations from a 1-D float64 ndarray, "
             "ordered like species_names(). O(n_species), one Python call (GH #102).")
 
+        .def_property("current_time", &bngsim::NetworkModel::current_time,
+                      &bngsim::NetworkModel::set_current_time,
+                      "The model's clock: the time its stored state is at, which a run's "
+                      "write-back sets and reset() puts at 0. get_concentration and "
+                      "set_concentration read the size of a compartment an assignment rule "
+                      "sets at it, over an SSA run's state (issue #1754). Writable so a "
+                      "primitive that puts a state back can put its time back with it.")
+        .def("ssa_start_amounts", &bngsim::NetworkModel::ssa_start_amounts, py::arg("t"),
+             "The amount of each species an SSA run starting at t counts, before it "
+             "rounds them, ordered like species_names(): the stored value times "
+             "volume_factor, but for a concentration species in a compartment whose size "
+             "moves, the stored value times the size at t unless the state is an SSA "
+             "run's counts already (issue #1754). Leaves the model as it was.")
         .def_property("ssa_counts_stored", &bngsim::NetworkModel::ssa_counts_stored,
                       &bngsim::NetworkModel::set_ssa_counts_stored,
                       "True iff the species state is one an SSA/PSA run wrote back, which "
@@ -2622,6 +2664,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
             [](bngsim::NetworkModel &self, double t,
                py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
                 const double *y = state_arg(self, conc, "compute_derivs");
+                const KeepModelClock keep_clock(self);
                 const auto ns = static_cast<py::ssize_t>(self.n_species());
                 // (A ring of rates on each other's rateOf has no right-hand
                 // side, lanl/bngsim#991: said here, where the solvers say it.)
@@ -2646,6 +2689,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
             [](bngsim::NetworkModel &self, double t,
                py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
                 const double *y = state_arg(self, conc, "fill_dense_analytical_jacobian");
+                const KeepModelClock keep_clock(self);
                 const int ns = self.n_species();
                 std::vector<double> jac(static_cast<size_t>(ns) * ns, 0.0);
                 if (ns > 0) {
@@ -2664,6 +2708,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
             [](bngsim::NetworkModel &self, double t,
                py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
                 const double *y = state_arg(self, conc, "fill_dense_fd_jacobian");
+                const KeepModelClock keep_clock(self);
                 const int ns = self.n_species();
                 std::vector<double> jac(static_cast<size_t>(ns) * ns, 0.0);
                 if (ns > 0) {
@@ -2682,6 +2727,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                py::array_t<double, py::array::c_style | py::array::forcecast> conc,
                int side) -> py::object {
                 const double *y = state_arg(self, conc, "fill_dense_dual_jacobian");
+                const KeepModelClock keep_clock(self);
                 const int ns = self.n_species();
                 if (side < -1 || side > 1) {
                     throw py::value_error("fill_dense_dual_jacobian: side must be -1, 0 or 1");
@@ -2717,6 +2763,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                py::array_t<double, py::array::c_style | py::array::forcecast> conc,
                py::array_t<double, py::array::f_style | py::array::forcecast> floored) {
                 const double *y = state_arg(self, conc, "fill_dense_fd_jacobian_own_step");
+                const KeepModelClock keep_clock(self);
                 const int ns = self.n_species();
                 if (floored.ndim() != 2 || floored.shape(0) != ns || floored.shape(1) != ns) {
                     throw py::value_error("fill_dense_fd_jacobian_own_step: floored must be "
@@ -2742,6 +2789,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                py::array_t<double, py::array::c_style | py::array::forcecast> conc,
                py::array_t<double, py::array::f_style | py::array::forcecast> floored) {
                 const double *y = state_arg(self, conc, "fill_dense_fd_jacobian_half_step");
+                const KeepModelClock keep_clock(self);
                 const int ns = self.n_species();
                 if (floored.ndim() != 2 || floored.shape(0) != ns || floored.shape(1) != ns) {
                     throw py::value_error("fill_dense_fd_jacobian_half_step: floored must be "
@@ -2766,6 +2814,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
             [](bngsim::NetworkModel &self, double t,
                py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
                 const double *y = state_arg(self, conc, "fill_sparse_analytical_jacobian");
+                const KeepModelClock keep_clock(self);
                 const int ns = self.n_species();
                 const auto &sp = self.jacobian_sparsity();
                 const auto nnz = static_cast<py::ssize_t>(ns > 0 ? sp.col_ptrs[ns] : 0);
@@ -2818,6 +2867,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
             [](bngsim::NetworkModel &self, double t,
                py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
                 const double *y = state_arg(self, conc, "compute_propensities");
+                const KeepModelClock keep_clock(self);
                 const auto nr = static_cast<py::ssize_t>(self.n_reactions());
                 py::array_t<double> out(nr);
                 if (nr > 0) {
@@ -3308,7 +3358,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
              py::overload_cast<double, const std::vector<double> &>(
                  &bngsim::CvodeSimulator::set_tolerances),
              py::arg("rtol"), py::arg("atol"))
-        .def("set_max_steps", &bngsim::CvodeSimulator::set_max_steps, py::arg("max_steps"));
+        .def("set_max_steps", &bngsim::CvodeSimulator::set_max_steps, py::arg("max_steps"))
+        // Issue #1837: for a run that raised, whose Result is never returned.
+        .def("last_run_roundoff_steps", &bngsim::CvodeSimulator::last_run_roundoff_steps,
+             "The steps the last run() took where t + h == t, the first row it recorded "
+             "after one (-1 for none), and the spacing of the doubles there.");
 
     // ─── SsaSimulator ────────────────────────────────────────────────────────
     py::class_<bngsim::SsaSimulator>(m, "SsaSimulator")

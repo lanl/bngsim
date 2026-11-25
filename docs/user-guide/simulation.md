@@ -7,14 +7,61 @@ summary: "Parameter sweeps with run_batch, parameter scans from a saved state, b
 This page covers the calls beyond a single `run()`: sweeps, scans, runs in
 steps, saved states and stop conditions.
 
+The examples share one model, a radioligand competition assay: a labeled
+(hot) and an unlabeled (cold) form of a ligand `L` bind the same receptor `R`.
+Amounts are molecules per cell, and the doses are molar concentrations in the
+medium, converted with `NA` and the medium's volume per cell, `Vecf`:
+
+```python
+from pathlib import Path
+
+import numpy as np
+
+import bngsim
+
+Path("model.net").write_text(
+    """\
+begin parameters
+    1 NA        6.022e23      # molecules per mole
+    2 Vecf      1e-9          # medium volume per cell, L
+    3 kf        1e7           # binding, /M/s
+    4 kr        1e-3          # unbinding, /s
+    5 R0        5e4           # receptors per cell
+    6 hot_conc  1e-9          # hot ligand, M
+    7 cold_conc 0             # cold ligand, M
+    8 kon       kf/(NA*Vecf)  # binding, per molecule per second
+end parameters
+begin species
+    1 L(r,label~hot)           hot_conc*NA*Vecf
+    2 L(r,label~cold)          cold_conc*NA*Vecf
+    3 R(l)                     R0
+    4 L(r!1,label~hot).R(l!1)  0
+    5 L(r!1,label~cold).R(l!1) 0
+end species
+begin reactions
+    1 1,3 4 kon
+    2 4 1,3 kr
+    3 2,3 5 kon
+    4 5 2,3 kr
+end reactions
+begin groups
+    1 Bound_hot  4
+    2 Bound_cold 5
+    3 R_free     3
+end groups
+""",
+    encoding="utf-8",
+)
+model = bngsim.Model.load("model.net")
+sim = bngsim.Simulator(model, method="ode")
+```
+
 ## Batch parameter sweeps
 
 `run_batch` runs one point per parameter set, in parallel threads:
 
 ```python
-import numpy as np
-
-param_sets = [{"kf": v} for v in np.linspace(0.1, 10, 100)]
+param_sets = [{"kf": v} for v in np.linspace(1e6, 1e8, 100)]
 results = sim.run_batch(
     t_span=(0, 100),
     n_points=101,
@@ -28,7 +75,7 @@ batch = sim.run_batch(
     t_span=(0, 100), n_points=101,
     params=param_sets, squeeze=True,
 )
-print(batch.species.shape)  # (100, 101, n_species)
+print(batch.species.shape)  # (100, 101, 5): points, time points, species
 ```
 
 Watch out:
@@ -53,6 +100,7 @@ sim.model.set_concentration("L(r,label~hot)", 0.0)   # wash out free hot ligand
 sim.save_concentrations("start_competition")
 
 # Phase 2: a dose-response that starts each point from the saved state.
+NA, Vecf = model.get_param("NA"), model.get_param("Vecf")
 results = sim.parameter_scan(
     "cold_conc",
     par_scan_vals=[2.3e-10, 6.6e-9, 3.9e-8, 4.9e-7],
@@ -70,14 +118,24 @@ results = sim.parameter_scan(
 # Each Result has custom_attrs["scan_value"].
 
 # bifurcate() is the continuation scan (reset_conc=>0): each point starts
-# from the previous point's end state. Sweep up, then down, to trace hysteresis.
-branch = sim.bifurcate("stimulus", par_min=0, par_max=10, n_scan_pts=50,
-                       t_span=(0, 500), n_points=2)
+# from the previous point's end state. Sweep up, then down, to trace
+# hysteresis: on the bundled Schlogl model, bistable for k3 in about 870-1130,
+# the two sweeps sit on different branches there.
+switch = bngsim.Simulator(bngsim.examples.load("schlogl"))
+up = switch.bifurcate("k3", par_min=700, par_max=1300, n_scan_pts=50,
+                      t_span=(0, 500), n_points=2)
+down = switch.bifurcate("k3", par_min=1300, par_max=700, n_scan_pts=50,
+                        t_span=(0, 500), n_points=2)
 ```
 
 ## Running in steps
 
 ```python
+# Start over: the model at its initial conditions, a new Simulator at t = 0.
+# (A run_until target must lie past the Simulator's clock.)
+model.reset()
+sim = bngsim.Simulator(model, method="ode")
+
 # Run to a time, inspect or change the model, continue
 sim.run_until(t=50)
 
@@ -90,7 +148,7 @@ result = sim.run_until(t=100)
 # Save and restore snapshots
 snap = sim.snapshot()
 sim.run_until(t=200)
-sim.restore(snap)  # back to t=50
+sim.restore(snap)  # back to t=100, where the snapshot was taken
 ```
 
 Each step continues the species, the clock and the events. An event whose
@@ -118,6 +176,10 @@ advance, correct the coupling input, then advance the same interval again.
 ODE solver warm:
 
 ```python
+dt = 10.0                                # the coupling step
+idx = model.species_names.index("R(l)")  # the species the coupling sets
+coupling_value = 4.0e3                   # its corrected value
+
 saved, t0 = sim.get_state().copy(), sim.current_time
 sim.run_until(t0 + dt)                   # predictor
 corrected = saved.copy()
@@ -147,10 +209,10 @@ it passes `start="initial"`.
 model.save_concentrations()
 
 # Change one species (a bolus, say)
-model.set_concentration("A(b)", 500.0)
+model.set_concentration("L(r,label~hot)", 500.0)
 
 # Read one
-print(model.get_concentration("A(b)"))
+print(model.get_concentration("L(r,label~hot)"))  # 500.0
 
 # reset() goes back to the state save_concentrations() saved
 model.reset()
@@ -166,19 +228,23 @@ model.restore_concentrations("start_competition")
 ## Stop conditions
 
 ```python
-# An expression: stop when an observable drops below a threshold
-sim.add_stop_condition("A_total < 10", label="low_A")
+# The model is where the steps above left it: binding knocked out (kf = 0),
+# so the hot ligand comes off the receptor.
 
-# A callable: any Python logic
+# An expression: stop when an observable drops below a threshold
+sim.add_stop_condition("Bound_hot < 10000", label="low_hot")
+
+# A callable: any Python logic (column 3 is the hot ligand-receptor complex)
 sim.add_stop_condition(
-    lambda r: r.species[-1, 0] < 5.0,
-    label="very_low_A",
+    lambda r: r.species[-1, 3] < 5000.0,
+    label="very_low_hot",
 )
 
 try:
     result = sim.run(t_span=(0, 1000), n_points=1001)
 except bngsim.StopConditionMet as e:
     print(f"Stopped at t={e.result.time[-1]}: {e.condition}")
+    e.condition         # 'low_hot', the label of the condition met first
     partial = e.result  # the result cut at the stop
 ```
 
@@ -194,8 +260,9 @@ To continue from where a step started instead, take a snapshot first:
 ```python
 snap = sim.snapshot()
 try:
-    sim.run_until(t=1000)
+    sim.run_until(t=2000)
 except bngsim.StopConditionMet as e:
+    e.condition         # 'low_hot'
     sim.restore(snap)   # back to where the step started
 ```
 
@@ -239,6 +306,10 @@ shorter than the rest. `Result.squeeze(rows)` stacks the list when no row was
 cut.
 
 ```python
-rows = sim.run_batch(params=[{"k": 0.1}, {"k": 0.001}], t_span=(0, 100))
-[r.stop_condition for r in rows]   # e.g. ['low_A', None]
+# Each row starts from the state reset() returns to, the one save_concentrations()
+# set above, with hot ligand bound. Binding is still knocked out (kf = 0), so the
+# complex only comes apart: fast at kr = 0.1, hardly at all at kr = 1e-4.
+model.reset()
+rows = sim.run_batch(params=[{"kr": 0.1}, {"kr": 1e-4}], t_span=(0, 100))
+[r.stop_condition for r in rows]   # ['low_hot', None]
 ```
