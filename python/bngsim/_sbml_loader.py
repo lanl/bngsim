@@ -3181,6 +3181,7 @@ def _raw_required_namespaces(stream: IO) -> dict[str, str]:
     well, with the surrounding whitespace XML trims.
     """
     import xml.etree.ElementTree as ET
+    import zipfile
     import zlib
 
     required: dict[str, str] = {}
@@ -3192,7 +3193,7 @@ def _raw_required_namespaces(stream: IO) -> dict[str, str]:
                     uri = clark[1 : clark.index("}")]
                     required[uri] = _package_name_from_uri(uri)
             break  # the root element only
-    except (ET.ParseError, OSError, EOFError, zlib.error):
+    except (ET.ParseError, OSError, EOFError, zlib.error, zipfile.BadZipFile):
         pass  # malformed or undecompressible: libSBML reports it separately
     return required
 
@@ -3202,9 +3203,10 @@ def _as_libsbml_reads(path: str) -> Iterator[IO[bytes]]:
     """*path* opened as bytes the way libSBML's ``XMLFileBuffer`` reads a file,
     for :func:`_raw_required_namespaces`: decompressed when the name ends in
     ``.gz``, ``.bz2`` or ``.zip`` (a zip archive's first entry), and as it is
-    otherwise. zlib reads a ``.gz`` file with no gzip header as plain bytes, and
-    so does this. A file that cannot be opened so gives an empty stream; libSBML
-    cannot read it either, and says so."""
+    otherwise. zlib reads a ``.gz`` file with no gzip header as plain bytes,
+    and libSBML's zip reader checks no CRC-32, and so does this. A file that
+    cannot be opened so gives an empty stream; libSBML cannot read it either,
+    and says so."""
     import bz2
     import gzip
     import zipfile
@@ -3215,6 +3217,8 @@ def _as_libsbml_reads(path: str) -> Iterator[IO[bytes]]:
             if path.endswith(".zip"):
                 archive = stack.enter_context(zipfile.ZipFile(path))
                 stream = stack.enter_context(archive.open(archive.infolist()[0]))
+                if hasattr(stream, "_expected_crc"):
+                    stream._expected_crc = None  # libSBML's zip reader checks no CRC
             else:
                 stream = raw = stack.enter_context(open(path, "rb"))
                 if path.endswith(".bz2"):
@@ -3458,12 +3462,13 @@ def _comp_submodel_documents(doc, path: str | None, base_path: str | None):
     the directory ``CompFlatteningConverter`` adds for the conversion. A string
     has no location, and libSBML then looks in the working directory. Two
     copies of one file can carry different locations and resolve one source to
-    two files, so a model is walked once per location, not once per file. The
-    plugin keeps each document it reads, keyed by the URI it resolved, and the
-    flattener's lookups get those documents back, so the model is built from
-    the documents checked here. The exception is a last-resort file the plugin
-    cannot be made to key as the flattener does (see ``resolve``), which is
-    read here and read again by the flattener.
+    two files, and libSBML can file a different file under a location already
+    seen, so a model is walked once per location and file, not once per either.
+    The plugin keeps each document it reads, keyed by the URI it resolved, and
+    the flattener's lookups get those documents back, so the model is built
+    from the documents checked here. The exception is a last-resort file the
+    plugin cannot be made to key as the flattener does (see ``resolve``), which
+    is read here and read again by the flattener.
 
     *path* is the loaded file, or None for a string. *name* is a document's
     real path for messages, *file* the path its resolver read (None if no file
@@ -3545,7 +3550,8 @@ def _comp_submodel_documents(doc, path: str | None, base_path: str | None):
         main = document.getModel()
         return main if main is not None and main.getId() == model_ref else None
 
-    read = {os.path.realpath(path) if path is not None else None}  # by file: checked once
+    top_id = os.path.realpath(path) if path is not None else None
+    read = {top_id}  # by file: each is checked once
 
     def referenced(at, at_name: str, emd):
         # getReferencedModel: *emd*'s model, as (document, name, model), or None
@@ -3569,19 +3575,22 @@ def _comp_submodel_documents(doc, path: str | None, base_path: str | None):
             links.add(link)
             at, at_name, emd = found, name, target
 
-    # A model's submodels resolve against its document's location, so a model is
-    # walked once per (location, id). Each entry carries what instantiate keeps
-    # to refuse a model that is its own ancestor: the ancestors' keys, and the
-    # source the nearest of them was instantiated from.
-    walked: set[tuple[str, str]] = set()
-    pending: deque[tuple[Any, str, Any, frozenset[str], str]] = deque(
-        [(doc, path or "<string>", doc.getModel(), frozenset(), "")]
+    # A model's submodels resolve against its document's location, and libSBML
+    # can file another file under a location already seen, so a model is walked
+    # once per (location, file, id); the file is the one ``read`` knows it by.
+    # Each entry carries what instantiate keeps to refuse a model that is its
+    # own ancestor: the ancestors' keys, and the source the nearest of them was
+    # instantiated from.
+    walked: set[tuple[str, str | None, str]] = set()
+    pending: deque[tuple[Any, str, str | None, Any, frozenset[str], str]] = deque(
+        [(doc, path or "<string>", top_id, doc.getModel(), frozenset(), "")]
     )
     while pending:
-        document, name, model, ancestors, origin = pending.popleft()
-        if model is None or (document.getLocationURI(), model.getId()) in walked:
+        document, name, file_id, model, ancestors, origin = pending.popleft()
+        seen = (document.getLocationURI(), file_id, model.getId() if model else "")
+        if model is None or seen in walked:
             continue
-        walked.add((document.getLocationURI(), model.getId()))
+        walked.add(seen)
         doc_plugin, model_plugin = document.getPlugin("comp"), model.getPlugin("comp")
         if doc_plugin is None or model_plugin is None:
             continue
@@ -3594,13 +3603,14 @@ def _comp_submodel_documents(doc, path: str | None, base_path: str | None):
                 if reached is None:
                     continue
                 at, at_name, target = reached
+                at_id: str | None = at_name  # the real path, or the location
             elif isinstance(target, libsbml.Model):  # a ModelDefinition is one too
-                at, at_name, source = document, name, origin
+                at, at_name, at_id, source = document, name, file_id, origin
             else:
                 continue
             key = f"{source}::{ref}"
             if key not in ancestors:
-                pending.append((at, at_name, target, ancestors | {key}, source))
+                pending.append((at, at_name, at_id, target, ancestors | {key}, source))
 
 
 def _check_submodel_required_packages(

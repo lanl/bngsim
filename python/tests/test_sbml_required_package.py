@@ -1045,3 +1045,81 @@ def test_the_scan_reads_required_and_package_names_as_libsbml_does(
     (tmp_path / "top.xml").write_text(_submodel_of("ext.xml"))
     with pytest.raises(ModelError, match=uri):
         bngsim.Model.from_sbml(tmp_path / ("ext.xml" if where == "loaded" else "top.xml"))
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-specific: Windows forbids ':' in a file name"
+)
+@pytest.mark.parametrize(
+    ("package", "declared_on_top"),
+    [(_ARRAYS, ""), (("zzz", _ZZZ_URI), ""), (("multi", _MULTI_URI), "false")],
+    ids=["arrays", "zzz", "multi, declared required=false by the loaded file"],
+)
+def test_another_file_filed_under_the_loaded_file_s_location_is_walked(
+    tmp_path, monkeypatch, package, declared_on_top
+) -> None:
+    """Loaded as ``s1/top.xml``, the file's location is ``file:s1/top.xml``.
+    Its ExternalModelDefinition names that same string as a source, which
+    libSBML finds as written in the working directory (a file of that name it
+    never reads), files under that string, and reads ``top.xml`` beside it: a
+    different file under the loaded file's own location, whose model ``top``
+    reads ``evil.xml``. A model is walked once per location and file, so it is
+    walked. With ``multi``, the loaded file's own ``required="false"`` keeps the
+    flattened model's flag false, and only the walk refuses it."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "s1").mkdir()
+    (tmp_path / "file:s1").mkdir()
+    (tmp_path / "file:s1" / "top.xml").write_text("x")  # found as written, never read
+    loaded = _comp(external=[("E", "file:s1/top.xml", "top")], submodels=[("sub", "E")])
+    if declared_on_top:
+        loaded = loaded.replace(
+            'comp:required="true">',
+            f'comp:required="true" xmlns:{package[0]}="{package[1]}" '
+            f'{package[0]}:required="{declared_on_top}">',
+        )
+    (tmp_path / "s1" / "top.xml").write_text(loaded)
+    (tmp_path / "top.xml").write_text(
+        _comp(external=[("evil", "evil.xml", "m")], submodels=[("s2", "evil")])
+    )
+    (tmp_path / "evil.xml").write_text(_leaf(0.77, *package))
+    with pytest.raises(ModelError) as excinfo:
+        bngsim.Model.from_sbml("s1/top.xml")
+    assert package[1] in str(excinfo.value)
+    assert os.path.realpath(tmp_path / "evil.xml") in str(excinfo.value)
+
+
+def _zip_with_bad_crc(text: str) -> bytes:
+    """A zip archive of one entry, *text*, with its CRC-32 flipped in both the
+    local and the central header. libSBML's zip reader does not check it."""
+    import io
+    import struct
+    import zipfile
+    import zlib
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("model.xml", text)
+    data = bytearray(buffer.getvalue())
+    crc = zlib.crc32(text.encode())
+    for signature, offset in ((b"PK\x03\x04", 14), (b"PK\x01\x02", 16)):
+        at = data.index(signature) + offset
+        assert struct.unpack_from("<I", data, at)[0] == crc
+        struct.pack_into("<I", data, at, crc ^ 0xFFFFFFFF)
+    return bytes(data)
+
+
+@pytest.mark.parametrize("where", ["loaded", "a submodel's file"])
+@pytest.mark.parametrize("declares", [None, "zzz"])
+def test_a_zip_entry_is_scanned_whatever_its_crc(tmp_path, where, declares) -> None:
+    """libSBML reads a zip entry without checking its CRC-32, so the scan does
+    too: a clean entry with a bad CRC loads, and one declaring ``zzz`` is
+    refused rather than let through or failed with a CRC error."""
+    ext = _leaf(0.1) if declares is None else _leaf(0.1, "zzz", _ZZZ_URI)
+    (tmp_path / "ext.xml.zip").write_bytes(_zip_with_bad_crc(ext))
+    (tmp_path / "top.xml").write_text(_submodel_of("ext.xml.zip"))
+    path = tmp_path / ("ext.xml.zip" if where == "loaded" else "top.xml")
+    if declares is None:
+        _assert_decays_at(bngsim.Model.from_sbml(path), 0.1)
+    else:
+        with pytest.raises(ModelError, match=_ZZZ_URI):
+            bngsim.Model.from_sbml(path)
