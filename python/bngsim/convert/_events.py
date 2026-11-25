@@ -348,9 +348,6 @@ class _Fire(NamedTuple):
     delay: float = 0.0
     # Read at the start of the run, where it was true already: there exactly.
     pinned: bool = False
-    # Its time is the translation's own fold, which can differ from the run's
-    # in the last places, where the run's evaluator could not be asked.
-    approx: bool = False
 
     def sort_key(self) -> tuple[float, bool, float, bool, float, int]:
         # Higher priority first; among equal ones, those not delayed, then the
@@ -408,8 +405,7 @@ def _landing(f: _Fire, points: list[float], span: float) -> tuple[float, float]:
     having just executed or stopped there, the run can step over the trigger's
     own stop and find it by its root (measured, up to 0.26 of the reach late).
     A delay counts from where the trigger is read. Read at the start, it is
-    read there exactly. A time that is the translation's own fold, not the
-    run's, is widened by the reach both ways.
+    read there exactly.
     """
     if f.pinned:
         lo = hi = f.read
@@ -422,8 +418,6 @@ def _landing(f: _Fire, points: list[float], span: float) -> tuple[float, float]:
             hi = max(hi, f.read + reach)
     if f.triggered is not None:
         lo, hi = lo + f.delay, hi + f.delay
-    if f.approx:
-        lo, hi = lo - _instant_reach(lo, span), hi + _instant_reach(hi, span)
     return lo, hi
 
 
@@ -528,10 +522,7 @@ def _species_note(
     t = fs[0].time
     together = all(f.time == t for f in fs) and (
         all(landing[f.order] == (t, t) for f in fs)
-        or all(
-            not f.past and not f.approx and f.triggered is None and f.read == fs[0].read
-            for f in fs
-        )
+        or all(not f.past and f.triggered is None and f.read == fs[0].read for f in fs)
     )
     if together:
         lo = min(landing[f.order][0] for f in fs)
@@ -540,11 +531,10 @@ def _species_note(
         batch = [g for a, b, g in members if a <= hi + reach and b >= lo - reach]
         return _order_note(t, var, last, batch)
 
-    # Name what keeps them from being one instant: a writer that is strict,
-    # read as the translation folds it, delayed, or due at another time, beside
-    # one that sets a different value.
+    # Name what keeps them from being one instant: a writer that does not land
+    # on their double for certain, beside one that sets a different value.
     def apart(g: _Fire) -> bool:
-        return g.past or g.approx or g.triggered is not None or landing[g.order] != (t, t)
+        return landing[g.order] != (t, t)
 
     f, val = next(((g, v) for g, v in last if apart(g)), last[0])
     other = next(g for g, v in last if v != val)
@@ -662,6 +652,78 @@ def _function_definitions(sbml_model) -> dict[str, tuple[list[str], Any]]:
     return out
 
 
+def _inlined(node, sbml_model):
+    """A copy of ``node`` with each call of a functionDefinition written out,
+    so what it reads is seen: `f() = B` reads B. None for None."""
+    import libsbml
+
+    if node is None:
+        return None
+    copy = node.deepCopy()
+    if sbml_model.getNumFunctionDefinitions():
+        libsbml.SBMLTransforms.replaceFD(copy, sbml_model.getListOfFunctionDefinitions())
+    return copy
+
+
+def _reads_rate(node) -> bool:
+    import libsbml
+
+    if node is None:
+        return False
+    if node.getType() == libsbml.AST_FUNCTION_RATE_OF:
+        return True
+    return any(_reads_rate(node.getChild(i)) for i in range(node.getNumChildren()))
+
+
+def _run_double(held: float | None, folded: float | None) -> str:
+    """Why ``held``, the run's double for a quantity, cannot be taken, or ''
+    where it can: a finite number its evaluator read, the same as this module's
+    fold, ``folded``, where that folds at all."""
+    if held is None:
+        return "that the run's evaluator cannot read"
+    if not math.isfinite(held):
+        return f"of {held:g}, which is not a finite number"
+    if folded is not None and folded != held:
+        return (
+            f"that the run computes as {held!r} and the translation folds to {folded!r}, "
+            "in other arithmetic"
+        )
+    return ""
+
+
+def _one_operation(node) -> bool:
+    """Whether ``node`` is a number, a name, or one arithmetic operation on
+    those: one rounding, which no evaluator can order otherwise."""
+    import libsbml
+
+    leaf = (
+        libsbml.AST_INTEGER,
+        libsbml.AST_REAL,
+        libsbml.AST_REAL_E,
+        libsbml.AST_NAME,
+        libsbml.AST_CONSTANT_PI,
+        libsbml.AST_CONSTANT_E,
+    )
+    if node.getType() in leaf:
+        return True
+    two = (libsbml.AST_PLUS, libsbml.AST_MINUS, libsbml.AST_TIMES, libsbml.AST_DIVIDE)
+    kids = [node.getChild(k) for k in range(node.getNumChildren())]
+    return node.getType() in two and 1 <= len(kids) <= 2 and all(k.getType() in leaf for k in kids)
+
+
+def _run_start(core, sid: str, name_to_idx: dict[str, int]) -> float | None:
+    """The start value the run holds for ``sid``, a parameter or compartment an
+    event sets (held as a species), or None."""
+    idx = _resolve_target(sid, name_to_idx)
+    if idx is None:
+        return None
+    try:
+        value = float(core.get_concentration(next(n for n, j in name_to_idx.items() if j == idx)))
+    except Exception:
+        return None
+    return value if math.isfinite(value) else None
+
+
 def _run_text(node, func_defs: dict[str, tuple[list[str], Any]]) -> str | None:
     """``node`` spelled for the run's evaluator, as the loader spells it, or
     None where it cannot be."""
@@ -704,10 +766,20 @@ def _unfolded_note(
     env: dict[str, float],
     unfolded: dict[str, Any],
     species_ids: set[str],
+    unruled: set[str] = frozenset(),  # type: ignore[assignment]
 ) -> str | None:
     """A note for ``what`` of event ``eid`` not folding because it reads a name
     that keeps one value but is set by an initialAssignment that does not fold,
-    or None."""
+    or by an assignment rule the run computes otherwise, or None."""
+    if _reads_rate(node):
+        return f"event {eid!r} {what} that reads rateOf, which the translation does not read"
+    ruled = sorted(set(_dynamic_names(node, env)) & set(unruled))
+    if ruled:
+        return (
+            f"event {eid!r} {what} that reads {ruled[0]!r}, which an assignment rule "
+            "sets, and which the run computes in other arithmetic than the value the "
+            "model holds before it runs"
+        )
     names = sorted(set(_dynamic_names(node, env)) & set(unfolded))
     if not names:
         return None
@@ -792,6 +864,29 @@ def sbml_events_to_protocol(
     name_to_idx = _codegen_species_names(model)
     core = model._core
     func_defs = _function_definitions(sbml_model)
+    # The run computes an assignment rule's name from the rule at every step,
+    # where the model holds a fold of it before the run. Kept only where the
+    # two agree, and where the rule reads nothing whose two differ.
+    ruled = {
+        sbml_model.getRule(j).getVariable(): sbml_model.getRule(j).getMath()
+        for j in range(sbml_model.getNumRules())
+        if sbml_model.getRule(j).isAssignment() and sbml_model.getRule(j).getVariable() in env
+    }
+    unruled: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for sid, rmath in ruled.items():
+            if sid in unruled:
+                continue
+            body = _inlined(rmath, sbml_model)
+            text = _run_text(body, func_defs) if body is not None else None
+            held = _run_value(core, text, float(t_span[0])) if text else None
+            if _dynamic_names(body, {}) & unruled or held != env[sid]:
+                unruled.add(sid)
+                changed = True
+    for sid in unruled:
+        env.pop(sid)
     # The loader names an event its id, or `_event_<i>` where it has none.
     run_events = {e["id"]: e for e in core.events_as_written()}
 
@@ -803,21 +898,32 @@ def sbml_events_to_protocol(
         ev = sbml_model.getEvent(i)
         eid = ev.getId() or f"event #{i + 1}"
         run_ev = run_events.get(ev.getId() or f"_event_{i}")
-        trig = ev.getTrigger().getMath() if ev.isSetTrigger() else None
+        if run_ev is None:
+            # The loader leaves out an event with nothing to assign; the run
+            # has no such event, and neither have the actions.
+            if not any(
+                ev.getEventAssignment(j).isSetMath() for j in range(ev.getNumEventAssignments())
+            ):
+                continue
+            lossy.append(f"event {eid!r} is not one the loaded model runs")
+            continue
+        trig = _inlined(ev.getTrigger().getMath() if ev.isSetTrigger() else None, sbml_model)
         threshold, reason = _trigger_fire_time(trig, env, species_ids)
-        if threshold is None:
-            note = _unfolded_note(eid, "has a trigger", trig, env, unfolded, species_ids)
+        if threshold is None or _reads_rate(trig):
+            note = _unfolded_note(eid, "has a trigger", trig, env, unfolded, species_ids, unruled)
             lossy.append(note or f"event {eid!r} {reason}")
             continue
-        # The threshold as the run reads it, where its evaluator can be asked.
-        text = _threshold_text(run_ev["trigger"]) if run_ev else None
+        # Each time, priority and value is the double the run computes: its
+        # evaluator's, from the doubles the model holds. Where this module's
+        # fold gives another, it is refused (see _run_double).
+        text = _threshold_text(run_ev["trigger"])
         held = _run_value(core, text, t_start) if text else None
-        approx = held is None
-        if held is not None:
-            threshold = held
-        elif math.isnan(threshold):
-            lossy.append(f"event {eid!r} has a trigger time the run's evaluator cannot read")
+        why = _run_double(held, None if math.isnan(threshold) else threshold)
+        if why:
+            lossy.append(f"event {eid!r} has a trigger time {why}")
             continue
+        assert held is not None
+        threshold = held
         # `time > T` (or `T < time`) is true only past T, not at it.
         strict = trig is not None and trig.getType() in (
             libsbml.AST_RELATIONAL_GT,
@@ -839,69 +945,70 @@ def sbml_events_to_protocol(
 
         # A constant delay shifts the fire time; a non-constant one is unschedulable.
         if ev.isSetDelay() and ev.getDelay() is not None and ev.getDelay().getMath() is not None:
-            dmath = ev.getDelay().getMath()
-            if _dynamic_names(dmath, env) or _reads_clock(dmath):
-                note = _unfolded_note(eid, "has a delay", dmath, env, unfolded, species_ids)
+            dmath = _inlined(ev.getDelay().getMath(), sbml_model)
+            if _dynamic_names(dmath, env) or _reads_clock(dmath) or _reads_rate(dmath):
+                note = _unfolded_note(
+                    eid, "has a delay", dmath, env, unfolded, species_ids, unruled
+                )
                 lossy.append(
                     note or f"event {eid!r} has a non-constant delay (cannot be scheduled)"
                 )
                 continue
-            # The delay as the run reads it where it triggers; folded here
-            # only where its evaluator cannot be asked.
-            d = None
-            if run_ev is not None:
-                d = (
-                    _run_value(core, run_ev["delay_expr"], fire_t)
-                    if run_ev["delay_expr"]
-                    else float(run_ev["delay"])
-                )
-            if d is None:
-                d = _eval_const(dmath, env)
-                approx = True
-            if d is None:
-                d = math.nan
+            # As the run reads it where it triggers.
+            d = (
+                _run_value(core, run_ev["delay_expr"], fire_t)
+                if run_ev["delay_expr"]
+                else float(run_ev["delay"])
+            )
             # The run reads a delay within rounding of 0 below it as 0, and
             # refuses one further below, or not finite, where it fires.
-            if not math.isfinite(d) or d < -1e-9 * max(1.0, abs(fire_t)):
+            if d is not None and (not math.isfinite(d) or d < -1e-9 * max(1.0, abs(fire_t))):
                 lossy.append(
                     f"event {eid!r} has a delay of {d:g}, which the run refuses: an event "
                     "delay must be a finite, non-negative number"
                 )
                 continue
+            why = _run_double(d, _eval_const(dmath, env))
+            if why:
+                lossy.append(f"event {eid!r} has a delay {why}")
+                continue
+            assert d is not None
             d = max(d, 0.0)
             if d > 0:
                 triggered = fire_t
             fire_t += d
             delay = d
+            if not math.isfinite(fire_t):
+                lossy.append(f"event {eid!r} is due at a time that is not a finite number")
+                continue
 
         # An unset priority is 0, as the loader writes it, and so is one that
         # is a plain number 0: the run tells neither from no priority at all.
-        # A priority that reads something that moves is not a constant (None);
-        # one that reads only what keeps one value, the run reads with its
-        # evaluator, and refuses where that is NaN.
+        # A priority that reads something that moves is not a constant (None).
         priority: float | None = 0.0
-        unprioritised = True
-        pmath = ev.getPriority().getMath() if ev.isSetPriority() else None
+        unprioritised = not run_ev["priority_expr"] and run_ev["priority"] == 0
+        pmath = _inlined(ev.getPriority().getMath() if ev.isSetPriority() else None, sbml_model)
         if pmath is not None and (
-            set(_dynamic_names(pmath, env)) - set(unfolded) or _reads_clock(pmath)
+            set(_dynamic_names(pmath, env)) - set(unfolded)
+            or _reads_clock(pmath)
+            or _reads_rate(pmath)
         ):
             priority, unprioritised = None, False
         else:
-            if pmath is not None:
-                priority = _eval_const(pmath, env)
-                unprioritised = _eval_const(pmath, {}) == 0.0
-            if run_ev is not None:
-                unprioritised = not run_ev["priority_expr"] and run_ev["priority"] == 0
-                priority = (
-                    _run_value(core, run_ev["priority_expr"], fire_t)
-                    if run_ev["priority_expr"]
-                    else float(run_ev["priority"])
-                )
+            priority = (
+                _run_value(core, run_ev["priority_expr"], fire_t)
+                if run_ev["priority_expr"]
+                else float(run_ev["priority"])
+            )
             if priority is not None and math.isnan(priority):
                 lossy.append(
                     f"event {eid!r} has a priority that is NaN, which the run refuses: an "
                     "event priority must be a number"
                 )
+                continue
+            why = _run_double(priority, _eval_const(pmath, env) if pmath is not None else 0.0)
+            if why:
+                lossy.append(f"event {eid!r} has a priority {why}")
                 continue
 
         assigns: list[tuple[int, float, str]] = []
@@ -910,30 +1017,49 @@ def sbml_events_to_protocol(
         for j in range(ev.getNumEventAssignments()):
             ea = ev.getEventAssignment(j)
             var = ea.getVariable()
-            vmath = ea.getMath() if ea.isSetMath() else None
-            # A value that reads constants alone is the run's double: its own
-            # math, in the model's units, through the run's evaluator. One that
-            # reads the event's own target is folded here at the target's start
-            # value, as the run's evaluator reads a species as it stands.
-            val = None
-            if vmath is not None and not _reads_clock(vmath):
-                if _dynamic_names(vmath, env):
-                    val = _eval_const(vmath, value_env)
-                else:
-                    text = _run_text(vmath, func_defs)
-                    val = _run_value(core, text, fire_t) if text else None
-                    if val is None:
-                        val = _eval_const(vmath, env)
-            if val is not None and not math.isfinite(val):
-                lossy.append(
-                    f"event {eid!r} assigns {var!r} a value that is not a finite number, "
-                    "which the actions cannot set"
-                )
+            vmath = _inlined(ea.getMath() if ea.isSetMath() else None, sbml_model)
+            if (
+                vmath is None
+                or _reads_clock(vmath)
+                or _reads_rate(vmath)
+                or set(_dynamic_names(vmath, env)) - set(own.get(i, {}))
+            ):
+                val, why = None, ""
+            elif _dynamic_names(vmath, env):
+                # It reads the event's own target, at its start value, which the
+                # run's evaluator reads as the target stands, so it cannot be
+                # asked. Folded here, it is the run's double only as one
+                # operation on the doubles the run holds.
+                starts = {
+                    sid: _run_start(core, sid, name_to_idx) for sid in _dynamic_names(vmath, env)
+                }
+                val = _eval_const(vmath, value_env)
+                why = ""
+                if not _one_operation(vmath) or any(
+                    v != value_env[sid] for sid, v in starts.items()
+                ):
+                    why = (
+                        "that reads its own start value in arithmetic the run may round otherwise"
+                    )
+                elif val is not None and not math.isfinite(val):
+                    why = "that is not a finite number"
+            else:
+                text = _run_text(vmath, func_defs)
+                val = _run_value(core, text, fire_t) if text else None
+                why = _run_double(val, _eval_const(vmath, env))
+            if why:
+                lossy.append(f"event {eid!r} assigns {var!r} a value {why}")
                 ok = False
                 break
             if val is None:
                 note = _unfolded_note(
-                    eid, f"assigns {var!r} a value", ea.getMath(), value_env, unfolded, species_ids
+                    eid,
+                    f"assigns {var!r} a value",
+                    vmath,
+                    value_env,
+                    unfolded,
+                    species_ids,
+                    unruled,
                 )
                 lossy.append(
                     note
@@ -965,7 +1091,6 @@ def sbml_events_to_protocol(
                     read,
                     delay,
                     pinned,
-                    approx,
                 )
             )
 

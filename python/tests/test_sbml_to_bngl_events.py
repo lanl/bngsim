@@ -475,7 +475,7 @@ def test_a_name_folds_to_the_value_the_run_gives_it(tmp_path, events, body, want
                 )
             ],
             {},
-            "'E1' assigns 'A' a value that is not a finite number",
+            "'E1' assigns 'A' a value of inf, which is not a finite number",
             id="a value that is 0 to a negative power",
         ),
         pytest.param(
@@ -954,19 +954,6 @@ _D_3_7 = _times(_ci("d"), _cn(3), _cn(7))  # the run's evaluator folds it as d*2
     [
         pytest.param(
             [
-                _a("E1", _at(_cn(0.5)), 4, delay=_D_3_7, priority=_cn(1)),
-                _a(
-                    "E3",
-                    _at(_plus(_cn(0.5), _times(_cn(0.1), _cn(3), _cn(7)))),
-                    5,
-                    priority=_cn(2),
-                ),
-            ],
-            {"parameters": _param("d", 0.1)},
-            id="a delay the run reads as 2.1, beside a threshold it reads as 2.6000000000000005",
-        ),
-        pytest.param(
-            [
                 _a("E1", _at(_ci("T")), 4, delay=_cn(0.5), priority=_cn(1)),
                 _a(
                     "E3",
@@ -988,24 +975,26 @@ def test_times_a_double_apart_as_the_run_reads_them_are_refused(tmp_path, events
     due with E3. The run reads d*21 = 2.1, and executes E1 at 2.6, before E3."""
     with pytest.raises(
         ConversionError,
-        match="events 'E1' and 'E3' set 'A' to different values at t = 2.6 and "
-        "t = 2.6000000000000005",
+        match="events 'E3' and 'E1' set 'A' to different values at t = 2.6000000000000005 "
+        "and t = 2.6",
     ):
         _convert(tmp_path, _sbml(*events, **body))
 
 
-def test_a_delay_is_read_as_the_run_reads_it(tmp_path):
-    """The run reads d*3*7 as d*21 = 2.1, so E1 is due on 2.6, with E3, and
-    runs after it by priority."""
+def test_a_delay_the_run_computes_otherwise_is_refused(tmp_path):
+    """The run reads d*3*7 as d*21 = 2.1, where it folds here left to right to
+    2.1000000000000005: the two disagree, so the delay is refused."""
     xml = _sbml(
         _a("E1", _at(_cn(0.5)), 4, delay=_D_3_7, priority=_cn(1)),
         _a("E3", _at(_cn(2.6)), 5, priority=_cn(2)),
         parameters=_param("d", 0.1),
     )
-    rep = _convert(tmp_path, xml)
-    assert rep.ok, rep.lossy
-    assert _schedule(rep) == [(2.6, "A", 5.0), (2.6, "A", 4.0)]
-    _assert_runs_as_the_model(xml, rep)
+    with pytest.raises(
+        ConversionError,
+        match="'E1' has a delay that the run computes as 2.1 and the translation folds to "
+        "2.1000000000000005",
+    ):
+        _convert(tmp_path, xml)
 
 
 # A strict trigger is read a little past its threshold, where the run can take
@@ -1210,26 +1199,26 @@ def test_a_priority_the_run_reads_as_nan_is_refused_as_the_run_refuses_it(tmp_pa
 _H_3_7 = _times(_ci("h"), _cn(3), _cn(7))  # the run reads h*21 = 2.1
 
 
-def test_a_value_is_written_as_the_run_reads_it(tmp_path):
-    """Folded left to right here, h*3*7 is 2.1000000000000005; the run sets
-    2.1, as E2 does, so their tie leaves 2.1 whichever runs last."""
+def test_a_value_the_run_rounds_otherwise_is_refused(tmp_path):
+    """Folded left to right here, h*3*7 is 2.1000000000000005; the run sets 2.1."""
     xml = _sbml(
         _event("E1", _at(_cn(1)), {"A": _H_3_7}),
         _event("E2", _at(_cn(1)), {"A": _cn(2.1)}),
         parameters=_param("h", 0.1),
     )
-    rep = _convert(tmp_path, xml)
-    assert rep.ok, rep.lossy
-    assert _schedule(rep) == [(1.0, "A", 2.1), (1.0, "A", 2.1)]
-    _assert_runs_as_the_model(xml, rep)
+    with pytest.raises(
+        ConversionError,
+        match="'E1' assigns 'A' a value that the run computes as 2.1 and the translation folds "
+        "to 2.1000000000000005",
+    ):
+        _convert(tmp_path, xml)
 
 
-def test_values_a_double_apart_as_the_run_reads_them_are_refused(tmp_path):
+def test_values_a_double_apart_in_a_tie_are_refused(tmp_path):
     """The run sets 2.1 and 2.1000000000000005 in a tie, in either order."""
     xml = _sbml(
-        _event("E1", _at(_cn(1)), {"A": _H_3_7}),
+        _event("E1", _at(_cn(1)), {"A": _cn(2.1)}),
         _event("E2", _at(_cn(1)), {"A": _cn("2.1000000000000005")}),
-        parameters=_param("h", 0.1),
     )
     with pytest.raises(ConversionError, match="with equal priority, and the run executes them"):
         _convert(tmp_path, xml)
@@ -1268,14 +1257,14 @@ def test_a_value_is_the_models_not_the_runs_storage(tmp_path):
         ),
     ],
 )
-def test_a_value_that_cancels_is_the_runs(tmp_path, value):
+def test_a_value_that_cancels_otherwise_in_the_run_is_refused(tmp_path, value):
     """Folded left to right here, h*3*7 - 2.1 is 4.4e-16, scaled to 4.4 or 4.0;
-    the run reads h*21 - 2.1 = 0, and sets A to 0."""
+    the run reads h*21 - 2.1 = 0. The two disagree, so the value is refused."""
     xml = _sbml(_event("E1", _at(_cn(1)), {"A": value}), parameters=_param("h", 0.1))
-    rep = _convert(tmp_path, xml)
-    assert rep.ok, rep.lossy
-    assert _schedule(rep) == [(1.0, "A", 0.0)]
-    _assert_runs_as_the_model(xml, rep)
+    with pytest.raises(
+        ConversionError, match="'E1' assigns 'A' a value that the run computes as 0.0 and"
+    ):
+        _convert(tmp_path, xml)
 
 
 def test_a_writer_surely_after_the_rest_sets_the_value(tmp_path):
@@ -1329,3 +1318,174 @@ def test_a_constant_not_folded_here_is_read_from_the_run(tmp_path, events, want)
     assert rep.ok, rep.lossy
     assert _schedule(rep) == want
     _assert_runs_as_the_model(xml, rep)
+
+
+_DIV = "<apply><divide/>{}{}</apply>"
+
+
+@pytest.mark.parametrize(
+    ("threshold", "shown"),
+    [
+        pytest.param(_DIV.format(_cn(0), _cn(0)), "nan", id="0/0"),
+        pytest.param(f"<apply><ln/>{_cn(-1)}</apply>", "nan", id="ln(-1)"),
+        pytest.param(f"<apply><power/>{_cn(-2)}{_cn(0.5)}</apply>", "nan", id="(-2)^0.5"),
+        pytest.param("<notanumber/>", "nan", id="notanumber"),
+        pytest.param(_DIV.format(_cn(1), _cn(0)), "inf", id="1/0"),
+        pytest.param(_times(_cn("1e308"), _cn(10)), "inf", id="1e308*10"),
+        pytest.param(_DIV.format(_cn(-1), _cn(0)), "-inf", id="-1/0"),
+    ],
+)
+def test_a_trigger_time_that_is_not_a_finite_number_is_refused(tmp_path, threshold, shown):
+    """The run never fires `time >= NaN` or `time >= inf`; the actions must not
+    dose it at the start, nor carry a time no phase can end at."""
+    with pytest.raises(
+        ConversionError, match=f"'E1' has a trigger time of {shown}, which is not a finite number"
+    ):
+        _convert(tmp_path, _sbml(_a("E1", _at(threshold), 5)))
+
+
+def test_a_trigger_time_that_is_nan_beside_another_event_returns(tmp_path):
+    """A NaN among the run's stops never ended the walk along them. The
+    conversion runs in a daemon thread, so a hang fails the test, not the run."""
+    import threading
+
+    xml = _sbml(_a("E1", _at(_DIV.format(_cn(0), _cn(0))), 5), _a("E2", _at(_cn(1)), 7))
+    outcome: list[BaseException] = []
+
+    def convert() -> None:
+        try:
+            _convert(tmp_path, xml)
+        except BaseException as e:  # the refusal, or anything else, to check below
+            outcome.append(e)
+
+    worker = threading.Thread(target=convert, daemon=True)
+    worker.start()
+    worker.join(timeout=120)
+    assert not worker.is_alive(), "sbml_to_bngl did not return"
+    assert outcome and isinstance(outcome[0], ConversionError), outcome
+    assert "'E1' has a trigger time of nan" in str(outcome[0])
+
+
+@pytest.mark.parametrize(
+    ("value", "body"),
+    [
+        pytest.param(
+            _times(
+                f"<apply><minus/>{_times(_ci('p'), _cn(3), _cn(7))}{_cn(2.1)}</apply>", _cn("1e16")
+            ),
+            {"parameters": _param("p", 0.1, constant=False)},
+            id="(p*3*7 - 2.1)*1e16",
+        ),
+        pytest.param(
+            _times(f"<apply><minus/>{_ci('p')}{_cn(2.1)}</apply>", _cn("1e16")),
+            {
+                "parameters": _param("p", 0, constant=False) + _param("h", 0.1),
+                "extra": _initial(p=_H_3_7),
+            },
+            id="(p - 2.1)*1e16, p set by an initialAssignment to h*3*7",
+        ),
+    ],
+)
+def test_a_value_on_its_own_start_value_the_run_may_round_otherwise_is_refused(
+    tmp_path, value, body
+):
+    """The run reads p*3*7 as p*21, and holds h*3*7 as 2.1: from either, it
+    sets p to 0, where the fold here gives 4.4."""
+    xml = _sbml(_event("E1", _at(_cn(1)), {"p": value}), **body)
+    with pytest.raises(
+        ConversionError, match="'E1' assigns 'p' a value that reads its own start value"
+    ):
+        _convert(tmp_path, xml)
+
+
+_Q_RULE = {
+    "parameters": '<parameter id="q" constant="false"/>',
+    "extra": _rules(q=("assignmentRule", _times(_ci("k"), _cn(3), _cn(7)))),
+}
+_Q_CANCELS = _times(f"<apply><minus/>{_ci('q')}{_cn(2.1)}</apply>", _cn("1e16"))
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        pytest.param([_event("E1", _at(_cn(1)), {"A": _Q_CANCELS})], id="a value"),
+        pytest.param(
+            [_a("E1", _at(_plus(_times(_cn(0.3378), _Q_CANCELS), _cn(1))), 5)], id="a trigger time"
+        ),
+    ],
+)
+def test_a_name_an_assignment_rule_sets_that_the_run_computes_otherwise_is_refused(
+    tmp_path, events
+):
+    """q := k*3*7 is held before the run as 2.1000000000000005, the fold; the
+    run computes k*21 = 2.1 from the rule."""
+    with pytest.raises(
+        ConversionError, match="that reads 'q', which an assignment rule sets, and which the run"
+    ):
+        _convert(tmp_path, _sbml(*events, **_Q_RULE))
+
+
+def _with_functions(xml: str, **bodies: str) -> str:
+    """``xml`` with a functionDefinition ``name() = body`` for each."""
+    defs = "".join(
+        f'<functionDefinition id="{name}">{_M}<lambda>{body}</lambda></math></functionDefinition>'
+        for name, body in bodies.items()
+    )
+    return xml.replace(
+        '<model id="m">',
+        f'<model id="m"><listOfFunctionDefinitions>{defs}</listOfFunctionDefinitions>',
+        1,
+    )
+
+
+@pytest.mark.parametrize(
+    ("events", "bodies", "note"),
+    [
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _times("<apply><ci>f</ci></apply>", _cn(3))})],
+            {"f": _ci("B")},
+            "'E1' assigns 'A' a non-constant value",
+            id="a value through f() = B",
+        ),
+        pytest.param(
+            [_a("E1", _at("<apply><ci>f</ci></apply>"), 5)],
+            {"f": _ci("B")},
+            "'E1' is state-triggered",
+            id="a trigger time through f() = B",
+        ),
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": "<apply><ci>f</ci></apply>"}, delay=_cn(1))],
+            {"f": _TIME},
+            "'E1' assigns 'A' a non-constant value",
+            id="a value through f() = time",
+        ),
+    ],
+)
+def test_what_a_function_definition_reads_is_seen(tmp_path, events, bodies, note):
+    with pytest.raises(ConversionError, match=note):
+        _convert(tmp_path, _with_functions(_sbml(*events), **bodies))
+
+
+def test_the_note_names_a_strict_writer_not_one_on_the_double(tmp_path):
+    """ED's delayed execution lands on 1 exactly, with E2, and priority orders
+    them; the strict E3 is what the translation cannot place."""
+    xml = _sbml(
+        _a("ED", _at(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(1)),
+        _a("E2", _at(_cn(1)), 5, priority=_cn(2)),
+        _a("E3", _gt(_cn(1)), 5),
+    )
+    with pytest.raises(ConversionError, match="events 'E3' and 'ED' set 'A' to different values"):
+        _convert(tmp_path, xml)
+
+
+def test_a_value_that_reads_rate_of_is_refused_as_such(tmp_path):
+    rate_of = (
+        '<apply><csymbol encoding="text" '
+        'definitionURL="http://www.sbml.org/sbml/symbols/rateOf">rateOf</csymbol>'
+        f"{_ci('k')}</apply>"
+    )
+    xml = _sbml(_event("E1", _at(_cn(1)), {"A": _plus(rate_of, _cn(5))}))
+    with pytest.raises(
+        ConversionError, match="'E1' assigns 'A' a value that reads rateOf, which the translation"
+    ):
+        _convert(tmp_path, xml)
