@@ -639,6 +639,19 @@ def test_with_alpha_past_1_the_fraction_is_still_refused_there(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "a, b, z, named",
+    [(2.5, 1500.0, 2000.0, "(a=2.5, b=1500, z=2000)"), (0.5, -10.0, 5.0, "(a=0.5, b=-10, z=5)")],
+)
+def test_a_refusal_names_a_whole_number_argument_as_an_integer(tmp_path, a, b, z, named):
+    """The shortest %g spelling of 1500 is 1.5e+03. A b is usually a whole
+    number, since BNG writes b = |AT-BT| + 1, so a whole number below 1e15 is
+    printed as one."""
+    with pytest.raises(Exception, match="not reliable") as excinfo:
+        _value(tmp_path, a, b, z)
+    assert named in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
     "a, b, z, old, true_value",
     [
         # mpmath summed directly at 60 and 100 digits, which agree.

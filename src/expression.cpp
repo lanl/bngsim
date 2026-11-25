@@ -867,11 +867,18 @@ static bool mratio_series(double a, double b, double z, double *out) {
     return false;
 }
 
-// An argument as a refusal names it: the fewest digits that read back as the
-// same double. std::to_string printed every one below 5e-7 as 0.000000, so a
-// refusal for a subnormal b read "b=0.000000" beside a clause about b > 0.
+// An argument as a refusal names it: a whole number below 1e15 as an integer,
+// which is how a b BNG writes, |AT-BT| + 1, reads best (-0.0 prints as -0 and
+// reads back as itself), and anything else at the fewest %g digits that read
+// back as the same double. std::to_string printed every one below 5e-7 as
+// 0.000000, so a refusal for a subnormal b read "b=0.000000" beside a clause
+// about b > 0.
 static std::string mratio_arg(double v) {
     char buf[32];
+    if (v == std::floor(v) && std::abs(v) < 1.0e15) {
+        c_snprintf(buf, sizeof(buf), "%.0f", v);
+        return buf;
+    }
     for (int digits = 1; digits <= 17; ++digits) {
         c_snprintf(buf, sizeof(buf), "%.*g", digits, v);
         if (c_strtod(buf, nullptr) == v) {
