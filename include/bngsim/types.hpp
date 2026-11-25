@@ -1318,9 +1318,8 @@ struct SteadyStateOptions {
     // largest species the solve starts with, which caps the absolute part of
     // the criterion's tolerances; each species' scale at the start, rtol of
     // which caps the atol the run test integrates at, as run() would hold it
-    // (issue #1895; empty where no species not $-fixed starts above 0); and,
-    // for a burst-free Newton solve, that its root is accepted by the
-    // residual test, at whatever iterate KINSOL ends.
+    // (issue #1895); and, for a burst-free Newton solve, that its root is
+    // accepted by the residual test, at whatever iterate KINSOL ends.
     bool criterion_by_distance = false;
     double criterion_start_size = 0.0;
     std::vector<double> criterion_start_scales;

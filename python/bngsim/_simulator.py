@@ -10019,11 +10019,13 @@ class Simulator:
               model the march resolves nothing and stops where its error
               leaves it, which a run at that ``atol`` does not see move.
               BIOMD0000000609, every species under 1.4e-13, asked at
-              ``atol=1e-9``, came back converged on a root of ``f`` with two
-              species near -1.5e-14 that a run from it leaves at once. Where
-              every species not ``$``-fixed starts at 0 the start has no
-              scale, and the run is at the march's ``atol``. The Newton step
-              ``δ = −J⁻¹f`` from the state to the root, within the same
+              ``atol=1e-9`` with its adduct accumulator left out by ``mask``,
+              came back converged on a root of ``f`` with two species near
+              -1.5e-14 that a run from it leaves at once. Where every species
+              not ``$``-fixed starts at 0, the scale is :meth:`run`'s there
+              too: the smallest species above 0, a ``$``-fixed one included,
+              but not above 1, and 1 where every species is at 0. The Newton
+              step ``δ = −J⁻¹f`` from the state to the root, within the same
               tolerances, decides where the solve stops
               (up to 512 unknowns), which takes the issue's cubic at a scale
               of 1e-9 on from 0.894 to its root at 1, and the state it stops at

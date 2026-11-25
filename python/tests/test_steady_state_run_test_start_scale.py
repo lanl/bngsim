@@ -20,8 +20,11 @@ atol beside the rest.
 The models below are the issue's, transcribed to ``.net``, the same with a
 larger species at the start, and a three-species reduction of it. Their steady
 state has a closed form: ``S = bS/dS``, ``G = bG/dG``, ``N = P = 0``. The
-oracles are that closed form, to the criterion's own tolerance, and a run of
-the time course from the returned state; neither is the run test.
+reduction fed from a ``$``-fixed source, every other species at 0, is a start
+whose only scale is the source's, which :meth:`Simulator.run` holds the rest
+to; its steady state is a quadratic's root. The oracles are the closed form,
+to the criterion's own tolerance, and a run of the time course from the
+returned state; neither is the run test.
 """
 
 from __future__ import annotations
@@ -95,6 +98,45 @@ begin reactions
 end reactions
 """
 
+# The same, every species not $-fixed at 0, P fed from a $-fixed source at
+# the issue's paracetamol: the start's only scale is the source's.
+SRC_NET = """begin parameters
+    1 kG    2.99
+    2 kS    2.26e14
+    3 bS    2.65e-14
+    4 dS    2.0
+    5 kA    0.5
+    6 kp    {kp}
+    7 Src0  1.32e-13
+end parameters
+begin species
+    1 S() 0
+    2 P() 0
+    3 A() 0
+    4 $Src() Src0
+end species
+begin reactions
+    1 2 0 kG
+    2 2,1 0 kS
+    3 1 0 dS
+    4 0 1 bS
+    5 2 3 kA
+    6 4 4,2 kp
+end reactions
+"""
+
+
+def _src_root(kp: float) -> dict[str, float]:
+    """SRC_NET's steady state: S = bS/(dS + kS·P), and P the positive root of
+    the quadratic its own balance makes of that."""
+    kG, kS, bS, dS, kA, src = 2.99, 2.26e14, 2.65e-14, 2.0, 0.5, 1.32e-13
+    a = (kG + kA) * kS
+    b = kp * src * kS - (kG + kA) * dS - kS * bS
+    c = kp * src * dS
+    p = (b + np.sqrt(b * b + 4.0 * a * c)) / (2.0 * a)
+    return {"S()": bS / (dS + kS * p), "P()": float(p)}
+
+
 # The issue's call: its SED-ML file's tolerances, the differential harness's
 # horizon, and the accumulator out of the test.
 RTOL, ATOL, HORIZON = 1e-6, 1e-9, 1e6
@@ -112,6 +154,9 @@ MODELS = {
     # sulphate and paracetamol are rounding beside Z, as run() holds them,
     # and the spurious root is within tolerance of the steady state.
     "apap_at_one": APAP_NET.replace("    5 A() 0\n", "    5 A() 0\n    6 Z() 1.0\n"),
+    # Every species not $-fixed at 0, so the start's scale is the source's,
+    # as run() reads it.
+    "src": SRC_NET.format(kp=1.0),
 }
 
 # The closed-form steady state of each species that has one; the accumulator
@@ -123,6 +168,7 @@ ROOTS = {
     "apap_ran": APAP_ROOT,
     "apap_beside": {**APAP_ROOT, "Z()": 1e-9},
     "apap_at_one": {**APAP_ROOT, "Z()": 1.0},
+    "src": _src_root(1.0),
 }
 
 
@@ -200,8 +246,11 @@ def test_converged_is_a_rest_at_the_steady_state(tmp_path, name, method, atol):
     (S at -1.54e-14), and for apap_ran and apap_beside by integration; a run
     from each fails on the RHS. The same with the atol given per species.
     apap_at_one is converged at that root on both, rightly: within its 1e-9
-    tolerance of the steady state, and a run from it rests. Where the solve
-    does not converge, the run test or the residual test said so."""
+    tolerance of the steady state, and a run from it rests. src, whose start
+    has only the source's scale, was converged by integration with S at
+    -7.1e-14 for 2.9e-15, a run test that took the coarse atol as given
+    finding it moved by 0.004 of its tolerance; a run from it fails. Where the
+    solve does not converge, the run test or the residual test said so."""
     ss, start = _solve(tmp_path, name, method, atol=atol)
     x = np.asarray(ss.concentrations, dtype=float)
     if ss.converged:
@@ -212,7 +261,7 @@ def test_converged_is_a_rest_at_the_steady_state(tmp_path, name, method, atol):
 
 
 @pytest.mark.parametrize("method", ["integration", "newton"])
-@pytest.mark.parametrize("name", ["apap", "spa"])
+@pytest.mark.parametrize("name", ["apap", "spa", "src"])
 def test_the_default_atol_finds_the_steady_state(tmp_path, name, method):
     """No atol given, each species is marched at rtol of its own scale and the
     solve reaches the closed form, to the model's scale. The run test's atol

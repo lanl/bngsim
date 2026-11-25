@@ -122,8 +122,8 @@ by its own size or go negative, and the solver reports nothing.
   every one gets the scalar.
 - **The floor** is the scale given to a species that starts at 0. It is never
   below 1e-6 of the largest species. Where every integrated species starts at
-  0, the floor is the smallest start of any species, a `$`-fixed one included.
-  Where every species starts at 0, the default is the scalar.
+  0, the floor is the smallest start of any species, a `$`-fixed one included,
+  but not above 1. Where every species starts at 0, the floor is 1.
 - **Sensitivities on CVODES' difference quotient keep the scalar.** When
   BNGsim cannot derive `∂f/∂p` for a model (`has_analytic_sens_rhs` is
   `False`), a tighter tolerance makes the difference quotient worse, not
@@ -166,9 +166,10 @@ spec = bngsim.convert.read_sedml("simulation.sedml", exact_atol=True)
 - An `EvaluationSpec` stores it in JSON as `{"exact": value}`.
 - SED-ML cannot say "exactly", so `write_sedml` writes the number, and
   `read_sedml(..., exact_atol=True)` reads it back as exact.
-- A vector of `n_species` values is always used exactly as given. One
-  exception: the run that `steady_state()`'s convergence test takes holds no
-  species coarser than a scalar would hold it from the solve's start.
+- A vector of `n_species` values is always used exactly as given.
+- One exception, for an `ExactAtol` and a vector alike: the run that
+  `steady_state()`'s convergence test takes holds no species coarser than
+  `run()` would hold it, given a scalar, from the solve's start.
 - `steady_state(atol=...)` uses a scalar as given. Under `criterion="scaled"`
   it is also the steady-state convergence test's tolerance. The run that test
   takes reads it as `run()` does, a ceiling per species from the solve's start.

@@ -6321,34 +6321,48 @@ static constexpr double kStartScaleShare = 1e-6;
 // the floor: the smallest magnitude a species not $-fixed starts at, but not
 // under kStartScaleShare of the largest of them. A species below the floor
 // keeps its own magnitude where `rtol` of it is more than double precision
-// resolves beside the largest (issue #1439). The default atol is finer than
-// rtol times this (_steady_state_atol takes a share of machine epsilon, and
-// at most 1e-8), so its runs are never capped. Empty where no species not
-// $-fixed starts above 0: the start has no scale. A value that is not finite
-// counts as 0, as it does there.
+// resolves beside the largest (issue #1439). Where no species not $-fixed
+// starts above 0, the floor is derive_atol's own, as it is there: the
+// smallest magnitude any species starts at, a $-fixed one too, but not above
+// 1, and 1 where every species starts at 0; and no species keeps a magnitude
+// below it. A $Src at 1.32e-13 feeding species that all start at 0 holds them
+// to rtol of 1.32e-13. With no scale read there, the run test's run kept a
+// coarse atol, and passed a root of f with S at -7.1e-14 and P at -1.05e-14,
+// from which run() fails. The default atol is finer than rtol times this
+// (_steady_state_atol takes a share of machine epsilon, the same fallback,
+// and at most 1e-8), so its runs are never capped. A value that is not
+// finite counts as 0, as it does there.
 static std::vector<double> ss_start_scales(const NetworkModel &model, double rtol) {
     const int ns = model.n_species();
+    std::vector<double> scales(static_cast<size_t>(ns));
     double largest = 0.0;
     double least = std::numeric_limits<double>::infinity();
+    double least_any = std::numeric_limits<double>::infinity();
     for (int i = 0; i < ns; ++i) {
-        const double v = std::abs(model.species()[i].concentration);
-        if (model.species()[i].fixed || !std::isfinite(v))
+        double v = std::abs(model.species()[i].concentration);
+        if (!std::isfinite(v))
+            v = 0.0;
+        scales[static_cast<size_t>(i)] = v;
+        if (v > 0.0)
+            least_any = std::min(least_any, v);
+        if (model.species()[i].fixed)
             continue;
         largest = std::max(largest, v);
         if (v > 0.0)
             least = std::min(least, v);
     }
-    if (!std::isfinite(least))
-        return {};
+    if (!std::isfinite(least)) {
+        const double floor = std::min(least_any, 1.0);
+        for (double &v : scales)
+            v = std::max(v, floor);
+        return scales;
+    }
     const double floor = std::max(least, kStartScaleShare * largest);
     const double resolvable = std::numeric_limits<double>::epsilon() * largest;
-    std::vector<double> scales(static_cast<size_t>(ns));
     for (int i = 0; i < ns; ++i) {
-        double v = std::abs(model.species()[i].concentration);
-        if (!std::isfinite(v))
-            v = 0.0;
+        double &v = scales[static_cast<size_t>(i)];
         const bool kept = !model.species()[i].fixed && v < floor && rtol * v > resolvable;
-        scales[static_cast<size_t>(i)] = kept ? v : std::max(v, floor);
+        v = kept ? v : std::max(v, floor);
     }
     return scales;
 }
@@ -6402,9 +6416,8 @@ static double ss_continued_run_once(NetworkModel &model, SteadyStateRhs &rhs,
     // steps a unit of time, and the run ran out of its steps. The default
     // atol is never coarser than this, and neither is any atol at the
     // model's scale: such a run is the one it was, to the bit (a scalar stays
-    // a scalar where no species is capped). The start has no scale where
-    // every species not $-fixed starts at 0, and the run is then as it was
-    // too.
+    // a scalar where no species is capped). Where every species not $-fixed
+    // starts at 0, the scale is run()'s too: a $-fixed species, or 1.
     const auto un_scales = opts.criterion_start_scales.size();
     const bool cap = end == nullptr && un_scales == un;
     const double rtol_c = std::max(opts.rtol, kCriterionRtolLeast);
