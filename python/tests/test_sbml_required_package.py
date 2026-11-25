@@ -1123,3 +1123,47 @@ def test_a_zip_entry_is_scanned_whatever_its_crc(tmp_path, where, declares) -> N
     else:
         with pytest.raises(ModelError, match=_ZZZ_URI):
             bngsim.Model.from_sbml(path)
+
+
+def _zip_python_refuses(text: str, flaw: str) -> bytes:
+    """A zip archive of one entry, *text*, that libSBML's zip reader reads and
+    Python's zipfile refuses: its name flagged UTF-8 but written in cp437, as
+    some archivers write it, or flagged as compressed patched data."""
+    import io
+    import struct
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("model.xml", text)
+    data = bytearray(buffer.getvalue())
+    bit = 0x800 if flaw == "a UTF-8 flag on a cp437 name" else 0x20
+    for signature, flags, name in ((b"PK\x03\x04", 6, 30), (b"PK\x01\x02", 8, 46)):
+        at = data.index(signature)
+        struct.pack_into(
+            "<H", data, at + flags, struct.unpack_from("<H", data, at + flags)[0] | bit
+        )
+        if bit == 0x800:
+            data[at + name : at + name + 9] = b"mod\xe9l.xml"
+    return bytes(data)
+
+
+@pytest.mark.parametrize("where", ["loaded", "a submodel's file"])
+@pytest.mark.parametrize("flaw", ["a UTF-8 flag on a cp437 name", "a patched-data flag"])
+@pytest.mark.parametrize("declares", [None, "arrays"])
+def test_a_zip_python_cannot_open_loads_as_libsbml_reads_it(
+    tmp_path, where, flaw, declares
+) -> None:
+    """libSBML reads these, so they load. Python's zipfile refuses them, so
+    the root-element scan, which only namespaces outside the SBML L3 hierarchy
+    depend on, reads nothing there; a package libSBML records itself, such as
+    ``arrays``, is refused all the same."""
+    ext = _leaf(0.1) if declares is None else _leaf(0.1, *_ARRAYS)
+    (tmp_path / "ext.xml.zip").write_bytes(_zip_python_refuses(ext, flaw))
+    (tmp_path / "top.xml").write_text(_submodel_of("ext.xml.zip"))
+    path = tmp_path / ("ext.xml.zip" if where == "loaded" else "top.xml")
+    if declares is None:
+        _assert_decays_at(bngsim.Model.from_sbml(path), 0.1)
+    else:
+        with pytest.raises(ModelError, match=_ARRAYS_URI):
+            bngsim.Model.from_sbml(path)

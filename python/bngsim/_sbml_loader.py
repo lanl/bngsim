@@ -3205,8 +3205,12 @@ def _as_libsbml_reads(path: str) -> Iterator[IO[bytes]]:
     ``.gz``, ``.bz2`` or ``.zip`` (a zip archive's first entry), and as it is
     otherwise. zlib reads a ``.gz`` file with no gzip header as plain bytes,
     and libSBML's zip reader checks no CRC-32, and so does this. A file that
-    cannot be opened so gives an empty stream; libSBML cannot read it either,
-    and says so."""
+    cannot be opened so gives an empty stream. Mostly libSBML cannot read it
+    either, and says so; but Python's zipfile also refuses archives libSBML
+    reads (an entry name its UTF-8 flag misdescribes, the patched-data flag),
+    and there the scan reads nothing. Only a namespace outside the SBML L3
+    hierarchy depends on the scan: libSBML records every other package in
+    such a file itself."""
     import bz2
     import gzip
     import zipfile
@@ -3228,7 +3232,14 @@ def _as_libsbml_reads(path: str) -> Iterator[IO[bytes]]:
                     stream = stack.enter_context(gzip.GzipFile(fileobj=raw))
                 else:
                     raw.seek(0)
-        except (OSError, IndexError, zipfile.BadZipFile):
+        except (
+            OSError,
+            ValueError,  # an entry name not in the encoding its flag gives
+            IndexError,  # an archive with no entry
+            NotImplementedError,  # the patched-data flag
+            RuntimeError,  # an encrypted entry
+            zipfile.BadZipFile,
+        ):
             stream = io.BytesIO()
         yield stream
 
