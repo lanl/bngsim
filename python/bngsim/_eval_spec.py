@@ -47,6 +47,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -74,8 +75,10 @@ class EvaluationSpec:
 
     Parameters
     ----------
-    model_source : str
-        For a path format (``net``/``sbml``/``antimony``), the model file path.
+    model_source : str or os.PathLike
+        For a path format (``net``/``sbml``/``antimony``), the model file path,
+        a ``str`` or a :class:`os.PathLike` (stored as its ``str``, so the spec
+        serializes as one built from the ``str`` does).
         For a ``*_string`` format, the inline model text.
     model_format : str
         One of ``"net"``, ``"sbml"``, ``"antimony"``, ``"sbml_string"``,
@@ -178,6 +181,32 @@ class EvaluationSpec:
                 f"Unknown model_format {self.model_format!r}. "
                 f"Expected one of {sorted(_VALID_FORMATS)}."
             )
+        # A Path was accepted here and failed only at to_json() (issue #1924): read
+        # it as its str, so the spec serializes, compares and hashes as one built
+        # from the str does.
+        source: object = self.model_source
+        if isinstance(source, os.PathLike):
+            if self.model_format in _STRING_FORMATS:
+                from bngsim._exceptions import UsageError
+
+                raise UsageError(
+                    f"model_format={self.model_format!r} carries the model text in "
+                    f"model_source, and got a path, {source!r}. Pass the file's "
+                    "format instead (" + ", ".join(sorted(_PATH_FORMATS)) + ").",
+                    code="usage.invalid_argument",
+                    details={"argument": "model_source", "model_format": self.model_format},
+                )
+            source = os.fspath(source)
+        if not isinstance(source, str):
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(
+                "model_source must be a str (a path, or the model text for a *_string "
+                f"format) or an os.PathLike, got {type(source).__name__}: {source!r}",
+                code="usage.invalid_argument",
+                details={"argument": "model_source", "type": type(source).__name__},
+            )
+        object.__setattr__(self, "model_source", source)
         ts = tuple(float(x) for x in self.t_span)
         if len(ts) != 2:
             from bngsim._exceptions import UsageError

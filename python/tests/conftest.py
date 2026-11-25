@@ -462,7 +462,8 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         _ANYWHERE,
         "issue #1759's end-to-end case loads the library into an x86_64 Python under "
         "Rosetta, which only an Apple Silicon Mac with Rosetta installed has; what "
-        "was built is read with lipo and nm on any Mac",
+        "was built is read with lipo and nm on any Mac. Issue #1927's x86_64 driver "
+        "of cc_jit.hpp needs the same Mac, and Apple's clang and an SDK to build it",
     ),
     (
         "aarch64 only",

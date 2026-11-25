@@ -8,7 +8,7 @@
 // the SSA loop swaps backends with a one-line change.
 //
 // Unlike MIR's in-process ~1 ms JIT, cc pays the compiler's ~100 ms ONCE, but
-// the .so is cached by a content hash under ~/.cache/bngsim/codegen, so an SSA
+// the .so is cached by a content hash under the codegen cache dir, so an SSA
 // ENSEMBLE (many replicates of one model — the normal stochastic workflow)
 // compiles only on the first replicate and dlopen's the cached .so thereafter,
 // while cc's -O3 code can beat MIR's -O2. The point of the experiment: decide
@@ -26,14 +26,17 @@
 #include <string>
 
 #ifndef _WIN32
+#include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>  // std::snprintf, std::rename, std::remove
 #include <cstdlib> // std::getenv, std::system
 #include <filesystem>
 #include <fstream>
+#include <pwd.h> // getpwnam, getpwuid
 #include <sys/stat.h>
 #include <system_error>
-#include <unistd.h> // getpid
+#include <unistd.h> // getpid, getuid
 #endif
 
 namespace bngsim {
@@ -43,19 +46,159 @@ class CcJit {
     CcJit() = default;
 
 #ifndef _WIN32
-    /// Content hash → stable cache path (no compile). Lets a caller invalidate a
-    /// cached .so before timing a fresh compile.
+    /// Bumped whenever the compile command or the library's contract changes, so
+    /// a library an older bngsim built is not reused (issue #1927).
+    static constexpr const char *kFormat = "v2";
+
+    /// The machine this process runs as, named as Python's platform.machine()
+    /// and the Python codegen's arch field spell it (issue #1927). Read from the
+    /// compiler's target macros, so it is the process's own architecture: exact
+    /// under Rosetta, where Apple's cc would otherwise build for the hardware.
+    static const char *machine() {
+#if defined(__x86_64__)
+        return "x86_64";
+#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+        return "arm64";
+#elif defined(__aarch64__)
+        return "aarch64";
+#else
+        return "unknown";
+#endif
+    }
+
+    /// The compile command for `cpath` → `sotmp`. On macOS it passes -arch with
+    /// this process's machine (issue #1927), as the Python codegen does since
+    /// #1759; a CC naming another -arch then builds a universal library.
+    static std::string compile_command(const std::string &cpath, const std::string &sotmp) {
+        // A CC of only whitespace is unset, as the Python codegen reads it; any
+        // other is taken as written, blanks and all, as Python takes it.
+        const char *cc_env = std::getenv("CC");
+        std::string cmd = cc_env ? cc_env : "";
+        if (trim(cmd).empty())
+            cmd = "cc";
+        // A CC that is itself a compiler, found as one word, with a character
+        // the shell would read in it (a blank, a quote, a backslash) is quoted
+        // as one word, as the Python codegen takes it when shutil.which finds it;
+        // otherwise the shell splits it, so `CC="ccache cc"` still works.
+        if (cmd.find_first_of(" \t\n\r\f\v'\"\\") != std::string::npos && is_program(cmd))
+            cmd = shell_quote(cmd);
+#if defined(__APPLE__)
+        if (std::string(machine()) != "unknown")
+            cmd += std::string(" -arch ") + machine();
+#endif
+        cmd += " -O3 -shared -fPIC -o " + shell_quote(sotmp) + " " + shell_quote(cpath) + " -lm";
+        return cmd;
+    }
+
+    /// Whether `name` is an executable file: as given when it holds a /, else on
+    /// PATH, as shutil.which looks it up.
+    static bool is_program(const std::string &name) {
+        if (name.find('/') != std::string::npos)
+            return access(name.c_str(), X_OK) == 0;
+        const char *path = std::getenv("PATH");
+        std::string dirs = path ? path : "";
+        size_t start = 0;
+        while (start <= dirs.size()) {
+            const size_t end = std::min(dirs.find(':', start), dirs.size());
+            const std::string dir = dirs.substr(start, end - start);
+            // An empty entry is the working directory, to the shell and to
+            // shutil.which alike.
+            if (access(((dir.empty() ? std::string(".") : dir) + "/" + name).c_str(), X_OK) == 0)
+                return true;
+            start = end + 1;
+        }
+        return false;
+    }
+
+    /// `s` as one POSIX shell word: single-quoted, with each ' written '\''.
+    static std::string shell_quote(const std::string &s) {
+        std::string out = "'";
+        for (char c : s) {
+            if (c == '\'')
+                out += "'\\''";
+            else
+                out += c;
+        }
+        return out + "'";
+    }
+
+    static std::string trim(const std::string &s) {
+        const char *ws = " \t\n\r\f\v";
+        const auto b = s.find_first_not_of(ws);
+        return b == std::string::npos ? "" : s.substr(b, s.find_last_not_of(ws) - b + 1);
+    }
+
+    /// The home directory: HOME when it is set and not empty, else the
+    /// password database (the Python codegen reads it the same way).
+    static std::string home_dir() {
+        const char *home = std::getenv("HOME");
+        if (home && *home)
+            return home;
+        passwd pw{};
+        passwd *found = nullptr;
+        char buf[4096];
+        if (getpwuid_r(getuid(), &pw, buf, sizeof(buf), &found) == 0 && found && pw.pw_dir)
+            return pw.pw_dir;
+        return "/tmp";
+    }
+
+    /// A leading ~ or ~user expanded as Python's os.path.expanduser() does; a
+    /// user the password database does not know leaves the path as it is.
+    static std::string expand_user(const std::string &path) {
+        if (path.empty() || path[0] != '~')
+            return path;
+        const auto slash = path.find('/');
+        const std::string user =
+            path.substr(1, slash == std::string::npos ? std::string::npos : slash - 1);
+        const std::string rest = slash == std::string::npos ? "" : path.substr(slash);
+        if (user.empty())
+            return home_dir() + rest;
+        passwd pw{};
+        passwd *found = nullptr;
+        char buf[4096];
+        if (getpwnam_r(user.c_str(), &pw, buf, sizeof(buf), &found) == 0 && found && pw.pw_dir)
+            return std::string(pw.pw_dir) + rest;
+        return path;
+    }
+
+    /// The cache directory: BNGSIM_CODEGEN_CACHE_DIR when set (trimmed, with a
+    /// leading ~ expanded, and made absolute so no path the compiler is given
+    /// starts with -), as the Python codegen reads it, else
+    /// ~/.cache/bngsim/codegen.
+    static std::string cache_dir() {
+        const char *env = std::getenv("BNGSIM_CODEGEN_CACHE_DIR");
+        std::string dir = trim(env ? env : "");
+        if (dir.empty())
+            return home_dir() + "/.cache/bngsim/codegen";
+        dir = expand_user(dir);
+        if (dir[0] != '/') {
+            std::error_code ec;
+            const auto cwd = std::filesystem::current_path(ec);
+            dir = (ec ? std::string(".") : cwd.string()) + "/" + dir;
+        }
+        return dir;
+    }
+
+    /// Stable cache path (no compile). Lets a caller invalidate a cached .so
+    /// before timing a fresh compile. The name carries the machine and kFormat,
+    /// and the hash covers the source and the compile command (with CC), so two
+    /// architectures sharing a cache, or two compilers, never name one library
+    /// alike (issue #1927).
     static std::string cache_path(const std::string &src, const std::string &tag = "ssa_prop") {
         uint64_t h = 1469598103934665603ULL; // FNV-1a 64-bit
-        for (unsigned char c : src) {
-            h ^= c;
+        auto mix = [&h](const std::string &s) {
+            for (unsigned char c : s) {
+                h ^= c;
+                h *= 1099511628211ULL;
+            }
+            h ^= 0xffU; // separator, so ("ab","c") and ("a","bc") differ
             h *= 1099511628211ULL;
-        }
+        };
+        mix(src);
+        mix(compile_command("", ""));
         char hex[20];
         std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(h));
-        const char *home = std::getenv("HOME");
-        std::string dir = std::string(home ? home : "/tmp") + "/.cache/bngsim/codegen";
-        return dir + "/" + tag + "_" + hex + ".so";
+        return cache_dir() + "/" + tag + "_" + machine() + "_" + kFormat + "_" + hex + ".so";
     }
 
     /// Compile `src` to a cached .so (cc -O3 -shared -fPIC) and load it. A cache
@@ -69,10 +212,14 @@ class CcJit {
             // which file.
             std::error_code ec;
             std::filesystem::create_directories(so.substr(0, so.find_last_of('/')), ec);
-            // Process-unique temps so concurrent ensembles don't collide; the
+            // Temps unique to this process and this compile, so concurrent
+            // ensembles, and the threads of one run_replicates, don't collide
+            // (one thread removed the source another was compiling); the
             // finished .so is renamed into place atomically.
-            const std::string stem =
-                so.substr(0, so.size() - 3) + "." + std::to_string(static_cast<long>(getpid()));
+            static std::atomic<unsigned long> counter{0};
+            const std::string stem = so.substr(0, so.size() - 3) + "." +
+                                     std::to_string(static_cast<long>(getpid())) + "_" +
+                                     std::to_string(counter.fetch_add(1));
             const std::string cpath = stem + ".c";
             const std::string sotmp = stem + ".so.tmp";
             {
@@ -81,10 +228,7 @@ class CcJit {
                     throw std::runtime_error("CcJit: cannot write source " + cpath);
                 f << src;
             }
-            const char *cc_env = std::getenv("CC");
-            const std::string cc = cc_env ? cc_env : "cc";
-            const std::string cmd =
-                cc + " -O3 -shared -fPIC -o '" + sotmp + "' '" + cpath + "' -lm";
+            const std::string cmd = compile_command(cpath, sotmp);
             const int rc = std::system(cmd.c_str());
             std::remove(cpath.c_str());
             if (rc != 0) {
@@ -110,6 +254,7 @@ class CcJit {
     static std::string cache_path(const std::string &, const std::string & = "ssa_prop") {
         return "";
     }
+    static const char *machine() { return "unknown"; }
 #endif
 
     template <typename T> T symbol(const std::string &name) const { return lib_.symbol<T>(name); }

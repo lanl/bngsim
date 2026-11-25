@@ -877,6 +877,9 @@ class Simulator:
         - ``"nf_fixed"`` — Legacy compatibility token.
           Recognized but unavailable in this build.
 
+        ``xml_path`` is a ``str`` or a :class:`os.PathLike` such as the
+        :class:`pathlib.Path` ``bngsim.examples.path()`` returns.
+
         **Legacy aliases** (accepted for compatibility):
 
         - ``"nfsim"`` → ``"nf_reject"``
@@ -1223,7 +1226,7 @@ class Simulator:
         model: Model,
         method: str = "ode",
         *,
-        xml_path: str = "",
+        xml_path: str | os.PathLike[str] = "",
         poplevel: float | None = None,
         gml: int | None = None,
         connectivity: bool | None = None,
@@ -1245,6 +1248,9 @@ class Simulator:
             # Simulator(path) failed inside this constructor, with "'str' object has
             # no attribute '_want_output_sens'" (issue #1700).
             _require_model(model)
+        # bngsim.examples.path() hands out a Path, which the network-free cores
+        # refused with a raw pybind11 TypeError (issue #1924).
+        xml_path = _xml_path_arg(xml_path)
         # Normalize the user-facing method token before backend dispatch.
         # normalize_method() validates the token, checks availability,
         # and returns (canonical, dispatch) where dispatch is the
@@ -13318,6 +13324,29 @@ def _expression_names(tree: ast.Expression) -> tuple[frozenset[str], frozenset[s
         elif isinstance(node, ast.arg):
             binds.add(node.arg)
     return frozenset(loads), frozenset(binds)
+
+
+def _xml_path_arg(xml_path: object) -> str:
+    """``Simulator(xml_path=...)`` as the ``str`` the network-free cores take.
+
+    A :class:`os.PathLike` is read with :func:`os.fspath`, as the sessions read
+    one; ``None`` is "not given", as ``""`` is, so a network-free method still
+    answers it with its missing-argument error. Anything else that is then not a
+    ``str`` (bytes, a number) is refused here by name rather than by pybind11
+    (issue #1924).
+    """
+    if xml_path is None:
+        return ""
+    if isinstance(xml_path, os.PathLike):
+        xml_path = os.fspath(xml_path)
+    if not isinstance(xml_path, str):
+        raise UsageError(
+            "xml_path must be a str or os.PathLike naming a BNG XML file, "
+            f"got {type(xml_path).__name__}: {xml_path!r}",
+            code="usage.invalid_argument",
+            details={"argument": "xml_path", "type": type(xml_path).__name__},
+        )
+    return xml_path
 
 
 def _xml_stop_names(xml_path: str) -> tuple[list[str], list[str], list[str]] | None:
