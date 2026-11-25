@@ -201,12 +201,13 @@ Current carry topics:
   the selector picks nothing from a total that is not above 0. This is
   RuleWorld/nfsim#123, fixed upstream by RuleWorld/nfsim#128, merged as
   `7501f675`, written against the pinned base. Upstream makes the same test of
-  the fall before a waiting time is drawn and has the rest, but no count: at
-  `7501f675` `drifting_flip.xml` still loses 2.2e-16 a cycle and its last
-  reaction is lost. The carry also keeps the peak at every update, tests before
-  a pick too, and on an empty pick has `stepTo` draw again rather than stop, as
-  the time-table carry above needs. When the base moves past `7501f675`, reduce
-  it to the count rather than drop it (GH #519)
+  the fall before a waiting time is drawn and has the rest, but no count, which
+  RuleWorld/nfsim#130 asks it for: at `7501f675` `drifting_flip.xml` still
+  loses 2.2e-16 a cycle and its last reaction is lost. The carry also keeps the
+  peak at every update, tests before a pick too, and on an empty pick has
+  `stepTo` draw again rather than stop, as the time-table carry above needs.
+  When the base moves past `7501f675`, reduce it to the count, and drop it only
+  once RuleWorld/nfsim#130 is fixed upstream (GH #519)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`
@@ -344,7 +345,8 @@ Expected carry order:
 26. the selector's running total summed afresh once it falls far below its
     peak or has taken many updates, and a reaction fired at any total above 0
     (GH #1666, GH #1672; RuleWorld/nfsim#123, fixed upstream by
-    RuleWorld/nfsim#128 as `7501f675` without the count)
+    RuleWorld/nfsim#128 as `7501f675` without the count, which
+    RuleWorld/nfsim#130 asks for)
 
 When you intentionally change the carry stack, regenerate the patch bundle
 afterward.

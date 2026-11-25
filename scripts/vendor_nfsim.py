@@ -598,18 +598,20 @@ CARRY_QUEUE = (
             "before a waiting time is drawn, sums from the cached propensities, removes "
             "ATOT_TOLERANCE, picks nothing from a total not above 0 and reads a_tot "
             "back after a pick. This carry diverges: it also sums every 4096 updates, "
-            "which upstream lacks (at 7501f675 drifting_flip still loses 2.2e-16 a "
-            "cycle and its last reaction is lost); it keeps the peak at every update "
-            "and also tests before a pick; and on an empty pick stepTo draws again "
-            "rather than stopping, as bngsim/carry-step-to-time-table-breakpoints "
-            "needs, and sim draws again where upstream lets the time pass. When the "
-            "base moves past 7501f675, reduce it to the count rather than drop it (GH "
-            "#519). Fixtures under tests/data/nfsim/ (slow_channel_beside_fast, "
-            "tiny_total_propensity, nan_once_the_fast_channel_empties, drifting_flip)."
+            "which upstream lacks and RuleWorld/nfsim#130 asks it for (at 7501f675 "
+            "drifting_flip still loses 2.2e-16 a cycle and its last reaction is lost); "
+            "it keeps the peak at every update and also tests before a pick; and on an "
+            "empty pick stepTo draws again rather than stopping, as "
+            "bngsim/carry-step-to-time-table-breakpoints needs, and sim draws again "
+            "where upstream lets the time pass. When the base moves past 7501f675, "
+            "reduce it to the count, and drop it only once RuleWorld/nfsim#130 is fixed "
+            "upstream (GH #519). Fixtures under tests/data/nfsim/ "
+            "(slow_channel_beside_fast, tiny_total_propensity, "
+            "nan_once_the_fast_channel_empties, drifting_flip)."
         ),
         "commits": [
             {
-                "commit": "7e8c9e1be07232b45a262a5aa2d1d31306e5e5c7",
+                "commit": "54481567d96ba0c36b0c6db9bc4f6f946b7d72ca",
                 "summary": (
                     "bngsim: sum the total propensity afresh once it falls far, and fire above 0"
                 ),

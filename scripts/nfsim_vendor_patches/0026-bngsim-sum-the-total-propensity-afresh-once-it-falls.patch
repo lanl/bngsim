@@ -1,6 +1,6 @@
-From 7e8c9e1be07232b45a262a5aa2d1d31306e5e5c7 Mon Sep 17 00:00:00 2001
+From 54481567d96ba0c36b0c6db9bc4f6f946b7d72ca Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
-Date: Tue, 24 Nov 2026 18:13:50 -0700
+Date: Tue, 24 Nov 2026 18:35:16 -0700
 Subject: [PATCH] bngsim: sum the total propensity afresh once it falls far,
  and fire above 0
 
@@ -59,16 +59,17 @@ makes the same test of the fall, below 2^-10 of the peak since the last
 sum or below 0, sums afresh from the propensities the selector holds,
 removes ATOT_TOLERANCE, picks nothing from a total that is not above 0,
 and reads a_tot back after a pick. This carry diverges in four ways. It
-also sums the total afresh every 4096 updates, which upstream lacks: at
-7501f675 the running total on bngsim's
-tests/data/nfsim/drifting_flip.xml still loses 2.2e-16 a cycle, and the
-reaction listed last is lost. It keeps the peak at every update, not
-only where the total is read. It also tests before a pick. And where a
-pick finds nothing, stepTo draws again rather than going to the stopping
-time, as the time-table breakpoints of
+also sums the total afresh every 4096 updates, which upstream lacks and
+RuleWorld/nfsim#130 asks it for: at 7501f675 the running total on
+bngsim's tests/data/nfsim/drifting_flip.xml still loses 2.2e-16 a cycle,
+and the reaction listed last is lost. It keeps the peak at every update,
+not only where the total is read. It also tests before a pick. And where
+a pick finds nothing, stepTo draws again rather than going to the
+stopping time, as the time-table breakpoints of
 bngsim/carry-step-to-time-table-breakpoints need, and sim draws again
 where upstream lets the time pass. When the base moves past 7501f675,
-reduce this carry to the count rather than drop it (bngsim GH #519).
+reduce this carry to the count, and drop it only once
+RuleWorld/nfsim#130 is fixed upstream (bngsim GH #519).
 ---
  .../reactionSelector/directSelector.cpp       | 95 +++++++++++++++++++
  .../reactionSelector/reactionSelector.hh      | 18 ++++
