@@ -1244,6 +1244,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
             sp_vec_ref[si].concentration = cc[si];
         model.update_observables(cc);
         model.evaluate_functions(t_abs);
+        // obs_buf goes back to the stored state's too: a row the stuck loops
+        // record from it without a resize of its own read this row's resized
+        // observables, X = 20 at c's load-time size beside [X] = 10.
+        for (int j = 0; j < n_obs; ++j)
+            obs_buf[j] = model.observables()[j].total;
     };
 
     // Issues #719/#751/#753 — the continuous path (see the loop for models with

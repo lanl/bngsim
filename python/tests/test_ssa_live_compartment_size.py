@@ -505,6 +505,25 @@ def test_a_row_reads_a_rule_sized_compartment_on_concentrations(method):
         np.testing.assert_allclose(_col(r, block, name), _col(ode, block, name), rtol=1e-6)
 
 
+@pytest.mark.parametrize("method", STOCHASTIC)
+def test_a_row_at_the_load_time_size_after_a_resized_row_reads_its_own_observables(method):
+    """c := 2 + (time - 1)*(time - 2) is 4, its load-time size, at t = 0 and 3,
+    and 2 at t = 1 and 2: the amount is 40, so X = 10 at 4 and 20 at 2. A row
+    that needed no resizing after one that did kept the resized row's
+    observables, X = 20 at t = 3 beside [X] = 10 and p = 20."""
+    text = "compartment c; c := 2 + (time - 1)*(time - 2); species X in c; X = 10; p := 2*X;"
+    r = _run(bngsim.Model.from_antimony_string(text), method, t_span=(0, 6), n_points=7)
+    ode = _run(bngsim.Model.from_antimony_string(text), "ode", t_span=(0, 6), n_points=7)
+    t = np.arange(7.0)
+    x = 40.0 / (2.0 + (t - 1.0) * (t - 2.0))
+    np.testing.assert_allclose(_sel(r, "[X]")[:, 0], x, rtol=1e-9)
+    np.testing.assert_allclose(_col(r, "observables", "X"), x, rtol=1e-9)
+    np.testing.assert_allclose(_col(r, "expressions", "p"), 2.0 * x, rtol=1e-9)
+    np.testing.assert_allclose(
+        _col(r, "observables", "X"), _col(ode, "observables", "X"), rtol=1e-6
+    )
+
+
 @pytest.mark.parametrize("method", ["ode", *STOCHASTIC])
 def test_an_event_assigns_a_concentration_at_a_rule_size_read_on_concentrations(method):
     """S = 20 at t = 2, where c2 = 3 + [Y] = 8: 160 molecules from there. The SSA
