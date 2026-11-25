@@ -193,20 +193,23 @@ Current carry topics:
   (`ReactionSelector::getAtotForDraw()`) and before a pick, not in `update()`,
   so a total that dips and comes back within a firing costs no pass over the
   reactions. Each sum is a pass over all N reactions, so a model whose total
-  keeps falling 1024-fold slows in proportion to N: one A flipping at 1e6 and
-  back at 1e-3 beside 10,000 births at 1e-9 ran 17 times as long. A total that
-  is not finite is kept, for the host's check to refuse. `stepTo`, `sim` and
-  `singleStep` fired nothing at a total of 1e-9 or less (`ATOT_TOLERANCE`), a
-  rate in the model's own time unit (GH #1672); they test `a_tot > 0` now, and
-  the selector picks nothing from a total that is not above 0. This is
-  RuleWorld/nfsim#123, fixed upstream by RuleWorld/nfsim#128, merged as
-  `7501f675`, written against the pinned base. Upstream makes the same test of
-  the fall before a waiting time is drawn and has the rest, but no count, which
-  RuleWorld/nfsim#130 asks it for: at `7501f675` `drifting_flip.xml` still
-  loses 2.2e-16 a cycle and its last reaction is lost. The carry also keeps the
-  peak at every update, tests before a pick too, and on an empty pick has
-  `stepTo` draw again rather than stop, as the time-table carry above needs.
-  When the base moves past `7501f675`, reduce it to the count, and drop it only
+  keeps falling 1024-fold slows at least in proportion to N, and more once the
+  reactions no longer fit in cache: one A flipping at 1e6 and back at 1e-3
+  beside 10,000 births at 1e-9 ran 17 to 28 times as long, on two machines. A
+  total that is not finite is kept, for the host's check to refuse. `stepTo`,
+  `sim` and `singleStep` fired nothing at a total of 1e-9 or less
+  (`ATOT_TOLERANCE`), a rate in the model's own time unit (GH #1672); they test
+  `a_tot > 0` now, and the selector picks nothing from a total that is not
+  above 0. This is RuleWorld/nfsim#123, fixed upstream by RuleWorld/nfsim#128,
+  merged as `7501f675`, written against the pinned base. Upstream makes the
+  same test of the fall before a waiting time is drawn and has the rest, but no
+  count, which RuleWorld/nfsim#130 asks it for: at `7501f675`
+  `drifting_flip.xml` still loses 2.2e-16 a cycle and its last reaction is
+  lost. The carry also keeps the peak at every update, tests before a pick too,
+  and on an empty pick has `stepTo` draw again rather than stop, as the
+  time-table carry above needs. When the base moves past `7501f675`, reduce it
+  to the count, moving `stepTo`'s redraw on an empty pick into the time-table
+  carry (upstream's `stepTo` goes to the stopping time there), and drop it only
   once RuleWorld/nfsim#130 is fixed upstream (GH #519)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate

@@ -1,6 +1,6 @@
-From 54481567d96ba0c36b0c6db9bc4f6f946b7d72ca Mon Sep 17 00:00:00 2001
+From 58c980d94d3710745953c17fe236fc559f466fb1 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
-Date: Tue, 24 Nov 2026 18:35:16 -0700
+Date: Tue, 24 Nov 2026 19:14:33 -0700
 Subject: [PATCH] bngsim: sum the total propensity afresh once it falls far,
  and fire above 0
 
@@ -36,12 +36,13 @@ reaction where a pick may stop at the first: tested in update(), it made
 a model with one such molecule beside 300 reactions 25% slower. Tested
 where the total is read, a sum comes once per 2^12 updates and once per
 fall by a factor of 1024. Each is a pass over all N reactions, so a
-model whose total keeps falling that far below its peak slows in
-proportion to N: one A flipping at 1e6 and back at 1e-3, nearly every
-other firing a fall, ran 1.8 times as long beside 1000 births at 1e-9 as
-without the tests, and 17 times as long beside 10,000. The count alone
-costs a pass per 4096 updates. A total that is not finite is never
-summed afresh there, and is kept for the host to report.
+model whose total keeps falling that far below its peak slows at least
+in proportion to N, and more once the reactions no longer fit in cache:
+one A flipping at 1e6 and back at 1e-3, nearly every other firing a
+fall, ran 1.7 to 1.8 times as long beside 1000 births at 1e-9 as without
+the tests, and 17 to 28 times as long beside 10,000, on two machines.
+The count alone costs a pass per 4096 updates. A total that is not
+finite is never summed afresh there, and is kept for the host to report.
 System::getNextRxn takes a_tot from the selector after each pick.
 
 stepTo, sim and singleStep fired nothing while a_tot was at or below
@@ -68,19 +69,21 @@ a pick finds nothing, stepTo draws again rather than going to the
 stopping time, as the time-table breakpoints of
 bngsim/carry-step-to-time-table-breakpoints need, and sim draws again
 where upstream lets the time pass. When the base moves past 7501f675,
-reduce this carry to the count, and drop it only once
-RuleWorld/nfsim#130 is fixed upstream (bngsim GH #519).
+reduce this carry to the count, moving stepTo's redraw on an empty pick
+into bngsim/carry-step-to-time-table-breakpoints, whose breakpoints need
+it; upstream's stepTo goes to the stopping time there. Drop the carry
+only once RuleWorld/nfsim#130 is fixed upstream (bngsim GH #519).
 ---
- .../reactionSelector/directSelector.cpp       | 95 +++++++++++++++++++
+ .../reactionSelector/directSelector.cpp       | 97 +++++++++++++++++++
  .../reactionSelector/reactionSelector.hh      | 18 ++++
  src/NFcore/system.cpp                         | 36 +++++--
- 3 files changed, 141 insertions(+), 8 deletions(-)
+ 3 files changed, 143 insertions(+), 8 deletions(-)
 
 diff --git a/src/NFcore/reactionSelector/directSelector.cpp b/src/NFcore/reactionSelector/directSelector.cpp
-index 5f75b1f..7383d45 100644
+index 5f75b1f..4b775da 100644
 --- a/src/NFcore/reactionSelector/directSelector.cpp
 +++ b/src/NFcore/reactionSelector/directSelector.cpp
-@@ -9,10 +9,58 @@
+@@ -9,10 +9,60 @@
  
  #include "reactionSelector.hh"
  
@@ -120,10 +123,12 @@ index 5f75b1f..7383d45 100644
 + * a test in update() would cost such a model a pass per firing. Where the total
 + * is read, a sum comes once per 2^12 updates and once per fall by a factor of
 + * 1024. Each is a pass over all N reactions, so a model whose total keeps
-+ * falling that far below its peak slows in proportion to N. One A flipping at
-+ * 1e6 and back at 1e-3, so that nearly every other firing is such a fall, ran
-+ * 1.8 times as long beside 1000 births at 1e-9 as without the tests, and 17
-+ * times as long beside 10,000. The count alone costs a pass per 4096 updates.
++ * falling that far below its peak slows at least in proportion to N, and more
++ * once the reactions no longer fit in cache. One A flipping at 1e6 and back at
++ * 1e-3, so that nearly every other firing is such a fall, ran 1.7 to 1.8 times
++ * as long beside 1000 births at 1e-9 as without the tests, and 17 to 28 times
++ * as long beside 10,000, on two machines. The count alone costs a pass per
++ * 4096 updates.
 + *
 + * RuleWorld/nfsim#128, merged upstream as 7501f675, makes the same test of the
 + * fall, before a waiting time is drawn, and has no count.
@@ -139,7 +144,7 @@ index 5f75b1f..7383d45 100644
  
  
  DirectSelector::DirectSelector(vector <ReactionClass *> &rxns, System *sys) :
-@@ -25,6 +73,7 @@ DirectSelector::DirectSelector(vector <ReactionClass *> &rxns, System *sys) :
+@@ -25,6 +75,7 @@ DirectSelector::DirectSelector(vector <ReactionClass *> &rxns, System *sys) :
  		reactionClassList[r] = rxns.at(r);
  		Atot += reactionClassList[r]->get_a();
  	}
@@ -147,7 +152,7 @@ index 5f75b1f..7383d45 100644
  }
  
  
-@@ -42,6 +91,39 @@ double DirectSelector::refactorPropensities()
+@@ -42,6 +93,39 @@ double DirectSelector::refactorPropensities()
  	for(int r=0; r<n_reactions; r++) {
  		Atot += reactionClassList[r]->update_a();
  	}
@@ -187,7 +192,7 @@ index 5f75b1f..7383d45 100644
  	return Atot;
  }
  
-@@ -50,6 +132,11 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
+@@ -50,6 +134,11 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
  {
  	Atot-=oldA;
  	Atot+=newA;
@@ -199,7 +204,7 @@ index 5f75b1f..7383d45 100644
  	return Atot;
  }
  
-@@ -57,6 +144,14 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
+@@ -57,6 +146,14 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
  
  double DirectSelector::getNextReactionClass(ReactionClass *&rc)
  {

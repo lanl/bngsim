@@ -583,9 +583,10 @@ CARRY_QUEUE = (
             "(ReactionSelector::getAtotForDraw(), getAtot() by default) and before a "
             "pick, so a total that dips and comes back within a firing costs no pass "
             "over the reactions. Each sum is a pass over all N reactions, so a model "
-            "whose total keeps falling 1024-fold slows in proportion to N: one A "
-            "flipping at 1e6 and back at 1e-3 beside 10,000 births at 1e-9 ran 17 times "
-            "as long. A total that is not finite is kept, for the host to report. "
+            "whose total keeps falling 1024-fold slows at least in proportion to N, and "
+            "more once the reactions no longer fit in cache: one A flipping at 1e6 and "
+            "back at 1e-3 beside 10,000 births at 1e-9 ran 17 to 28 times as long, on "
+            "two machines. A total that is not finite is kept, for the host to report. "
             "System::getNextRxn takes a_tot from the selector after each pick, so a "
             "pick that ran past the last reaction and summed afresh no longer leaves a "
             "stale a_tot. stepTo, sim and singleStep fired nothing at a total of 1e-9 "
@@ -604,14 +605,16 @@ CARRY_QUEUE = (
             "empty pick stepTo draws again rather than stopping, as "
             "bngsim/carry-step-to-time-table-breakpoints needs, and sim draws again "
             "where upstream lets the time pass. When the base moves past 7501f675, "
-            "reduce it to the count, and drop it only once RuleWorld/nfsim#130 is fixed "
+            "reduce it to the count, moving stepTo's redraw on an empty pick into "
+            "bngsim/carry-step-to-time-table-breakpoints (upstream's stepTo goes to the "
+            "stopping time there), and drop it only once RuleWorld/nfsim#130 is fixed "
             "upstream (GH #519). Fixtures under tests/data/nfsim/ "
             "(slow_channel_beside_fast, tiny_total_propensity, "
             "nan_once_the_fast_channel_empties, drifting_flip)."
         ),
         "commits": [
             {
-                "commit": "54481567d96ba0c36b0c6db9bc4f6f946b7d72ca",
+                "commit": "58c980d94d3710745953c17fe236fc559f466fb1",
                 "summary": (
                     "bngsim: sum the total propensity afresh once it falls far, and fire above 0"
                 ),

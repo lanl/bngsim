@@ -45,10 +45,12 @@ using namespace NFcore;
  * a test in update() would cost such a model a pass per firing. Where the total
  * is read, a sum comes once per 2^12 updates and once per fall by a factor of
  * 1024. Each is a pass over all N reactions, so a model whose total keeps
- * falling that far below its peak slows in proportion to N. One A flipping at
- * 1e6 and back at 1e-3, so that nearly every other firing is such a fall, ran
- * 1.8 times as long beside 1000 births at 1e-9 as without the tests, and 17
- * times as long beside 10,000. The count alone costs a pass per 4096 updates.
+ * falling that far below its peak slows at least in proportion to N, and more
+ * once the reactions no longer fit in cache. One A flipping at 1e6 and back at
+ * 1e-3, so that nearly every other firing is such a fall, ran 1.7 to 1.8 times
+ * as long beside 1000 births at 1e-9 as without the tests, and 17 to 28 times
+ * as long beside 10,000, on two machines. The count alone costs a pass per
+ * 4096 updates.
  *
  * RuleWorld/nfsim#128, merged upstream as 7501f675, makes the same test of the
  * fall, before a waiting time is drawn, and has no count.
