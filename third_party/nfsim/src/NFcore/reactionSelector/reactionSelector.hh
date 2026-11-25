@@ -39,6 +39,9 @@ namespace NFcore
 			virtual double update(ReactionClass *r,double oldA, double newA) = 0;
 			virtual double getNextReactionClass(ReactionClass *&rc) = 0;
 			virtual double getAtot() = 0;
+			/* The total to draw a waiting time from. A selector that keeps a
+			 * running total may sum it afresh first. */
+			virtual double getAtotForDraw() { return getAtot(); }
 
 		protected:
 			System *sys_;  // Pointer to System for accessing per-instance RNG
@@ -58,10 +61,25 @@ namespace NFcore
 			virtual double update(ReactionClass *r,double oldA, double newA);
 			virtual double getNextReactionClass(ReactionClass *&rc);
 			virtual double getAtot();
+			virtual double getAtotForDraw();
 
 
 		protected:
+			/* Sums Atot afresh from the propensity each reaction holds. */
+			void resumPropensities();
+			/* Starts the watch on Atot that has it summed again. */
+			void markSummed();
+			/* Sums Atot afresh if it has fallen far, or taken many updates,
+			 * since it was last summed. */
+			void resumIfStale();
+
 			double Atot;
+			/* The largest value Atot has held since it was last summed, and
+			 * the value below which it is summed again. */
+			double AtotPeak;
+			double AtotResumBelow;
+			/* The updates Atot has taken since it was last summed. */
+			unsigned int updatesSinceSum;
 			int n_reactions;
 			ReactionClass ** reactionClassList;
 

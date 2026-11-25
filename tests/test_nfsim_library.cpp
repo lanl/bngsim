@@ -16,6 +16,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -702,6 +703,109 @@ static bool test_partner_type_sites(const string & /*xml_path*/) {
     return ok;
 }
 
+// ─── Test 12: a running total that never falls far stays near its sum ───────
+// NFsim's selector keeps the total propensity as a running sum, Atot - old +
+// new (bngsim GH #1666, RuleWorld/nfsim#123). In drifting_flip.xml one A flips
+// between two reactions beside a background birth, so the total moves between
+// kb + k0 and kb + k1 and never falls far, and with these rates every cycle
+// rounds the sum the same way: it loses 2.2e-16 a cycle, 6.7e-12 over 30000.
+// The slow birth listed last is picked only where a draw lands in the last ks
+// of the running total, so once the sum has lost more than ks it is never
+// picked. The selector sums the total afresh every 4096 updates as well as
+// after a fall, which holds it within 2^-40 of its terms here.
+namespace {
+// System::get_A_tot() is protected; see nfsim_total_propensity() in
+// src/nfsim_simulator.cpp.
+struct TotalPropensityReader : System {
+    using System::get_A_tot;
+};
+}  // namespace
+
+static bool test_running_total_stays_near_its_sum(const string & /*xml_path*/) {
+    cout << "  Test 12: a running total that never falls far stays near its sum ... ";
+
+    const string name = "drifting_flip.xml";
+    const string configured = string(NFSIM_TEST_DATA_DIR) + "/" + name;
+    const string relative = string("../../../tests/data/nfsim/") + name;
+    string xml;
+    for (const auto &c : {configured, relative}) {
+        if (file_exists(c)) {
+            xml = c;
+            break;
+        }
+    }
+    if (xml.empty()) {
+        cout << "FAILED (" << name << " not found; tried " << configured << " and "
+             << relative << ")" << endl;
+        return false;
+    }
+
+    int suggestedTraversalLimit = -1;
+    System *s = NFinput::initializeFromXML(std::filesystem::absolute(xml).string(), false,
+                                           200000, false, suggestedTraversalLimit, true, false);
+    if (s == nullptr) {
+        cout << "FAILED (initializeFromXML returned nullptr)" << endl;
+        return false;
+    }
+    s->registerOutputFileLocation("/dev/null");
+    s->outputAllObservableNames();
+    // The waiting times and the picks draw from the System's own generator,
+    // seeded here. NFutil's process-wide one only chooses the molecules a
+    // reaction acts on, and here a flip has one A to choose and a birth none.
+    // The result does not hang on the seed: every cycle rounds the same way.
+    s->seedRNG(1);
+    s->prepareForSimulation();
+
+    const vector<ReactionClass *> rxns = s->getAllReactions();
+    if (rxns.size() != 4 || rxns.back()->getName() != "_R4") {
+        cout << "FAILED (expected four reactions, the slow birth _R4 last)" << endl;
+        delete s;
+        return false;
+    }
+    // 30000 cycles take 2.0e5 on average (1/k0 + 1/k1 = 6.7 each), give or
+    // take 0.4%. A run that has not done them by 3e5 has stopped flipping.
+    const int cycles = 30000;
+    const double tCap = 3e5;
+    double t = 0.0;
+    try {
+        while (rxns[0]->getFireCounter() < cycles && t < tCap) {
+            t += 1000.0;
+            s->stepTo(t);
+        }
+    } catch (const std::exception &e) {
+        cout << "FAILED (stepTo threw at t = " << t << ": " << e.what() << ")" << endl;
+        delete s;
+        return false;
+    }
+    if (rxns[0]->getFireCounter() < cycles) {
+        cout << "FAILED (" << rxns[0]->getFireCounter() << " of " << cycles
+             << " cycles by t = " << t << ")" << endl;
+        delete s;
+        return false;
+    }
+
+    const double running = (s->*(&TotalPropensityReader::get_A_tot))();
+    double sum = 0.0, beforeSlow = 0.0;
+    for (size_t r = 0; r < rxns.size(); r++) {
+        if (r + 1 == rxns.size())
+            beforeSlow = sum;
+        sum += rxns[r]->get_a();
+    }
+    const double ks = rxns.back()->get_a();
+    const double drift = running - sum;
+    const double room = running - beforeSlow; // what a draw can land in for the slow birth
+    delete s;
+
+    if (!(std::fabs(drift) <= std::ldexp(sum, -40)) || !(room > 0.5 * ks)) {
+        cout << "FAILED (after " << cycles << " cycles the running total is off its sum by "
+             << drift << ", and leaves the slow birth " << room << " of its " << ks << ")"
+             << endl;
+        return false;
+    }
+    cout << "OK (off by " << drift << " after " << cycles << " cycles)" << endl;
+    return true;
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 int main(int argc, char *argv[]) {
     cout << "\n=== NFsim Library Integration Test (Phase C.5 Step 1) ===" << endl;
@@ -758,6 +862,7 @@ int main(int argc, char *argv[]) {
     run(test_reserved_symbol_params);
     run(test_reserved_param_simulate);
     run(test_partner_type_sites);
+    run(test_running_total_stays_near_its_sum);
     run(test_system_destruction);
 
     cout << "\n=== Results: " << passed << " passed, " << failed << " failed ===" << endl;
