@@ -5199,6 +5199,57 @@ def _frame_limit_flag() -> str:
     return f"-Wframe-larger-than={_CODEGEN_MAX_FRAME_BYTES}"
 
 
+#: clang's default ``-fbracket-depth``: it stops at a parenthesis, square bracket
+#: or brace nested deeper than this, each kind counted on its own, with "bracket
+#: nesting level exceeded maximum of 256". GCC has no such limit.
+_CLANG_BRACKET_DEPTH = 256
+#: What the limit is raised to beyond the source's own depth: headroom for the
+#: brackets the preprocessor adds, which the source's macros (names and
+#: attributes) keep to a few.
+_BRACKET_DEPTH_MARGIN = 64
+_C_COMMENT_OR_LITERAL_RE = re.compile(
+    r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.S
+)
+
+
+def _c_bracket_depth(c_source: str) -> int:
+    """The deepest that one kind of bracket nests in ``c_source``, outside its
+    comments and literals: what clang holds to ``-fbracket-depth``."""
+    import numpy as np
+
+    code = np.frombuffer(
+        _C_COMMENT_OR_LITERAL_RE.sub(" ", c_source).encode("utf-8"), dtype=np.uint8
+    )
+    deepest = 0
+    for opening, closing in (b"()", b"[]", b"{}"):
+        brackets = code[(code == opening) | (code == closing)]
+        if brackets.size:
+            steps = np.where(brackets == opening, 1, -1)
+            deepest = max(deepest, int(np.cumsum(steps).max()))
+    return deepest
+
+
+def _bracket_depth_flags(c_source: str, compiler: list[str]) -> list[str]:
+    """``["-fbracket-depth=<N>"]`` where clang is to build a source nested past
+    its default limit, and nothing for any other source or compiler (issue
+    #1814).
+
+    An ``if()`` chain is written as one ``?:`` chain (:func:`_replace_if_calls`),
+    which keeps the commonest deep nesting shallow, but a model can nest as deep
+    any other way: a chain through the true branches, a sum of sums. A plain run
+    fell back to the interpreter on such a source, and a forward-sensitivity
+    run, which needs the compiled right-hand side, failed. GCC rejects the flag,
+    and the depth is past the default only for a source that needs it, so every
+    other build's command is what it was. The flag changes what clang reads, not
+    what it emits, so the cache key does not carry it."""
+    if Path(compiler[0]).stem.lower() == "cl":
+        return []
+    depth = _c_bracket_depth(c_source)
+    if depth <= _CLANG_BRACKET_DEPTH or not _toolchain.is_clang(compiler):
+        return []
+    return [f"-fbracket-depth={depth + _BRACKET_DEPTH_MARGIN}"]
+
+
 #: The tag both compilers end the report with: Clang ``[-Wframe-larger-than]``,
 #: GCC ``[-Wframe-larger-than=]``. Its presence is what refuses a library; the
 #: function name and size are read only to say which. The bracket is part of it:
@@ -5306,7 +5357,11 @@ def _arch_flags() -> list[str]:
 
 
 def _build_compile_cmd(
-    c_path: Path, so_path: Path, opt_flag: str, compiler: list[str] | None = None
+    c_path: Path,
+    so_path: Path,
+    opt_flag: str,
+    compiler: list[str] | None = None,
+    extra_flags: tuple[str, ...] | list[str] = (),
 ) -> list[str]:
     """Build the platform-specific compile command.
 
@@ -5320,6 +5375,9 @@ def _build_compile_cmd(
         Optimization flag for the detected compiler (e.g. "-O3" / "/O2").
     compiler : list[str], optional
         The compiler's base command; :func:`_find_c_compiler` when not given.
+    extra_flags : sequence of str, optional
+        Flags this source needs of a GCC/Clang compile
+        (:func:`_bracket_depth_flags`).
 
     Returns
     -------
@@ -5348,6 +5406,7 @@ def _build_compile_cmd(
             opt_flag,
             _FP_CONTRACT_OFF,
             _frame_limit_flag(),
+            *extra_flags,
             "-shared",
             "-fPIC",
             "-o",
@@ -5952,6 +6011,7 @@ def _compile_one_object(
     c_name: str,
     o_name: str,
     timeout: float | None,
+    extra_flags: tuple[str, ...] | list[str] = (),
 ) -> None:
     """Compile one ``.c`` to ``.o`` (``cc [-arch <machine>] <opt> -fPIC -c``) from
     within ``work`` using relative names, then normalize the object's mtime.
@@ -5965,6 +6025,7 @@ def _compile_one_object(
         opt_flag,
         _FP_CONTRACT_OFF,
         _frame_limit_flag(),
+        *extra_flags,
         "-fPIC",
         "-c",
         "-o",
@@ -5986,6 +6047,7 @@ def _compile_sharded(
     jobs: int,
     timeout: float | None,
     compiler: list[str],
+    extra_flags: tuple[str, ...] | list[str] = (),
 ) -> None:
     """Compile the driver + shard units to ``.o`` with up to ``jobs`` concurrent
     ``cc -c`` processes, then link them into ``tmp_so_path``.
@@ -6019,7 +6081,9 @@ def _compile_sharded(
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
             futures = [
-                ex.submit(_compile_one_object, compiler, opt_flag, work, cn, on, timeout)
+                ex.submit(
+                    _compile_one_object, compiler, opt_flag, work, cn, on, timeout, extra_flags
+                )
                 for cn, on in names
             ]
             # Surface the first failure (cancels not-yet-started compiles).
@@ -6125,6 +6189,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
     # marker is on the first lines of the combined source (RHS is always first).
     chunked = _CHUNK_MARKER in c_source[:512]
     opt_flag = _resolve_opt_flag(compiler_name, len(c_source), chunked=chunked)
+    extra_flags = _bracket_depth_flags(c_source, compiler)
     timeout = _resolve_codegen_timeout()
 
     # Decide serial vs. sharded parallel compile. MSVC keeps the single-shot
@@ -6142,7 +6207,9 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
                 len(units),
                 jobs,
             )
-            _compile_sharded(driver_src, units, tmp_so_path, opt_flag, jobs, timeout, compiler)
+            _compile_sharded(
+                driver_src, units, tmp_so_path, opt_flag, jobs, timeout, compiler, extra_flags
+            )
             _refuse_foreign_library(tmp_so_path, "")
             os.replace(tmp_so_path, so_path)
             _compile_installs.last = str(so_path)
@@ -6152,7 +6219,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
             # default (cp1252 on Windows) would raise UnicodeEncodeError.
             c_path.write_text(c_source, encoding="utf-8")
             try:
-                cmd = _build_compile_cmd(c_path, tmp_so_path, opt_flag, compiler)
+                cmd = _build_compile_cmd(c_path, tmp_so_path, opt_flag, compiler, extra_flags)
                 logger.info("Compiling codegen RHS (%s): %s", opt_flag, " ".join(cmd))
                 # Removed by the supervisor if this process dies mid-compile, as
                 # the finally clauses here remove them otherwise (issue #1552).

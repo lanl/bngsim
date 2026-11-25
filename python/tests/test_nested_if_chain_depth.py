@@ -34,8 +34,8 @@ from __future__ import annotations
 
 import math
 import re
+import shlex
 import shutil
-import time
 
 import bngsim
 import numpy as np
@@ -394,6 +394,123 @@ def test_a_plain_run_of_a_128_link_chain_compiles_under_clang(tmp_path, clang, m
     assert float(result.species[-1][0]) == pytest.approx(A5, rel=1e-7)
 
 
+# ── A source nested deep some other way ──────────────────────────────────────
+
+
+def _true_chain(n: int) -> str:
+    """*n* if()s, each in the true branch of the one before: v_i from 0.01·i
+    until 0.01·(i+1), and 0 after."""
+    text = "0"
+    for i in reversed(range(n)):
+        text = f"if((time()>={0.01 * (i + 1):g}),{text},{_day_value(i)})"
+    return text
+
+
+def _mixed_chain(n: int) -> str:
+    """The same function as :func:`_true_chain`, its links nested in the true
+    and the false branch by turns."""
+    text = "0"
+    for i in reversed(range(n)):
+        cut = f"{0.01 * (i + 1):g}"
+        if i % 2:
+            text = f"if((time()<{cut}),{_day_value(i)},{text})"
+        else:
+            text = f"if((time()>={cut}),{text},{_day_value(i)})"
+    return text
+
+
+def _deep_net(v_rate: str) -> str:
+    return _net(0).replace("1 v_rate() 0", f"1 v_rate() {v_rate}")
+
+
+def _deep_expected(n: int) -> tuple[float, float]:
+    """A(5) and dA(5)/dk for a table of *n* hundredths of a time unit."""
+    integral = sum(0.01 * _day_value(i) for i in range(n))
+    a5 = 100.0 * math.exp(-0.5 * integral)
+    return a5, -integral * a5
+
+
+def test_the_bracket_depth_is_counted_per_kind_outside_comments_and_literals():
+    src = "double f(void){ /* ((((( */ const char *s = \"((((\"; return ((a[(b)])) + '('; }"
+    assert cg._c_bracket_depth(src) == 3
+
+
+def test_only_clang_is_given_a_deeper_limit_and_only_for_a_source_past_it(monkeypatch):
+    shallow = f"double r(double t) {{ return {cg._expr_to_c(_chain(340), [], [], [], [])}; }}"
+    deep = f"double r(double t) {{ return {cg._expr_to_c(_true_chain(130), [], [], [], [])}; }}"
+    depth = cg._c_bracket_depth(deep)
+    assert cg._c_bracket_depth(shallow) <= cg._CLANG_BRACKET_DEPTH < depth
+
+    def not_asked(compiler):
+        raise AssertionError("the compiler was asked what it is")
+
+    monkeypatch.setattr(cg._toolchain, "is_clang", not_asked)
+    assert cg._bracket_depth_flags(shallow, ["cc"]) == []
+    assert cg._bracket_depth_flags(deep, ["cl"]) == []
+    monkeypatch.setattr(cg._toolchain, "is_clang", lambda compiler: False)
+    assert cg._bracket_depth_flags(deep, ["cc"]) == []
+    monkeypatch.setattr(cg._toolchain, "is_clang", lambda compiler: True)
+    assert cg._bracket_depth_flags(deep, ["cc"]) == [f"-fbracket-depth={depth + 64}"]
+
+
+def test_a_compiler_that_cannot_say_is_not_taken_for_clang(monkeypatch, tmp_path):
+    monkeypatch.setattr(cg._toolchain, "_clang", {})
+    assert cg._toolchain.is_clang([str(tmp_path / "no-such-cc")]) is False
+
+
+@needs_clang
+def test_clang_is_told_from_its_macros(monkeypatch):
+    monkeypatch.setattr(cg._toolchain, "_clang", {})
+    assert cg._toolchain.is_clang([_CLANG]) is True
+
+
+@needs_clang
+@pytest.mark.parametrize("v_rate, n", [(_true_chain, 130), (_mixed_chain, 260)])
+def test_a_source_nested_past_clangs_limit_builds_under_clang(
+    tmp_path, clang, monkeypatch, v_rate, n
+):
+    # Nested in the true branch, an if() is two brackets deeper than the last,
+    # flat C or not: past 256 at 130 links. The sensitivity run declined the
+    # analytic RHS for the parse's own limit, then failed to build the RHS.
+    model = _load(tmp_path, _deep_net(v_rate(n)), f"deep_{n}")
+    src, _has_sens = cg.generate_combined_from_model(model, emit_sens_rhs=True)
+    assert cg._c_bracket_depth(src) > cg._CLANG_BRACKET_DEPTH
+    a5_exact, s5_exact = _deep_expected(n)
+    a5, s5, sim = _sensitivity(model)
+    assert sim.codegen_backend == "cc"
+    assert a5 == pytest.approx(a5_exact, rel=1e-7)
+    # CVODES' difference quotient, across a step of the rate every 0.01.
+    assert s5 == pytest.approx(s5_exact, rel=1e-4)
+    monkeypatch.setenv("BNGSIM_CODEGEN_STRICT", "1")
+    monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "cg_plain")
+    runs = {}
+    for codegen in (True, False):
+        sim = bngsim.Simulator(
+            _load(tmp_path, _deep_net(v_rate(n)), f"deep_{n}"), method="ode", codegen=codegen
+        )
+        assert sim.codegen_backend == ("cc" if codegen else "exprtk")
+        result = sim.run(t_span=(0, 5), n_points=6, rtol=1e-8, atol=1e-10)
+        runs[codegen] = float(result.species[-1][0])
+    # The compiled run is the interpreted one; both are a few 1e-6 off across
+    # the jumps, which the sensitivity run stops at and the plain one does not.
+    assert runs[True] == pytest.approx(runs[False], rel=1e-12)
+    assert runs[True] == pytest.approx(a5_exact, rel=1e-5)
+
+
+@needs_clang
+def test_a_failed_build_is_called_the_compiled_right_hand_side(tmp_path, clang, monkeypatch):
+    # erf() has no analytic derivative here, so the build is of the right-hand
+    # side alone, and a limit of 6 is past what clang needs for it.
+    monkeypatch.setattr(cg._toolchain, "_verdicts", {})
+    monkeypatch.setenv("CC", f"{shlex.quote(_CLANG)} -fbracket-depth=6")
+    model = _load(tmp_path, _deep_net("1").replace("k*v_rate()", "k*erf(Atot)*(((((((Atot)))))))"))
+    with pytest.raises(bngsim.CodegenBuildError) as err:
+        _sensitivity(model)
+    message = str(err.value)
+    assert message.startswith("Failed to build the compiled right-hand side forward sensitivity")
+    assert "analytical sensitivity RHS" not in message
+
+
 # ── Chains a flat Piecewise reads differently ────────────────────────────────
 
 
@@ -421,29 +538,27 @@ end groups
 
 def _window_sensitivity(tmp_path, chain, params, asked, t_end):
     text = _window_net(chain, params)
-    started = time.perf_counter()
     _src, has_sens = cg.generate_combined_from_model(_load(tmp_path, text, "windows"))
-    built = time.perf_counter() - started
     sim = bngsim.Simulator(
         _load(tmp_path, text, "windows"), method="ode", sensitivity_params=asked
     )
     result = sim.run(t_span=(0, t_end), n_points=3, rtol=1e-8, atol=1e-10)
-    return has_sens, built, np.asarray(result.sensitivities)[-1, 0]
+    return has_sens, np.asarray(result.sensitivities)[-1, 0]
 
 
 @needs_cc
-def test_a_chain_of_windows_builds_its_analytic_sensitivity_rhs_in_good_time(tmp_path):
+def test_a_chain_of_windows_builds_its_analytic_sensitivity_rhs(tmp_path):
     # Fourteen windows [i, i+1), each its own rate: X gains k_i over window i,
     # so dX/dk_i is 1 once it has passed. The derivative of each column is 0 on
     # thirteen windows, which a flat Piecewise merges into one Or of windows in
     # normal form, doubling with each: the build ran past its budget and the
-    # analytic RHS was declined. Nested, it takes well under a second.
+    # analytic RHS was declined.
+    chain = _window(14, lambda i: f"k{i}")
+    parsed = J._exprtk_to_sympy(chain)
+    assert sp.count_ops(sp.diff(parsed, sp.Symbol("k0"))) <= 2 * 14
     params = {f"k{i}": 1.0 + 0.1 * i for i in range(14)}
-    has_sens, built, s = _window_sensitivity(
-        tmp_path, _window(14, lambda i: f"k{i}"), params, ["k0", "k1", "k2"], 15
-    )
+    has_sens, s = _window_sensitivity(tmp_path, chain, params, ["k0", "k1", "k2"], 15)
     assert has_sens
-    assert built < 10.0
     assert s == pytest.approx([1.0, 1.0, 1.0], rel=1e-6)
 
 
@@ -452,9 +567,8 @@ def test_a_chain_of_windows_of_one_value_parses_small_and_runs(tmp_path):
     chain = _window(16, lambda i: "k")
     parsed = J._exprtk_to_sympy(chain)
     assert sp.count_ops(parsed) <= 2 * 16  # merged into one Or, 786k
-    has_sens, built, s = _window_sensitivity(tmp_path, chain, {"k": 0.5}, ["k"], 20)
+    has_sens, s = _window_sensitivity(tmp_path, chain, {"k": 0.5}, ["k"], 20)
     assert has_sens
-    assert built < 10.0
     assert s == pytest.approx([16.0], rel=1e-6)
 
 

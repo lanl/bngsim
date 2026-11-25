@@ -483,6 +483,24 @@ def _run(cmd: list[str], *, timeout: float = 10.0) -> str:
     return (out.stdout or "") + (out.stderr or "")
 
 
+_clang: dict[tuple, bool] = {}
+_CLANG_MACRO_RE = re.compile(r"^#define __clang__\b", re.M)
+
+
+def is_clang(compiler: list[str]) -> bool:
+    """Whether ``compiler`` is clang, or a compiler built on it that takes its
+    flags (Apple's ``cc``, Intel's ``icx``): it defines ``__clang__``. Asked once
+    per compiler and environment (:func:`toolchain_key`); one that cannot say is
+    taken not to be. ``cc`` is clang on one machine and GCC on the next, and its
+    name does not say which."""
+    key = toolchain_key(compiler)
+    known = _clang.get(key)
+    if known is None:
+        macros = _run([*compiler, "-dM", "-E", "-x", "c", os.devnull])
+        known = _clang[key] = _CLANG_MACRO_RE.search(macros) is not None
+    return known
+
+
 def _probe(
     compiler: list[str],
     env: dict[str, str] | None = None,
