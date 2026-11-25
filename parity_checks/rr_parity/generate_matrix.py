@@ -93,17 +93,22 @@ def get_verdict_badge(outcome: str, engine: str, succeeded: bool) -> tuple[str, 
         return outcome, "verdict-refused"
 
 
-# How rr_run begins a NO_GROUND_TRUTH row's comment (rr_run.NO_GROUND_TRUTH_LABEL;
-# restated rather than imported, as rr_run pulls in the engines).
+# How rr_run begins a NO_GROUND_TRUTH row's comment where the entry applied
+# (rr_run.NO_GROUND_TRUTH_LABEL and NO_GROUND_TRUTH_APPLIED; restated rather than
+# imported, as rr_run pulls in the engines). Its note on an entry that did not
+# apply begins with the label too, so the label alone does not identify a row.
 NO_GROUND_TRUTH_LABEL = "no ground truth"
+NO_GROUND_TRUTH_APPLIED = re.compile(re.escape(NO_GROUND_TRUTH_LABEL) + r"( \([^)]*\))?: ")
 
 
 def is_no_ground_truth(result: dict) -> bool:
-    """A BAD_TEST that an authored NO_GROUND_TRUTH override reached: both engines
-    ran, and neither agrees with itself over the horizon. Drawn as that, not as
-    the default BAD_TEST reading of two engines that rejected the model."""
-    return result.get("outcome") == "BAD_TEST" and (result.get("comment") or "").startswith(
-        NO_GROUND_TRUTH_LABEL
+    """A BAD_TEST that an authored NO_GROUND_TRUTH override applied to: both
+    engines ran, and neither agrees with itself over the horizon. Drawn as that,
+    not as the default BAD_TEST reading of two engines that rejected the model.
+    An entry that did not apply, as where both engines raised, leaves that
+    reading alone."""
+    return result.get("outcome") == "BAD_TEST" and bool(
+        NO_GROUND_TRUTH_APPLIED.match(result.get("comment") or "")
     )
 
 
@@ -405,9 +410,12 @@ def humanize_comment(result: dict) -> str:
         if m:
             out.append(f"Known artifact{m.group(1)} — reclassified to PASS: {m.group(2)}")
             continue
-        m = re.match(NO_GROUND_TRUTH_LABEL + r"([^:]*): (.+)", part)
+        # An applied entry's note only. The note on an entry that did not apply is
+        # shown as written: its row keeps its own outcome, and a non-finite DIFF,
+        # an EXCEPTION or a TIMEOUT still scores.
+        m = NO_GROUND_TRUTH_APPLIED.match(part)
         if m:
-            out.append(f"No ground truth{m.group(1)} — non-scoring: {m.group(2)}")
+            out.append(f"No ground truth{m.group(1) or ''} — non-scoring: {part[m.end() :]}")
             continue
         m = re.match(INVALID_REFERENCE_LABEL + r"([^:]*): (.+)", part)
         if m:
