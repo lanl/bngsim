@@ -480,12 +480,14 @@ class ProtocolSpec:
     generation_step: int | None = None
     lossy_before_generation: int = 0
     dropped_before_generation: int = 0
-    # Whether parse_bngl_protocol found a model the runs' network is generated from,
-    # not an actions block run on a network loaded on its own or read from a .net
-    # (issue #1687). combine_protocols reads it. It is not part of the spec's value:
-    # not compared, not written by to_dict or to_json, and False in a spec read back
-    # from them or built by hand.
-    _from_a_model: bool = field(default=False, compare=False, repr=False)
+    # Whether BNG2.pl generated the runs' network with its defaults: the parse found a
+    # model to generate it from (not an actions block run on a network loaded on its
+    # own or read from a .net, issue #1687), and an action generated it before any
+    # generate_network did (_network_generation). combine_protocols reads it, and a
+    # merged spec carries its first spec's. It is not part of the spec's value: not
+    # compared, not written by to_dict or to_json, and False in a spec read back from
+    # them or built by hand.
+    _generated_with_defaults: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _hold_plain(self)
@@ -787,14 +789,14 @@ def combine_protocols(
 
     ``network_gen`` is the first one any spec names, so a cap survives the merge.
     The exception is a first spec that :func:`parse_bngl_protocol` read from a
-    ``.bngl`` with a model, with ``None`` there and a run with a network method:
-    BNG2.pl generated the network those runs start from with its defaults, and the
-    merge keeps ``None``. A merged spec carries its first spec's account of this,
-    so merging it again keeps that ``None`` too. An actions block run on a network
-    loaded on its own, or read from a ``.net``, generated none. A spec read back
-    from JSON, or built by hand, does not carry what the parse found (it is not
-    part of the spec's value), so it merges with the first cap any spec names
-    winning, whatever its source was.
+    ``.bngl`` whose network BNG2.pl generated with its defaults, at an action that
+    generates it before any ``generate_network`` (a run with a network method, or
+    ``writeMDL``): the merge keeps its ``None``. A merged spec carries that verdict
+    from its first spec, so merging specs one at a time gives what merging them at
+    once does. An actions block run on a network loaded on its own, or read from a
+    ``.net``, generated none. A spec read back from JSON, or built by hand, does
+    not carry what the parse found (it is not part of the spec's value), so it
+    merges with the first cap any spec names winning, whatever its source was.
 
     Parameters
     ----------
@@ -826,7 +828,7 @@ def combine_protocols(
     # rest run on the network it leaves, after the reset that separates them.
     generation_step = non_empty[0].generation_step
     first = non_empty[0]
-    if first.network_gen is None and first._from_a_model and _runs_a_network(first):
+    if first._generated_with_defaults:
         # A .bngl's runs on a network BNG2.pl generated from its model with no call
         # of its own: its defaults, which a later spec's cap must not replace.
         network_gen = None
@@ -881,17 +883,7 @@ def combine_protocols(
         # The first spec's entries lead the merged lists.
         lossy_before_generation=non_empty[0].lossy_before_generation,
         dropped_before_generation=non_empty[0].dropped_before_generation,
-        _from_a_model=first._from_a_model,
-    )
-
-
-def _runs_a_network(spec: ProtocolSpec) -> bool:
-    """Whether a run of *spec* runs on a network: one with a method that is not
-    network-free (NFsim's ``nf``, RuleMonkey's ``rm``)."""
-    from bngsim._simulator import _NETWORK_FREE_METHODS
-
-    return any(
-        isinstance(s, Experiment) and s.method not in _NETWORK_FREE_METHODS for s in spec.steps
+        _generated_with_defaults=first._generated_with_defaults,
     )
 
 
@@ -1013,7 +1005,7 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
     # simulation action), but the call that builds the network is kept verbatim: it may
     # carry a finiteness cap (max_stoich / max_agg / max_iter) a re-emitted actions block
     # must honor rather than override with a bare default (lanl/PyBNF #485).
-    call = _network_generation_call(text)
+    call, with_defaults = _network_generation(text)
     network_gen = None if call is None else f"{call[0]}({call[1]})"
     return ProtocolSpec(
         steps=tuple(steps),
@@ -1024,7 +1016,7 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
         generation_step=len(steps) if generation_step is None else generation_step,
         lossy_before_generation=len(lossy) if lossy_before is None else lossy_before,
         dropped_before_generation=len(dropped) if dropped_before is None else dropped_before,
-        _from_a_model=generates and not network_read,
+        _generated_with_defaults=with_defaults and generates and not network_read,
     )
 
 
@@ -1039,7 +1031,7 @@ def _generates_a_network(verb: str, argstr: str) -> bool:
     none either. Two actions that are not runs generate it too: ``writeMDL``
     (``BNGOutput.pm``) and ``visualize`` of the ``reaction_network`` type
     (``Visualization/Viz.pm``). A run of the ``begin protocol`` block is read
-    line by line (:func:`_network_generation_call`).
+    line by line (:func:`_network_generation`).
     """
     from bngsim._simulator import _NETWORK_FREE_METHODS
 
@@ -1066,18 +1058,23 @@ _PROTOCOL_INDEX_RE = re.compile(r"^\d+\s+")
 
 
 def _protocol_block(text: str) -> list[tuple[str, str]]:
-    """The lines of the source's ``begin protocol`` block (the last, if several),
-    as ``(verb, arguments)``: ``BNGModel.pm`` reads each as ``action(options)``,
-    a leading index dropped, and ``simulate_protocol`` runs them in order."""
+    """The lines ``simulate_protocol`` runs, in order, as ``(verb, arguments)``.
+
+    ``BNGModel.pm`` reads each line of a ``begin protocol`` block as
+    ``action(options)``, a leading index dropped, into the model's protocol by
+    position, from the first again for each block and without clearing it: a
+    later block writes over an earlier one line by line, and a shorter one leaves
+    the earlier block's tail in place.
+    """
     calls: list[tuple[str, str]] = []
     inside = False
+    index = 0
     for raw in _logical_lines(text):
         line = raw.strip()
         low = line.lower()
         if low.startswith("begin "):
             inside = low.split(None, 1)[1].strip() == "protocol"
-            if inside:
-                calls = []
+            index = 0
             continue
         if low.startswith("end "):
             inside = False
@@ -1085,7 +1082,11 @@ def _protocol_block(text: str) -> list[tuple[str, str]]:
         if inside:
             m = _ACTION_RE.match(_PROTOCOL_INDEX_RE.sub("", line))
             if m:
-                calls.append((m.group(1), m.group(2)))
+                if index < len(calls):
+                    calls[index] = (m.group(1), m.group(2))
+                else:
+                    calls.append((m.group(1), m.group(2)))
+                index += 1
     return calls
 
 
@@ -1105,9 +1106,11 @@ def _protocol_line_generates(verb: str, argstr: str) -> bool:
     return "poplevel" in args or method in ("ode", "cvode", "ssa", "pla", "psa")
 
 
-def _network_generation_call(text: str) -> tuple[str, str] | None:
+def _network_generation(text: str) -> tuple[tuple[str, str] | None, bool]:
     """The ``generate_network`` call, as ``(verb, arguments)``, whose options build
-    the network the source's runs start from, or ``None`` when no call does.
+    the network the source's runs start from, or ``None`` when no call does; and
+    whether that is because an action generated the network first, with BNG2.pl's
+    defaults.
 
     That is the first ``generate_network``, unless an action that generates the
     network comes before it (:func:`_generates_a_network`): a run with a network
@@ -1136,15 +1139,21 @@ def _network_generation_call(text: str) -> tuple[str, str] | None:
                 protocol = _protocol_block(text)
             for line_verb, line_args in protocol:
                 if line_verb.lower() == "generate_network":
-                    return line_verb, line_args
+                    return (line_verb, line_args), False
                 if _protocol_line_generates(line_verb, line_args):
-                    return None
+                    return None, True
             continue
         if low == "generate_network":
-            return verb, argstr
+            return (verb, argstr), False
         if _generates_a_network(low, argstr):
-            return None
-    return None
+            return None, True
+    return None, False
+
+
+def _network_generation_call(text: str) -> tuple[str, str] | None:
+    """The call :func:`_network_generation` finds, ``None`` when none builds the
+    network."""
+    return _network_generation(text)[0]
 
 
 # The blocks of a BNGL model: a file with one of them has a model, which its
@@ -1591,11 +1600,13 @@ def _sample_grid(samples: list[float], t_start: float, t_end: float | None) -> l
 def _run_method(verb: str, args: Mapping[str, Any]) -> str:
     """The method a run in :data:`_SIMULATE_VERBS` runs with: the one its verb
     names, else its ``method``, ``ode`` when it has none."""
-    forced_method = _SIMULATE_VERBS[verb.lower()][1]
+    kind, forced_method = _SIMULATE_VERBS[verb.lower()]
     method = forced_method or str(args.get("method", "ode")).lower()
-    if "poplevel" in args and forced_method != "nf":
+    protocol_scan = kind != "simulate" and method == "protocol"
+    if "poplevel" in args and forced_method != "nf" and not protocol_scan:
         # BNG2.pl's simulate runs PSA whenever a poplevel is given, method=>"nf"
-        # included (BNGAction.pm); simulate_nf never reads one.
+        # included (BNGAction.pm); simulate_nf never reads one, and a scan with
+        # method=>"protocol" hands simulate_protocol only a prefix.
         method = "psa"
     return method
 
@@ -1619,7 +1630,8 @@ def _build_experiment(
     early (``steady_state``, ``stop_if``, ``max_sim_steps``) leaves the model
     time unknown. A scan reads ``par_scan_vals``, in their order, unless
     ``par_min``, ``par_max`` and ``n_scan_pts`` are all given; ``bifurcate`` is
-    a scan that never resets. ``poplevel`` makes any run but ``simulate_nf`` PSA.
+    a scan that never resets. ``poplevel`` makes any run PSA but ``simulate_nf``
+    and a scan with ``method=>"protocol"``, which runs the ``begin protocol`` block.
     Uneven output times and scan values are held exactly (``sample_times``,
     ``scan_values``) beside the nearest uniform grid and range (issue #1366); an
     argument the parse cannot read without the model is recorded as lossy, and

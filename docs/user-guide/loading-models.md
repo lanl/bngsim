@@ -226,10 +226,13 @@ If a run with a network method (ODE, SSA, PLA or PSA) comes before the first
 defaults, and so does `from_bngl`. `writeMDL()` and
 `visualize({type=>"reaction_network"})` generate it the same way.
 `simulate_protocol()`, and a `parameter_scan` with `method=>"protocol"`, run
-the `begin protocol` block, whose lines count the same way. A
-network-free run (`simulate_nf`, or `method=>"nf"` or `"rm"` without a
-`poplevel`) generates no network, so the `generate_network` after it still sets
-the limits. After an NF run, BNG2.pl also adds the species the run ends with to
+the `begin protocol` block. A line there whose action has `simulate` in its
+name counts by the method its own hash names, or a `poplevel`, which makes it
+PSA, and not by the action: a `simulate_ode` line names no method, which
+BNG2.pl refuses, so it generates nothing. Other lines count as they do outside
+the block. A network-free run (`simulate_nf`, or `method=>"nf"` or `"rm"`
+without a `poplevel`) generates no network, so the `generate_network` after it
+still sets the limits. After an NF run, BNG2.pl also adds the species the run ends with to
 the model before that call, unless the run sets `get_final_state=>0`; a
 `parameter_scan` adds them only with `reset_conc=>0`. The network you get is
 generated from the declared seed species, as the first run starts from them.

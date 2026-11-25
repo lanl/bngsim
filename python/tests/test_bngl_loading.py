@@ -379,6 +379,9 @@ _CAPPED = "generate_network({max_stoich=>{R=>5},overwrite=>1})"
 _PROTOCOL_SCAN = (
     'parameter_scan({method=>"protocol",parameter=>"kp",par_min=>1,par_max=>2,n_scan_pts=>2})'
 )
+_PROTOCOL_BIFURCATE = (
+    'bifurcate({method=>"protocol",parameter=>"kp",par_min=>1,par_max=>2,n_scan_pts=>2})'
+)
 
 
 @pytest.mark.parametrize(
@@ -404,6 +407,35 @@ _PROTOCOL_SCAN = (
             "simulate_protocol()",
             "generate_network({max_iter=>2,overwrite=>1})",
         ),
+        ('simulate({method=>"nf",t_end=>1,n_steps=>1})', _PROTOCOL_BIFURCATE, _CAPPED),
+        (
+            'simulate({method=>"cvode",t_end=>1,n_steps=>1})',
+            "simulate_protocol()",
+            "generate_network({overwrite=>1})",
+        ),
+        # The hash decides, not the action: a poplevel makes simulate run PSA.
+        (
+            "simulate_nf({poplevel=>100,t_end=>1,n_steps=>1})",
+            "simulate_protocol()",
+            "generate_network({overwrite=>1})",
+        ),
+        # readFile writes a later block over the protocol line by line and leaves a
+        # shorter one's tail: [nf, ode] is run, then [nf].
+        (
+            'simulate({method=>"nf",t_end=>1,n_steps=>1})\n'
+            'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+            "end protocol\nbegin protocol\n"
+            'simulate({method=>"nf",t_end=>1,n_steps=>1})',
+            "simulate_protocol()",
+            "generate_network({overwrite=>1})",
+        ),
+        (
+            'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+            "end protocol\nbegin protocol\n"
+            'simulate({method=>"nf",t_end=>1,n_steps=>1})',
+            "simulate_protocol()",
+            _CAPPED,
+        ),
     ],
     ids=[
         "nf-only",
@@ -412,6 +444,11 @@ _PROTOCOL_SCAN = (
         "an-ode-run",
         "an-ode-run-by-a-protocol-scan",
         "its-own-generate_network",
+        "nf-only-by-a-protocol-bifurcate",
+        "a-cvode-run",
+        "a-poplevel-on-simulate_nf",
+        "a-shorter-second-block-leaves-the-tail",
+        "a-second-block-overwrites-by-line",
     ],
 )
 def test_a_protocol_run_is_searched_through_the_begin_protocol_block(block, run, expected):

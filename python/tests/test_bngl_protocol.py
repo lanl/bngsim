@@ -265,6 +265,25 @@ def test_simulate_protocol_is_searched_through_the_begin_protocol_block(line, ne
     assert parse_bngl_protocol(text, strict=False).network_gen == network_gen
 
 
+@pytest.mark.parametrize("verb", ["parameter_scan", "bifurcate"])
+def test_a_poplevel_does_not_make_a_protocol_scan_psa(verb) -> None:
+    """A scan with ``method=>"protocol"`` runs the ``begin protocol`` block at each
+    point, and ``simulate_protocol`` hands its lines only a prefix (``BNGAction.pm``),
+    so a ``poplevel`` reaches no run. Read as PSA, the scan was no longer refused as
+    one the protocol cannot carry, and ran as a PSA scan."""
+    text = (
+        "begin model\nend model\n"
+        'begin protocol\nsimulate({method=>"ode",t_end=>1,n_steps=>1})\nend protocol\n'
+        f'{verb}({{method=>"protocol",poplevel=>100,parameter=>"k",par_min=>1,par_max=>2,'
+        "n_scan_pts=>2,t_end=>1})\n"
+    )
+    with pytest.raises(bngsim.ConversionError, match="begin protocol block"):
+        parse_bngl_protocol(text)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert parse_bngl_protocol(text, strict=False).steps[0].method == "protocol"
+
+
 def test_network_gen_reads_past_quit_as_the_loader_does() -> None:
     """``from_bngl`` keeps the actions after ``quit()`` and forwards the call after
     it, so ``network_gen`` names that call too."""
@@ -629,9 +648,22 @@ def test_combine_protocols_keeps_the_first_specs_network_gen_even_when_none() ->
     assert read_back == run_first
     assert combine_protocols([read_back, capped]).network_gen == "generate_network({max_agg=>5})"
     # A first spec's own cap is kept, and a merged spec carries its first spec's
-    # account, so merging it again keeps its None.
+    # verdict, so merging it again keeps its None.
     assert combine_protocols([capped, run_first]).network_gen == "generate_network({max_agg=>5})"
     assert combine_protocols([combine_protocols([run_first, capped]), capped]).network_gen is None
+    # The verdict is the first spec's, not one read again from the merged steps, so
+    # merging one spec at a time gives what merging them at once does.
+    ode_nogen = parse_bngl_protocol(head + run)
+    specs = [nf_only, ode_nogen, capped]
+    at_once = combine_protocols(specs).network_gen
+    one_at_a_time = specs[0]
+    for spec in specs[1:]:
+        one_at_a_time = combine_protocols([one_at_a_time, spec])
+    assert at_once == one_at_a_time.network_gen == "generate_network({max_agg=>5})"
+    # writeMDL generates the network with BNG2.pl's defaults where there is none,
+    # though the spec's only run is network-free.
+    mdl_first = parse_bngl_protocol(head + "writeMDL()\nsimulate_nf({t_end=>1,n_steps=>1})\n")
+    assert combine_protocols([mdl_first, capped]).network_gen is None
 
 
 def test_combine_protocols_concatenates_dropped_and_lossy() -> None:
