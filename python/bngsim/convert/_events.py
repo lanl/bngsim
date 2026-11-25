@@ -289,6 +289,11 @@ def _trigger_fire_time(
             "comparison) — no single scheduled fire time"
         )
     if thr is None:
+        # Reading nothing that moves, it is a constant this module cannot fold
+        # (`abs(-1)`): nan, for the caller to read from the run.
+        side = right if t in rising_left else left
+        if not _reads_clock(side):
+            return math.nan, ""
         return None, "has a non-constant trigger time (cannot be scheduled)"
     return float(thr), ""
 
@@ -534,7 +539,14 @@ def _species_note(
         reach = _instant_reach(hi, span)
         batch = [g for a, b, g in members if a <= hi + reach and b >= lo - reach]
         return _order_note(t, var, last, batch)
-    f, val = last[0]
+
+    # Name what keeps them from being one instant: a writer that is strict,
+    # read as the translation folds it, delayed, or due at another time, beside
+    # one that sets a different value.
+    def apart(g: _Fire) -> bool:
+        return g.past or g.approx or g.triggered is not None or landing[g.order] != (t, t)
+
+    f, val = next(((g, v) for g, v in last if apart(g)), last[0])
     other = next(g for g, v in last if v != val)
     when = f"t = {f.time!r}" if f.time == other.time else f"t = {f.time!r} and t = {other.time!r}"
     return (
@@ -635,6 +647,30 @@ def _run_param(model: Model, sid: str) -> float | None:
         if math.isfinite(value):
             return value
     return None
+
+
+def _function_definitions(sbml_model) -> dict[str, tuple[list[str], Any]]:
+    """The document's functionDefinitions, as the loader inlines them."""
+    out: dict[str, tuple[list[str], Any]] = {}
+    for i in range(sbml_model.getNumFunctionDefinitions()):
+        fd = sbml_model.getFunctionDefinition(i)
+        lam = fd.getMath()
+        if lam is None:
+            continue
+        nargs = lam.getNumChildren() - 1
+        out[fd.getId()] = ([lam.getChild(j).getName() for j in range(nargs)], lam.getChild(nargs))
+    return out
+
+
+def _run_text(node, func_defs: dict[str, tuple[list[str], Any]]) -> str | None:
+    """``node`` spelled for the run's evaluator, as the loader spells it, or
+    None where it cannot be."""
+    from bngsim._sbml_loader import _ast_to_exprtk_with_funcdefs
+
+    try:
+        return _ast_to_exprtk_with_funcdefs(node, func_defs)
+    except Exception:
+        return None
 
 
 def _threshold_text(trigger: str) -> str | None:
@@ -755,6 +791,7 @@ def sbml_events_to_protocol(
     species_ids = {sbml_model.getSpecies(i).getId() for i in range(sbml_model.getNumSpecies())}
     name_to_idx = _codegen_species_names(model)
     core = model._core
+    func_defs = _function_definitions(sbml_model)
     # The loader names an event its id, or `_event_<i>` where it has none.
     run_events = {e["id"]: e for e in core.events_as_written()}
 
@@ -778,6 +815,9 @@ def sbml_events_to_protocol(
         approx = held is None
         if held is not None:
             threshold = held
+        elif math.isnan(threshold):
+            lossy.append(f"event {eid!r} has a trigger time the run's evaluator cannot read")
+            continue
         # `time > T` (or `T < time`) is true only past T, not at it.
         strict = trig is not None and trig.getType() in (
             libsbml.AST_RELATIONAL_GT,
@@ -867,20 +907,30 @@ def sbml_events_to_protocol(
         assigns: list[tuple[int, float, str]] = []
         ok = True
         value_env = {**env, **own[i]} if i in own else env
-        # Each value that reads constants alone as the run rounds it, from the
-        # loader's assignment to the species (its first: a resize adds others
-        # after it). Only where that is the same number in its last places: the
-        # loader's text can be in the run's storage, an amount over its
-        # compartment's size. One that reads the event's own target is read
-        # here: the run's evaluator reads a species as it stands, not at its
-        # start.
-        run_sets: dict[int, str] = {}
-        for sp_idx, text in run_ev["assignments"] if run_ev is not None else ():
-            run_sets.setdefault(int(sp_idx), str(text))
         for j in range(ev.getNumEventAssignments()):
             ea = ev.getEventAssignment(j)
             var = ea.getVariable()
-            val = _eval_const(ea.getMath(), value_env) if ea.isSetMath() else None
+            vmath = ea.getMath() if ea.isSetMath() else None
+            # A value that reads constants alone is the run's double: its own
+            # math, in the model's units, through the run's evaluator. One that
+            # reads the event's own target is folded here at the target's start
+            # value, as the run's evaluator reads a species as it stands.
+            val = None
+            if vmath is not None and not _reads_clock(vmath):
+                if _dynamic_names(vmath, env):
+                    val = _eval_const(vmath, value_env)
+                else:
+                    text = _run_text(vmath, func_defs)
+                    val = _run_value(core, text, fire_t) if text else None
+                    if val is None:
+                        val = _eval_const(vmath, env)
+            if val is not None and not math.isfinite(val):
+                lossy.append(
+                    f"event {eid!r} assigns {var!r} a value that is not a finite number, "
+                    "which the actions cannot set"
+                )
+                ok = False
+                break
             if val is None:
                 note = _unfolded_note(
                     eid, f"assigns {var!r} a value", ea.getMath(), value_env, unfolded, species_ids
@@ -900,14 +950,6 @@ def sbml_events_to_protocol(
                 )
                 ok = False
                 break
-            reads_own = bool(_dynamic_names(ea.getMath(), env))
-            held = (
-                _run_value(core, run_sets[idx], fire_t)
-                if idx in run_sets and not reads_own
-                else None
-            )
-            if held is not None and abs(held - val) <= 64 * sys.float_info.epsilon * abs(val):
-                val = held
             assigns.append((idx, val, var))
         if ok:
             fires.append(

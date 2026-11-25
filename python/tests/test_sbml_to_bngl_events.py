@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 from bngsim._exceptions import ConversionError
 from bngsim.convert import StateChange, sbml_to_bngl
-from bngsim.convert._events import sbml_events_to_protocol
+from bngsim.convert._events import _instant_reach, sbml_events_to_protocol
 
 pytestmark = pytest.mark.skipif(not bngsim.HAS_LIBSBML, reason="SBML conversion requires libsbml")
 
@@ -475,7 +475,7 @@ def test_a_name_folds_to_the_value_the_run_gives_it(tmp_path, events, body, want
                 )
             ],
             {},
-            "'E1' assigns 'A' a non-constant value",
+            "'E1' assigns 'A' a value that is not a finite number",
             id="a value that is 0 to a negative power",
         ),
         pytest.param(
@@ -1253,3 +1253,79 @@ def test_a_value_is_the_models_not_the_runs_storage(tmp_path):
     assert lossy == []
     sets = [s for s in protocol.steps if isinstance(s, StateChange)]
     assert [(s.target, s.value) for s in sets] == [("A", 5.0), ("B", 7.0)]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(
+            _times(f"<apply><minus/>{_H_3_7}{_cn(2.1)}</apply>", _cn("1e16")),
+            id="(h*3*7 - 2.1)*1e16",
+        ),
+        pytest.param(
+            f"<apply><minus/>{_times(_cn('1e16'), _H_3_7)}{_cn('2.1e16')}</apply>",
+            id="1e16*(h*3*7) - 2.1e16",
+        ),
+    ],
+)
+def test_a_value_that_cancels_is_the_runs(tmp_path, value):
+    """Folded left to right here, h*3*7 - 2.1 is 4.4e-16, scaled to 4.4 or 4.0;
+    the run reads h*21 - 2.1 = 0, and sets A to 0."""
+    xml = _sbml(_event("E1", _at(_cn(1)), {"A": value}), parameters=_param("h", 0.1))
+    rep = _convert(tmp_path, xml)
+    assert rep.ok, rep.lossy
+    assert _schedule(rep) == [(1.0, "A", 0.0)]
+    _assert_runs_as_the_model(xml, rep)
+
+
+def test_a_writer_surely_after_the_rest_sets_the_value(tmp_path):
+    """E2 is due one and a half reaches after E1, past anything the strict EB
+    can land on: it surely executes last, so A is 10 after it."""
+    late = 1.0 + 1.5 * _instant_reach(1.0, 3.0)
+    xml = _sbml(
+        _a("E1", _at(_cn(1)), 5),
+        _event("EB", _gt(_cn(1)), {"B": _cn(7)}),
+        _a("E2", _at(_cn(repr(late))), 10),
+    )
+    rep = _convert(tmp_path, xml)
+    assert rep.ok, rep.lossy
+    assert _schedule(rep) == [(1.0, "A", 5.0), (1.0, "B", 7.0), (late, "A", 10.0)]
+    _assert_runs_as_the_model(xml, rep)
+
+
+def test_the_note_names_the_writer_that_keeps_the_rest_from_one_instant(tmp_path):
+    """E1 and E2 are on one double, ordered by priority; the strict E3 is
+    what the translation cannot place."""
+    xml = _sbml(
+        _a("E1", _at(_cn(1)), 5, priority=_cn(1)),
+        _a("E2", _at(_cn(1)), 10, priority=_cn(2)),
+        _a("E3", _gt(_cn(1)), 5),
+    )
+    with pytest.raises(ConversionError, match="events 'E3' and 'E2' set 'A' to different values"):
+        _convert(tmp_path, xml)
+
+
+_ABS = "<apply><abs/>{}</apply>"
+
+
+@pytest.mark.parametrize(
+    ("events", "want"),
+    [
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _ABS.format(_cn(-5))})],
+            [(1.0, "A", 5.0)],
+            id="a value of abs(-5)",
+        ),
+        pytest.param(
+            [_a("E1", _at(_ABS.format(_cn(-1))), 5)],
+            [(1.0, "A", 5.0)],
+            id="a trigger time of abs(-1)",
+        ),
+    ],
+)
+def test_a_constant_not_folded_here_is_read_from_the_run(tmp_path, events, want):
+    xml = _sbml(*events)
+    rep = _convert(tmp_path, xml)
+    assert rep.ok, rep.lossy
+    assert _schedule(rep) == want
+    _assert_runs_as_the_model(xml, rep)

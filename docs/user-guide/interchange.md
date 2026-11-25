@@ -113,16 +113,17 @@ its rounding and its other stops fall: it merges two stops on the clock a few
 doubles apart into the later one, reads a strict trigger such as `time > 1` a
 little past its threshold, reads any trigger a little late just after it
 stops or executes an event, and counts a delay from where it read the
-trigger. So events are one instant for certain only where each lands on one
-double. Where events due within 256·ε·max(|t|, 1) of each other, or
-100·ε·(|t| + the run's length) where that is more (ε the double precision),
-set a species to different values, and any of them has a strict trigger, a
-trigger that close after another stop of the run, an output time or another
-event, or a due time apart from the others, the conversion is refused too.
-The times compared are BNGsim's own: a threshold, delay or priority as its
-evaluator reads it, which can differ from the SBML's arithmetic in the last
-places. A delay that is negative or not finite is refused, as BNGsim refuses
-it.
+trigger. So the conversion looks at each species' events that land within
+256·ε·max(|t|, 1) of each other, or 100·ε·(|t| + the run's length) where that
+is more (ε the double precision). One that lands later than another by more
+than that sets the species after it. Those that may set it last are ordered
+as above where they are one instant for certain: all landing on one double,
+or all triggered together on one by triggers that aren't strict, with none
+delayed. Where they aren't, and set the species to different values, the
+conversion is refused.
+The times and values compared are BNGsim's own: as its evaluator reads them,
+which can differ from the SBML's arithmetic in the last places. A delay that
+is negative or not finite is refused, as BNGsim refuses it.
 
 A species set by an assignment rule is handled as in `.net`. Its molecule is
 named after the rule, `@comp1:$__ar_B()`, next to the function `B()`. BNGsim
