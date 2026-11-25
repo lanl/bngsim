@@ -76,8 +76,8 @@ import, so `export` it before starting Python.
 One cache can serve two architectures: a native and a Rosetta Python on an
 Apple Silicon Mac, or x86-64 and aarch64 nodes sharing a home directory. Each
 builds and loads only its own libraries. On macOS every compile asks for the
-Python's own architecture (`-arch arm64` or `-arch x86_64`; the
-`BNGSIM_SSA_PROP_CC=1` ablation does not), because Apple's
+Python's own architecture (`-arch arm64` or `-arch x86_64`, the
+`BNGSIM_SSA_PROP_CC=1` ablation's included), because Apple's
 `cc` otherwise builds for the hardware it runs on: an x86_64 Python under
 Rosetta got arm64 libraries it could not load.
 
@@ -247,7 +247,7 @@ refused before its source is generated, and strict mode raises for those too.
 | --- | --- | --- |
 | `BNGSIM_CODEGEN_THRESHOLD` | `256` | Species count at which `codegen=None` compiles a model. |
 | `BNGSIM_NO_CODEGEN` | unset | Set it, and `codegen=None` never compiles a model. |
-| `BNGSIM_CODEGEN_CACHE_DIR` | `~/.cache/bngsim/codegen` | The cache directory. Read once at import. |
+| `BNGSIM_CODEGEN_CACHE_DIR` | `~/.cache/bngsim/codegen` | The cache directory. Python reads it once at import; the `BNGSIM_SSA_PROP_CC=1` ablation reads it at each compile. |
 | `BNGSIM_CODEGEN_STRICT` | off | `1` makes a failed automatic build raise instead of falling back. Empty, `0`, `false`, `no` and `off` are off. A decline still falls back. |
 | `BNGSIM_CODEGEN_TIMEOUT` | `600` | Seconds before the compiler is killed. A timeout raises a `RuntimeError` naming this variable. `0` means no limit. |
 | `BNGSIM_CODEGEN_OPT` | by size | Optimization level: `0` to `3`, or `high`, `low`, `none`. Sources over about 1 MB default to `low` (`-O1`), and unchunked sources over about 8 MB to `none` (`-O0`). Overrides the chunking level below. |

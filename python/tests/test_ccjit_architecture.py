@@ -382,10 +382,45 @@ def test_the_cache_command_reads_its_directory_as_the_variable_is(tmp_path, monk
     from bngsim.cache import codegen_cache_dir
 
     monkeypatch.chdir(tmp_path)
-    got = codegen_cache_dir("~nosuchuser-bngsim/x")
-    assert (
-        got == tmp_path.resolve() / "~nosuchuser-bngsim" / "x"
-        or got == tmp_path / "~nosuchuser-bngsim" / "x"
-    )
+    assert codegen_cache_dir("~nosuchuser-bngsim/x") == Path.cwd() / "~nosuchuser-bngsim" / "x"
     monkeypatch.setenv("HOME", str(tmp_path))
     assert codegen_cache_dir("~/x") == tmp_path / "x"
+
+
+def test_the_cache_command_keeps_a_leading_dot_slash(tmp_path, monkeypatch):
+    """``-C`` was parsed as a Path, which dropped the ``./`` and read ``./~`` as
+    the home, so ``clear`` emptied the home's cache (review of #1927)."""
+    from bngsim.cache import _build_parser, codegen_cache_dir
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    args = _build_parser().parse_args(["-C", "./~/x", "info"])
+    assert codegen_cache_dir(args.cache_dir) == Path.cwd() / "~" / "x"
+
+
+@on_posix
+def test_dot_dot_after_a_symlink_is_left_for_the_system(tmp_path):
+    """``os.path.abspath`` collapsed ``link/..`` by text, so Python's cache and
+    CcJit's (and main's) named two directories (review of #1927)."""
+    (tmp_path / "deep" / "a").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(tmp_path / "deep" / "a")
+    got = _python_cache_dir(
+        {"HOME": str(tmp_path), "BNGSIM_CODEGEN_CACHE_DIR": f"{tmp_path}/link/../c"}
+    )
+    assert Path(got).resolve() == (tmp_path / "deep" / "c").resolve()
+
+
+@on_posix
+@requires_cc
+def test_an_empty_path_entry_is_the_working_directory(cc_run, tmp_path, monkeypatch):
+    run, cache, _ = cc_run
+    here = tmp_path / "here"
+    here.mkdir()
+    wrapper = here / "my cc"
+    wrapper.write_text(f'#!/bin/sh\nexec "{shutil.which("cc")}" "$@"\n')
+    wrapper.chmod(0o755)
+    monkeypatch.chdir(here)
+    monkeypatch.setenv("PATH", f"{os.environ['PATH']}{os.pathsep}")
+    monkeypatch.setenv("CC", "my cc")
+    assert run().ssa_diagnostics["propensity_backend"] == "cc"
+    assert len(_libraries(cache)) == 1

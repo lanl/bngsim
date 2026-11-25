@@ -70,10 +70,11 @@ class CcJit {
     /// this process's machine (issue #1927), as the Python codegen does since
     /// #1759; a CC naming another -arch then builds a universal library.
     static std::string compile_command(const std::string &cpath, const std::string &sotmp) {
-        // A CC of only whitespace is unset, as the Python codegen reads it.
+        // A CC of only whitespace is unset, as the Python codegen reads it; any
+        // other is taken as written, blanks and all, as Python takes it.
         const char *cc_env = std::getenv("CC");
-        std::string cmd = trim(cc_env ? cc_env : "");
-        if (cmd.empty())
+        std::string cmd = cc_env ? cc_env : "";
+        if (trim(cmd).empty())
             cmd = "cc";
         // A CC that is itself a compiler, found as one word, with a character
         // the shell would read in it (a blank, a quote, a backslash) is quoted
@@ -100,7 +101,9 @@ class CcJit {
         while (start <= dirs.size()) {
             const size_t end = std::min(dirs.find(':', start), dirs.size());
             const std::string dir = dirs.substr(start, end - start);
-            if (!dir.empty() && access((dir + "/" + name).c_str(), X_OK) == 0)
+            // An empty entry is the working directory, to the shell and to
+            // shutil.which alike.
+            if (access(((dir.empty() ? std::string(".") : dir) + "/" + name).c_str(), X_OK) == 0)
                 return true;
             start = end + 1;
         }

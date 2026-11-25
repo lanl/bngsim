@@ -93,16 +93,17 @@ def _expand_cache_dir(value: str) -> Path:
     :func:`os.path.expanduser` does, which leaves a user it cannot find as
     written: ``Path.expanduser()`` raised, and ``import bngsim`` failed with it.
     The result is made absolute, so no path handed to the compiler starts with
-    ``-``, except when the working directory is gone, where it stays as written
-    (issue #1927).
+    ``-``, except when the working directory is gone, where it stays as written.
+    ``..`` is left for the system to resolve, through any symlink before it, as
+    the compiler and ``CcJit`` resolve it (issue #1927).
     """
     if value == "~" or value.startswith(("~/", "~" + os.sep)):
         value = str(_home_dir()) + value[1:]
-    value = os.path.expanduser(value)
+    path = Path(os.path.expanduser(value))
     try:
-        return Path(os.path.abspath(value))
+        return path.absolute()
     except OSError:  # the working directory was removed
-        return Path(value)
+        return path
 
 
 def _default_cache_dir() -> Path:
