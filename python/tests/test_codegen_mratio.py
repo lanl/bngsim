@@ -382,7 +382,7 @@ def test_with_alpha_past_1_a_subnormal_b_is_refused_on_both_engines(tmp_path, co
     with contextlib.redirect_stderr(io.StringIO()):
         model = bngsim.Model.from_net(str(p))
         sim = bngsim.Simulator(model, method="ode", codegen=codegen)
-        with pytest.raises(bngsim.SimulationError, match=r"not reliable.*both below 2.2e-308"):
+        with pytest.raises(bngsim.SimulationError, match=r"not reliable.*both subnormal"):
             sim.run(t_span=(0.0, 1.0), n_points=3)
     assert sim.codegen_backend in (("cc", "mir") if codegen else ("exprtk",))
 

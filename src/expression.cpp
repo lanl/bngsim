@@ -365,7 +365,7 @@ static bool mratio_asymptotic(double a, double b, double z, double *out) {
         // An a so small that the second term, a*(a-b+1)/(-z), underflows to
         // zero is the same sum to the last bit, since every later term carries
         // a as well (issue #1793), and the zero-term rule would refuse it for
-        // the same reason: mratio(5e-324, 0.5, -701) was refused, where a = 0
+        // the same reason: mratio(-5e-324, 0.5, -701) was refused, where a = 0
         // gives 7.137766037665143e-4 and the ratio is 7.137766037665144e-4.
         // An a - b + 1 of exactly zero is a series that does end there, and is
         // left to the rule.
@@ -867,6 +867,20 @@ static bool mratio_series(double a, double b, double z, double *out) {
     return false;
 }
 
+// An argument as a refusal names it: the fewest digits that read back as the
+// same double. std::to_string printed every one below 5e-7 as 0.000000, so a
+// refusal for a subnormal b read "b=0.000000" beside a clause about b > 0.
+static std::string mratio_arg(double v) {
+    char buf[32];
+    for (int digits = 1; digits <= 17; ++digits) {
+        c_snprintf(buf, sizeof(buf), "%.*g", digits, v);
+        if (c_strtod(buf, nullptr) == v) {
+            break;
+        }
+    }
+    return buf;
+}
+
 double expr_compat::mratio(double a, double b, double z) {
     if (a == 0.0 && b > 0.0 && z > 0.0) {
         const double summed = mratio_a_zero_series(b, z);
@@ -887,12 +901,13 @@ double expr_compat::mratio(double a, double b, double z) {
             "mratio(a, b, z): the continued fraction this uses is not reliable for these "
             "arguments and would return a wrong value without saying so, and the asymptotic "
             "expansion that covers part of the rest cannot vouch for an answer here either (a=" +
-            std::to_string(a) + ", b=" + std::to_string(b) + ", z=" + std::to_string(z) +
+            mratio_arg(a) + ", b=" + mratio_arg(b) + ", z=" + mratio_arg(z) +
             "). The fraction is reliable for b > 0, and then when a is a negative integer, "
             "when a <= 0 and z <= 0, when |z| <= 20, or when b*b >= 64*|z*a| and z is either "
             "negative or no more than half of b; but, a negative integer a aside, not past "
-            "z = -20 with b < 1 and 0 < b - a < 1, nor where b and |alpha*z| are both below "
-            "2.2e-308 and nonzero, with alpha = a for z > 0 and b - a for z < 0. BNG builds "
+            "z = -20 with b < 1 and 0 < b - a < 1, nor where b and |alpha*z| are both subnormal "
+            "(below 2.2250738585072014e-308) and nonzero, with alpha = a for z > 0 and b - a for "
+            "z < 0. BNG builds "
             "a = -min(AT,BT), b = |AT-BT|+1 and z = -1/Keq, which is inside that region, so a "
             "model reaching this is using mratio in its own way.");
     }
@@ -933,8 +948,8 @@ double expr_compat::mratio(double a, double b, double z) {
                                      std::to_string(max_iter) +
                                      " iterations "
                                      "(a=" +
-                                     std::to_string(a) + ", b=" + std::to_string(b) +
-                                     ", z=" + std::to_string(z) + ")");
+                                     mratio_arg(a) + ", b=" + mratio_arg(b) +
+                                     ", z=" + mratio_arg(z) + ")");
         }
 
         double p;

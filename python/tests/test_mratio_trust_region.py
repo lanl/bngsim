@@ -555,12 +555,13 @@ def test_past_z_minus_20_with_a_positive_a_what_was_right_still_answers(
 
 
 def test_past_z_minus_700_an_a_whose_second_term_underflows_is_summed_as_a_zero(tmp_path):
-    """mratio(5e-324, 0.5, -701) is 7.137766037665144e-4. Past z = -700 the
-    corner has only the asymptotic route, and in its denominator the second
+    """mratio(-5e-324, 0.5, -701) is 7.137766037665144e-4. Past z = -700 a
+    negative a has only the asymptotic route, and in its denominator the second
     term, a*(a-b+1)/(-z), underflows to zero. Its zero-term rule read that as a
-    series that never decayed and refused, here and for the same a below zero.
-    Every later term carries a as well, so the sum is 1 to the last bit, what
-    a = 0 gives, and it is taken as that now."""
+    series that never decayed and refused. main sent the positive a to the
+    fraction instead, which this corner no longer trusts there. Every later term
+    carries a as well, so the sum is 1 to the last bit, what a = 0 gives, and it
+    is taken as that now, for either sign."""
     for a in (5e-324, -5e-324, 0.0):
         assert _value(tmp_path, a, 0.5, -701.0) == pytest.approx(
             0.0007137766037665144, rel=1e-15, abs=0.0
@@ -628,9 +629,13 @@ def test_with_alpha_past_1_the_fraction_is_still_refused_there(tmp_path):
     """|alpha| >= 1 is outside the box, so the series does not take these, and
     with b and alpha*|z| both subnormal the fraction is not trusted: main
     returned 0.10982658959537571 here, where the ratio is 0.11014296455173382,
-    and was more than 1e-8 off at 112 of 615 such triples."""
-    with pytest.raises(Exception, match=r"not reliable.*both below 2.2e-308"):
+    and was more than 1e-8 off at about one in five such triples. The refusal
+    names the arguments at the digits that read back as them; it used to print
+    b and z as 0.000000."""
+    with pytest.raises(Exception, match=r"not reliable.*both subnormal") as excinfo:
         _value(tmp_path, 4.3858021234563624, 9.4e-323, 1.73e-322)
+    assert "(a=4.3858021234563624, b=9.4e-323, z=1.73e-322)" in str(excinfo.value)
+    assert "below 2.2250738585072014e-308" in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
