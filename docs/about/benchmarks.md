@@ -4,8 +4,12 @@ summary: "Where correctness and efficiency results are, how BNGsim is checked ag
 
 # Benchmarks & validation
 
-Correctness and efficiency results will be in
-[bngsim-benchmarks](https://github.com/lanl/bngsim-benchmarks).
+[bngsim-benchmarks](https://github.com/lanl/bngsim-benchmarks) publishes
+[correctness and timing results](https://github.com/lanl/bngsim-benchmarks/tree/main/published)
+for test suites of 10 published models, one for each BNGsim feature and input
+format, and for sweeps over large model collections (BNGsim vs libRoadRunner,
+BNGsim vs AMICI with sensitivities, and RuleMonkey vs NFsim). Each result names
+the BNGsim version it was measured on.
 
 ## How BNGsim is checked
 
