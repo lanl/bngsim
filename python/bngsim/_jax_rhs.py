@@ -37,6 +37,7 @@ from bngsim._codegen import (
     _BUILTIN_CONSTANT_VALUES,
     _RATEOF_PREFIX,
     CodegenDeclined,
+    _bracketed_if_call,
     _find_close_paren_strict,
     _net_multiplicity,
     _normalize_exprtk_operators,
@@ -309,10 +310,26 @@ def _jax_rint(x: Any) -> Any:
     return jnp.floor(x + 0.5)
 
 
+def _jax_where_chain(*links: Any) -> Any:
+    """``jnp.where(c1, v1, jnp.where(c2, v2, ... f))`` of ``(c1, v1, c2, v2, ...,
+    f)``: an ``if()`` chain (:func:`_flatten_if_chains`), built inside out as the
+    nested text would be."""
+    import jax.numpy as jnp
+
+    value = links[-1]
+    for i in range(len(links) - 3, -1, -2):
+        value = jnp.where(links[i], links[i + 1], value)
+    return value
+
+
+#: The name :func:`_flatten_if_chains` writes a chain as.
+_WHERE_CHAIN = "__bngsim_where_chain__"
+
 _JAX_HELPERS: dict[str, Any] = {
     "__bngsim_round__": _jax_round,
     "__bngsim_rint__": _jax_rint,
     "__bngsim_inv_hill_power__": _jax_inv_hill_power,
+    _WHERE_CHAIN: _jax_where_chain,
 }
 
 # What the generated RHS binds around the eval (see generate_jax_rhs), plus the
@@ -540,6 +557,47 @@ def _regroup_operand(expr: str) -> str:
     return folded
 
 
+_IF_CALL_RE = re.compile(r"(?<![\w.])if\s*\(")
+
+
+def _flatten_if_chains(expr: str) -> str:
+    """``expr`` with each ``if()`` chain of two links or more, each link all of
+    the false branch of the one before (in brackets of its own or not), written
+    as one call, ``__bngsim_where_chain__(c1, v1, c2, v2, ..., f)``
+    (:func:`_jax_where_chain`). Any other text is left as it was.
+
+    A table of values over time is such a chain, one link a day (issue #1814).
+    Written as nested ``jnp.where`` calls, each link was one parenthesis deeper,
+    and Python's compiler refuses 200: the 340 links of the Mallela 2024
+    ``phoenix`` model's ``v_rate()`` raised "too many nested parentheses".
+    """
+    out: list[str] = []
+    cursor = 0
+    while True:
+        m = _IF_CALL_RE.search(expr, cursor)
+        if m is None:
+            out.append(expr[cursor:])
+            return "".join(out)
+        out.append(expr[cursor : m.start()])
+        close = _find_close_paren_strict(expr, m.end() - 1)
+        args = _split_top_level_commas(expr[m.end() : close]) if close >= 0 else []
+        if len(args) != 3 or _bracketed_if_call(args[2].strip()) is None:
+            # Not the head of a chain: as written, and read on inside it.
+            out.append(expr[m.start() : m.end()])
+            cursor = m.end()
+            continue
+        links: list[str] = []
+        while True:
+            cond, value, rest = (arg.strip() for arg in args)
+            links += [_flatten_if_chains(cond), _flatten_if_chains(value)]
+            link = _bracketed_if_call(rest)
+            if link is None:
+                break
+            args = link[1]
+        out.append(f"{_WHERE_CHAIN}({', '.join(links)}, {_flatten_if_chains(rest)})")
+        cursor = close + 1
+
+
 def _translate_expr_jax(
     expr: str,
     param_names: dict[str, int],
@@ -555,7 +613,8 @@ def _translate_expr_jax(
       - function names -> func_<name> (local variable)
       - a scalar written as a zero-arg call (`Atot()`) -> the scalar (issue #28)
       - time() -> t
-      - if(cond,a,b) -> jnp.where(cond,a,b)
+      - if(cond,a,b) -> jnp.where(cond,a,b), and a chain of them through their
+        false branches -> one __bngsim_where_chain__(c1,a1,c2,a2,...,b)
       - ln() -> jnp.log()
       - common math -> jnp.<func>()
       - && -> & (JAX boolean), || -> | (JAX boolean)
@@ -564,6 +623,10 @@ def _translate_expr_jax(
     # the C translators and the sympy parsers (issue #734).
     c = _normalize_exprtk_operators(expr)
     c = _jax_numeric_literals_as_floats(c)
+
+    # A chain of if()s as one call, not one call inside the next (issue #1814).
+    # Before the grouping pass, which takes a Python frame per bracket.
+    c = _flatten_if_chains(c)
 
     # Bracket the source's grouping before the operators become Python ones,
     # whose precedence differs (GH #579).
@@ -703,9 +766,10 @@ class _BooleansAsDoubles:
     ExprTk computes ``A > B`` as a double. JAX computes a boolean, and adds two
     booleans as a logical or and will not negate one, so ``((A>0)+(B>0))`` was 1
     where the engine has 2, and ``-(A>B)`` raised. A boolean that is a condition
-    (``jnp.where``'s first argument), an argument of a ``jnp.logical_*`` call, or
-    an operand of a comparison reads as the double would and is left alone; so is
-    the text of an expression that has no other, which is nearly all of them.
+    (``jnp.where``'s first argument, or a chain's, :func:`_jax_where_chain`), an
+    argument of a ``jnp.logical_*`` call, or an operand of a comparison reads as
+    the double would and is left alone; so is the text of an expression that has
+    no other, which is nearly all of them.
     Everywhere else, the whole expression included (a function's value is read by
     the functions after it), it is written ``jnp.where(..., 1.0, 0.0)``.
     """
@@ -723,6 +787,11 @@ class _BooleansAsDoubles:
                 node.args = [self.visit(a, truth=True) for a in node.args]
             elif name == "where" and node.args:
                 node.args = [self.visit(a, truth=(i == 0)) for i, a in enumerate(node.args)]
+            elif isinstance(node.func, ast.Name) and node.func.id == _WHERE_CHAIN:
+                last = len(node.args) - 1
+                node.args = [
+                    self.visit(a, truth=(i % 2 == 0 and i < last)) for i, a in enumerate(node.args)
+                ]
             else:
                 node.args = [self.visit(a) for a in node.args]
         elif isinstance(node, ast.BinOp):

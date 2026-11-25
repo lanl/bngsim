@@ -3765,8 +3765,8 @@ class Simulator:
             # differentiability issue. Refuse loudly rather than silently fall to
             # the finite-difference sensitivity path (GH #214).
             raise BngsimError(
-                "Failed to build the analytical sensitivity RHS required for "
-                f"forward sensitivity ({type(e).__name__}: {e}). This needs a "
+                "Failed to build the compiled right-hand side forward sensitivity "
+                f"requires ({type(e).__name__}: {e}). This needs a "
                 "codegen backend: a C compiler, or BNGSIM_CODEGEN_JIT=mir for the "
                 "in-process MIR JIT."
             ) from e
@@ -3804,9 +3804,12 @@ class Simulator:
                 # Same envelope as the try/except above — a build that failed,
                 # whatever swallowed the exception on the way out. A toolchain
                 # that builds nothing keeps its type (issue #1544).
+                # The build compiles the model's right-hand side, and its
+                # analytical sensitivity RHS where the rate laws differentiate;
+                # where they did not, the right-hand side alone failed.
                 message = (
-                    "Failed to build the analytical sensitivity RHS required for "
-                    f"forward sensitivity ({type(cause).__name__}: {cause}). This "
+                    "Failed to build the compiled right-hand side forward "
+                    f"sensitivity requires ({type(cause).__name__}: {cause}). This "
                     "is a BUILD failure, not a statement about the model's "
                     "differentiability."
                 )
