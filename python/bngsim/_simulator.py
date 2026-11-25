@@ -878,7 +878,7 @@ class Simulator:
           Recognized but unavailable in this build.
 
         ``xml_path`` is a ``str`` or a :class:`os.PathLike` such as the
-        :class:`pathlib.Path` :func:`bngsim.examples.path` returns.
+        :class:`pathlib.Path` ``bngsim.examples.path()`` returns.
 
         **Legacy aliases** (accepted for compatibility):
 
