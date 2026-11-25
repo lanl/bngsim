@@ -41,6 +41,11 @@ What to watch out for:
   On macOS and Linux `CC` is a command line, split as the shell splits it, so it
   can carry arguments (`CC="ccache cc"`): quote a path with a space in it,
   unless `CC` is that path and nothing else. On Windows it is one path.
+- **clang stops at brackets nested more than 256 deep, and BNGsim raises that
+  limit (`-fbracket-depth`) for a source that needs it,** such as a long
+  `if()` chain written through its true branches. A chain through the false
+  branches, the usual way to write a table of values, is written flat. GCC has
+  no such limit, and every other build's command is unchanged.
 - **On a cluster, compute nodes often have no compiler on `PATH`,** even when
   the login node does. Load one in the batch job (`module load gcc`), or turn
   codegen off with `BNGSIM_NO_CODEGEN=1`.

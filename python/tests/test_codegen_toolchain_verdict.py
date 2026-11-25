@@ -208,7 +208,9 @@ def test_a_sensitivity_run_raises_the_toolchain_error(clean, monkeypatch):
     error by type, the first time and on the verdict alone."""
     cc = FakeCC(clean, monkeypatch, "broken")
     for n in (5, 6):
-        with pytest.raises(bngsim.CodegenToolchainError, match="analytical sensitivity RHS"):
+        with pytest.raises(
+            bngsim.CodegenToolchainError, match="compiled right-hand side forward sensitivity"
+        ):
             bngsim.Simulator(_chain(n), method="ode", sensitivity_params=["k0"])
     assert cc.calls() == ["model", "probe"]
 
