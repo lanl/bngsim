@@ -152,6 +152,39 @@ the starting state that is not `$`-fixed, but no finer than double precision
 allows beside the largest. If every such species starts at 0, a `$`-fixed
 species sets it.
 
+The run test's run is integrated at the march's `atol`, but no species is held
+coarser than `run()` would hold it from the solve's start, given the same
+scalar (see [the solver guide](solvers.md)): `rtol` times its starting value,
+or, for a species that starts below a floor, `rtol` times the floor.
+
+- **The floor** is the smallest value above 0 that a species not `$`-fixed
+  starts at, or a millionth of the largest such value, whichever is larger.
+- **A species not `$`-fixed that starts below the floor** keeps its own value
+  where `rtol` times it is more than machine epsilon (2.2e-16) times that
+  largest value. At `rtol=1e-6`, a species at 1e-8 beside one at 1 is held to
+  no more than 1e-14, not 1e-12.
+- **If every species not `$`-fixed starts at 0**, the floor is the smallest
+  value above 0 that any species starts at, a `$`-fixed one included, but not
+  above 1, and no species keeps a value below it. If every species starts at
+  0, the floor is 1.
+- **A species the state holds below zero** is held, too, no coarser than
+  `run()` would hold it from that state: by the same rule, read at the state
+  instead of the start. The march's error can carry a species far from where
+  it started, and the start's scale then does not resolve it. A species
+  above zero is held by the start's scale alone.
+
+The default `atol` is finer than the start's ceiling, so with no `atol` given
+the run is unchanged unless the state holds a species below zero, where that
+species may be held tighter. A scalar `atol=` is taken as given, so it can be
+coarser than the whole model. Then the march controls no species' error and
+stops where that error leaves it, and a run at the same `atol` does not see the
+state move. BIOMD0000000609's species are all below 1.4e-13. At its SED-ML
+file's `atol=1e-9`, with its adduct accumulator left out by `mask=`, the march
+stopped on a root of `f` with four species below zero, two of them near
+-1.5e-14, which a run from it leaves at once, and the solve said
+`converged=True`. The run that resolves each species
+refuses it. To solve such a model, leave `atol` unset or pass one at its scale.
+
 If a run moves the state, it is taken again at a tenth of the tolerances, a
 hundredth, and (up to 512 unknowns) a thousandth. A move of more than 10
 tolerances that does not halve at a tenth of them is a real drift, and the
@@ -161,10 +194,15 @@ state is refused.
 
 - **A drift too slow to move a species by its tolerance** within `max_time`
   (or 1e6) passes.
+- **A species below zero** is not refused for being there. Some models' rate
+  laws take a species below zero, and a run rests there too. A state below zero
+  that a run from it leaves, held as `run()` holds it, fails the run test.
 - **An unstable root that a run from it does not leave** passes, as it passes
   the residual test. A state exactly on the middle root of a switch is one.
   A march started near such a root, or near the boundary between two basins,
-  can stop at it or go to either side. The Newton path labels an unstable
+  can stop at it or go to either side. A march at an `atol` coarser than the
+  model can stop on one too, with species below zero. Whether a run leaves it
+  then depends on that run's own tolerance. The Newton path labels an unstable
   root (`root_stability="unstable"`). Above 512 unknowns it labels none
   (`"undetermined"`), and Newton goes wherever KINSOL goes.
 - **A species `mask=` leaves out that overflows within the run** fails the

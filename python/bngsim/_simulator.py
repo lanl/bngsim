@@ -5556,7 +5556,9 @@ class Simulator:
         self, atol: AtolLike | None, criterion: str, state=None, rtol: float | None = None
     ) -> AtolLike | None:
         """The march's ``atol`` for a steady-state solve, which under
-        ``criterion="scaled"`` is also the run test's (issue #1001).
+        ``criterion="scaled"`` is also the run test's (issue #1001), no
+        species' there coarser than :meth:`run`'s ceiling from the same start
+        (issue #1895), which this default never is.
 
         Where neither the call nor :meth:`set_tolerances` gave an ``atol``, each
         species takes the smaller of what ``atol="auto"`` derives from ``state``
@@ -10010,8 +10012,23 @@ class Simulator:
               :attr:`SteadyStateResult.root_stability` says so. ``atol_i`` is
               the march's own, never more than
               ``rtol`` times the largest species the solve starts with or
-              reaches. The Newton step ``δ = −J⁻¹f`` from the state to the
-              root, within the same tolerances, decides where the solve stops
+              reaches. The run is integrated at the march's ``atol`` too, but
+              no species held coarser than :meth:`run` would hold it from the
+              same start, given the same scalar, and none the state holds
+              below zero coarser than :meth:`run` would from that state
+              (issue #1895), which can hold the default's tighter: a scalar
+              ``atol`` is taken as given, and where it is coarser than the
+              model the march resolves nothing and stops where its error
+              leaves it, which a run at that ``atol`` does not see move.
+              BIOMD0000000609, every species under 1.4e-13, asked at
+              ``atol=1e-9`` with its adduct accumulator left out by ``mask``,
+              came back converged on a root of ``f`` with four species below
+              zero that a run from it leaves at once. Where every species
+              not ``$``-fixed starts at 0, the scale is :meth:`run`'s there
+              too: the smallest species above 0, a ``$``-fixed one included,
+              but not above 1, and 1 where every species is at 0. The Newton
+              step ``δ = −J⁻¹f`` from the state to the root, within the same
+              tolerances, decides where the solve stops
               (up to 512 unknowns), which takes the issue's cubic at a scale
               of 1e-9 on from 0.894 to its root at 1, and the state it stops at
               is polished by KINSOL; the step decides nothing about
@@ -14075,7 +14092,10 @@ class SteadyStateResult:
     continued_run_distance : float
         The run test of ``criterion="scaled"``: the largest move of a
         measured species, over its tolerance, across the run taken on from
-        the state returned; at most 1 passes (issue #1001). ``inf`` where the
+        the state returned; at most 1 passes (issue #1001). The run holds
+        no species coarser than :meth:`Simulator.run` would from the solve's
+        start, given the same scalar ``atol``, nor one the state holds below
+        zero coarser than it would from the state (issue #1895). ``inf`` where the
         run could not be taken to its time; NaN where none was taken (under ``"residual"``,
         where the parity test already refused, and for a burst-free Newton
         solve).

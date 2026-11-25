@@ -1040,9 +1040,17 @@ def check_steady(base: Base, method: str) -> Verdict:
                 return Verdict("unsupported", note=f"{type(e).__name__}: {_first_line(e)}")
             raise
         if not ss.converged:
+            # The run test's measure where it was taken (NaN where the residual
+            # test refused first): a solve under tol that a run from it leaves
+            # is refused by that (issue #1895, BIOMD0000000609), and the
+            # residual alone would read as converged.
+            run = ss.continued_run_distance
+            why = f"residual {ss.residual:.1e}" + (
+                "" if np.isnan(run) else f", run test {run:.1e}"
+            )
             return Verdict(
                 "skip",
-                note=f"steady_state(method={method!r}) did not converge (residual {ss.residual:.1e})",
+                note=f"steady_state(method={method!r}) did not converge ({why})",
             )
         try:
             rest, limit = _settled_run(base)
@@ -1068,7 +1076,8 @@ def check_steady(base: Base, method: str) -> Verdict:
             # A run from the solve's state that the solver cannot carry on
             # (bngsim's solver.* codes) does not rest there either:
             # BIOMD0000000609's solve came back with four species below zero,
-            # from which paracetamol ran to -5e133.
+            # from which paracetamol ran to -5e133. Since issue #1895 the
+            # solve's own run test sees that, and the solve is not converged.
             if _timed_out(e) or not _solver_failed(e):
                 raise
             return Verdict(

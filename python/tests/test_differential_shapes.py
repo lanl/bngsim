@@ -35,6 +35,7 @@ from __future__ import annotations
 import atexit
 import functools
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -2607,9 +2608,10 @@ _STEADY = {
 }
 
 
-def _plant(monkeypatch, state=None, criterion=None, converged=True):
+def _plant(monkeypatch, state=None, criterion=None, converged=True, run_distance=None):
     """steady_state() as planted: told ``criterion``, or reporting ``converged``
-    at ``state(x)``, x the state it reached."""
+    at ``state(x)``, x the state it reached, and the run test's
+    ``run_distance`` where that is given."""
     real = bngsim.Simulator.steady_state
 
     def planted(self, **kw):
@@ -2622,6 +2624,9 @@ def _plant(monkeypatch, state=None, criterion=None, converged=True):
             concentrations=x,
             species_names=ss.species_names,
             residual=ss.residual,
+            continued_run_distance=(
+                ss.continued_run_distance if run_distance is None else run_distance
+            ),
         )
 
     monkeypatch.setattr(bngsim.Simulator, "steady_state", planted)
@@ -2659,6 +2664,23 @@ def test_a_solve_that_has_not_converged_is_not_judged(monkeypatch):
     _plant(monkeypatch, state=lambda x: x * 0.5, converged=False)
     v = D.check_steady(base, "integration")
     assert v.status == "skip" and "did not converge" in v.note, v
+
+
+@pytest.mark.parametrize(
+    ("run_distance", "said"),
+    [(37.0, r"\(residual \S+, run test 3\.7e\+01\)"), (float("nan"), r"\(residual \S+\)")],
+    ids=["taken", "not-taken"],
+)
+def test_a_solve_the_run_test_refused_says_by_how_much(monkeypatch, run_distance, said):
+    """A solve under tol that a run from it leaves is refused by the run test,
+    and its residual alone would read as converged: the note gives the run
+    test's measure where it was taken, and only the residual where it was not
+    (NaN)."""
+    base = D.Base(_STEADY["cubic"])
+    _plant(monkeypatch, state=lambda x: x * 0.5, converged=False, run_distance=run_distance)
+    v = D.check_steady(base, "integration")
+    assert v.status == "skip", v
+    assert re.search(r"did not converge " + said + "$", v.note), v.note
 
 
 def test_another_stable_state_is_recorded_not_a_finding(monkeypatch):
