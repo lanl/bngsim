@@ -200,10 +200,11 @@ def _reference(key: str, how: str, setting: float, rtol: float = 1e-9, atol: flo
     ``rr_ode`` makes: boundary species as concentrations, and any the default
     selection drops appended."""
     import _rr_common as rc
+
+    xml, t0, p = _model(key)  # skips first where RoadRunner or the corpus model is absent
     import roadrunner
 
     rc.set_rr_quiet()
-    xml, t0, p = _model(key)
     r = roadrunner.RoadRunner(xml)
     r.integrator = "cvode"
     r.integrator.relative_tolerance = rtol
