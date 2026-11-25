@@ -327,6 +327,11 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         _ANYWHERE,
         "libSBML reads .gz and .zip SBML files only when built with zlib, as its wheels are",
     ),
+    (
+        "libSBML was built without bzip2",
+        _ANYWHERE,
+        "libSBML reads .bz2 SBML files only when built with bzip2, as its wheels are",
+    ),
     ("KLU not compiled", _ANYWHERE, "KLU-off builds are a supported configuration"),
     (
         "KLU sparse solver not built",

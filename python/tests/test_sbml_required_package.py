@@ -984,6 +984,15 @@ def test_the_file_libsbml_reads_for_a_colon_name_is_the_one_checked(
     assert os.path.realpath(cwd / "ext.xml") in str(excinfo.value)
 
 
+def _skip_unless_libsbml_reads(name: str) -> None:
+    """Skip where this libSBML was built without the codec a file named
+    *name* needs: zlib for ``.gz`` and ``.zip``, bzip2 for ``.bz2``."""
+    if name.endswith((".gz", ".zip")) and not libsbml.SBMLReader.hasZlib():
+        pytest.skip("libSBML was built without zlib")
+    if name.endswith(".bz2") and not libsbml.SBMLReader.hasBzip2():
+        pytest.skip("libSBML was built without bzip2")
+
+
 def _compressed(name: str, text: str) -> bytes:
     """*text* as libSBML reads a file named *name*: gzip, bzip2, or a zip
     archive whose first entry it is."""
@@ -1009,6 +1018,7 @@ def test_a_compressed_file_is_scanned_as_libsbml_reads_it(tmp_path, where, name)
     """libSBML reads a ``.gz``, ``.bz2`` or ``.zip`` file decompressed, a zip
     archive's first entry, and the root-element scan reads it the same way
     rather than parse the compressed bytes and find nothing."""
+    _skip_unless_libsbml_reads(name)
     (tmp_path / name).write_bytes(_compressed(name, _leaf(0.87, "zzz", _ZZZ_URI)))
     (tmp_path / "top.xml").write_text(_submodel_of(name))
     with pytest.raises(ModelError, match=_ZZZ_URI):
@@ -1017,6 +1027,7 @@ def test_a_compressed_file_is_scanned_as_libsbml_reads_it(tmp_path, where, name)
 
 def test_an_uncompressed_file_named_gz_is_scanned_as_it_is(tmp_path) -> None:
     """zlib reads a file with no gzip header as plain text, and so does libSBML."""
+    _skip_unless_libsbml_reads("ext.xml.gz")
     (tmp_path / "ext.xml.gz").write_text(_leaf(0.87, "zzz", _ZZZ_URI))
     with pytest.raises(ModelError, match=_ZZZ_URI):
         bngsim.Model.from_sbml(tmp_path / "ext.xml.gz")
@@ -1114,6 +1125,7 @@ def test_a_zip_entry_is_scanned_whatever_its_crc(tmp_path, where, declares) -> N
     """libSBML reads a zip entry without checking its CRC-32, so the scan does
     too: a clean entry with a bad CRC loads, and one declaring ``zzz`` is
     refused rather than let through or failed with a CRC error."""
+    _skip_unless_libsbml_reads("ext.xml.zip")
     ext = _leaf(0.1) if declares is None else _leaf(0.1, "zzz", _ZZZ_URI)
     (tmp_path / "ext.xml.zip").write_bytes(_zip_with_bad_crc(ext))
     (tmp_path / "top.xml").write_text(_submodel_of("ext.xml.zip"))
@@ -1158,6 +1170,7 @@ def test_a_zip_python_cannot_open_loads_as_libsbml_reads_it(
     the root-element scan, which only namespaces outside the SBML L3 hierarchy
     depend on, reads nothing there; a package libSBML records itself, such as
     ``arrays``, is refused all the same."""
+    _skip_unless_libsbml_reads("ext.xml.zip")
     ext = _leaf(0.1) if declares is None else _leaf(0.1, *_ARRAYS)
     (tmp_path / "ext.xml.zip").write_bytes(_zip_python_refuses(ext, flaw))
     (tmp_path / "top.xml").write_text(_submodel_of("ext.xml.zip"))
