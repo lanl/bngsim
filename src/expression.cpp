@@ -126,7 +126,10 @@ namespace bngsim {
 //     z = -700 (mratio_series below) and refused here, which leaves anything
 //     further out to the asymptotic route. With b - a >= 1 the loss is below
 //     1e-13 out to z = -1e6, and what BNG builds, a = -min(AT,BT) with
-//     b = |AT-BT| + 1, has b - a >= 1 in any case.
+//     b = |AT-BT| + 1, has b - a >= 1 in any case. The corner is written as
+//     0 < b - a < 1 with b < 1. For a <= 0 that is the same thing, since there
+//     b - a < 1 already puts b below 1, and it also takes a positive a below
+//     b (issue #1793; see the last clause).
 //   * |z| <= 20: the fraction was right at every one of 3400 hostile triples
 //     with |z| up to 50, chosen with small b and a on both sides of zero. The
 //     first wrong answer anywhere appears at |z| = 60 and is marginal (2e-08);
@@ -143,6 +146,20 @@ namespace bngsim {
 //     with a margin: 32 was the last value that leaked nothing and 16 still let
 //     two through. The second half bounds the even partial numerators, which
 //     the first half does not reach at all; see the note on issue #456 below.
+//     A positive a below a b under 1 reached the fraction past z = -20 through
+//     this clause alone (issue #1793). A tiny enough a passes it,
+//     0 < a <= b^2/(64|z|), and there the fraction lost what it loses in the
+//     corner above, about 10*eps*sqrt(-z)/b: mratio(1e-30, 2e-12, -3e4)
+//     returned 7.047e-17 where the ratio is 6.667e-17. With b in [1e-15, 1),
+//     a log-uniform below b and z in [-1e7, -20], 11857 of 20000 triples were
+//     off by more than 1e-8, the worst by a factor of 7000 and with the wrong
+//     sign. So the corner takes them. It stops at b = 1 because above that,
+//     with b - a < 1, this clause admits only a tiny a beside a b within about
+//     1/(64|z|) of 1, or a b past about 64|z|, and the fraction is clean at
+//     both: worst 2.3e-14 over 5000 triples of the first kind and 4.4e-16 over
+//     5000 of the second. Past z = -700 nothing else answers the second kind,
+//     so a corner of every a < b would refuse what is right today,
+//     mratio(99999.5, 1e5, -1000) among them.
 //
 // All of it for `b > 0` only (issue #768). The grids behind every clause had a
 // positive b, and with b negative and not an integer the fraction settles on a
@@ -152,6 +169,16 @@ namespace bngsim {
 // integer and the fraction terminates, out to the wrong sign
 // (mratio(-20, -23.34, -10.87) returned 5.935 where the ratio is -2.073). BNG
 // builds b = |AT-BT| + 1, so no model it writes has b <= 0.
+//
+// Nor where b and |alpha*z| are both subnormal, below 2.2e-308, with alpha = a
+// for a positive z and b - a for a negative one, as in mratio_series (issue
+// #1793). The series takes every such argument with |alpha| < 1 and a z it sums
+// at, so what reaches this clause is mostly |alpha| >= 1, and there the
+// fraction was more than 1e-8 off at 112 of 615 triples,
+// mratio(4.39, 9.4e-323, 1.73e-322) among them (0.1098 for 0.1101), with
+// nothing to tell which. z = 0 and alpha = 0 are left alone: the ratio is 1 at
+// the first and the fraction returns it to rounding, and the second has no
+// small term at all.
 //
 // Everything else is refused, unless the asymptotic route below can vouch for
 // an answer of its own. That still gives up cases the fraction would have got
@@ -179,8 +206,16 @@ static bool mratio_cf_is_trustworthy(double a, double b, double z) {
     if (a < 0.0 && a == std::floor(a)) {
         return true;
     }
-    if (a <= 0.0 && z < -20.0 && b - a < 1.0) {
+    if (a < b && b < 1.0 && z < -20.0 && b - a < 1.0) {
         return false;
+    }
+    if (z != 0.0 && b < 2.2250738585072014e-308) {
+        const double alpha = z > 0.0 ? a : b - a;
+        const double x = z > 0.0 ? z : -z;
+        if (alpha != 0.0 && alpha * x > -2.2250738585072014e-308 &&
+            alpha * x < 2.2250738585072014e-308) {
+            return false;
+        }
     }
     if (a <= 0.0 && z <= 0.0) {
         return true;
@@ -327,7 +362,14 @@ static bool mratio_asymptotic(double a, double b, double z, double *out) {
         // with 0 < b < 1 (issue #1080), the one a = 0, z < 0, b > 0 the rule
         // refuses, which the fraction got right unless b was tiny. A b <= 0
         // asks here too and is answered on the same terms as any other.
-        if (a == 0.0) {
+        // An a so small that the second term, a*(a-b+1)/(-z), underflows to
+        // zero is the same sum to the last bit, since every later term carries
+        // a as well (issue #1793), and the zero-term rule would refuse it for
+        // the same reason: mratio(-5e-324, 0.5, -701) was refused, where a = 0
+        // gives 7.137766037665143e-4 and the ratio is 7.137766037665144e-4.
+        // An a - b + 1 of exactly zero is a series that does end there, and is
+        // left to the rule.
+        if (a == 0.0 || (a - b + 1.0 != 0.0 && a * (a - b + 1.0) * x == 0.0)) {
             sum_den = 1.0;
             err_den = 0.0;
         } else {
@@ -374,7 +416,18 @@ double expr_compat::rint(double x) { return std::floor(x + 0.5); }
 
 double expr_compat::mratio_dz(double a, double b, double z) {
     const double r = expr_compat::mratio(a, b, z);
-    const double shifted = expr_compat::mratio(a + 1.0, b + 1.0, z);
+    // The shifted call is refused for a above -1, and the generated copy reads
+    // its NaN there as the cue for the second expression below. This one throws
+    // instead, which used to escape from here and fail the derivative at the
+    // very arguments that expression exists for: mratio_dz(1e-30, 2e-12, -25)
+    // raised, where the compiled helper returns 1.389e-11, right to 1e-15. A
+    // throw is read as that NaN, so the two copies take the same branch. One
+    // from the call above, which refuses the value itself, still goes out.
+    double shifted = std::numeric_limits<double>::quiet_NaN();
+    try {
+        shifted = expr_compat::mratio(a + 1.0, b + 1.0, z);
+    } catch (const std::runtime_error &) {
+    }
     if (mratio_is_finite(shifted)) {
         return r * ((a + 1.0) / (b + 1.0) * shifted - (a / b) * r);
     }
@@ -697,11 +750,11 @@ static double mratio_a_zero_series(double b, double z) {
 // (0 of 20000 off with |a| in [1e-2, 10]): a negative integer a (BNG's) never
 // enters the box, and neither does a z < 0 with b >= 1 + a.
 //
-// Past z = -20 the fraction's loss goes on, and grows, where a <= 0 and
-// b - a < 1 (see mratio_cf_is_trustworthy). That corner is in the box out to
-// z = -700. With a <= 0, alpha = b - a is at least b, so every term of both
-// series is positive and nothing cancels at all. The bounds above become e^x
-// for the numerator and b + alpha*x*e^x for the denominator, under the largest
+// Past z = -20 the fraction's loss goes on, and grows, where 0 < b - a < 1 and
+// b < 1 (see mratio_cf_is_trustworthy). That corner is in the box out to
+// z = -700. There a < b, so alpha = b - a is positive and every term of both
+// series is positive: nothing cancels at all. The bounds above become e^x for
+// the numerator and b + alpha*x*e^x for the denominator, under the largest
 // double for x <= 700. Past that the asymptotic route answers. There the branch
 // it drops is about x*e^(-x)/(b - a) of the one it keeps, so it vouches for
 // every b - a above about 1e-290; below that, out to z = -775 at most, the call
@@ -709,9 +762,32 @@ static double mratio_a_zero_series(double b, double z) {
 // of 60000 triples with b in [1e-12, 10], |a| in [1e-15, 10] and z in
 // [-2000, 0] is off by more than 1e-8 (worst 4.2e-14; the fraction was off by
 // more than 1e-8 in 2605 of 20000, by up to 1.2e-2), and none of 6000 with b
-// down to 1e-300 and z out to -1e9 (worst 1.2e-14). It is slower than the
-// fraction was: about 7 us at z = -700 for the series and just past it for the
-// asymptotic route, against 2 us, and the same 6 us by z = -5000.
+// down to 1e-300 and z out to -1e9 (worst 1.2e-14). For a between 0 and b
+// (issue #1793), none of 60000 with b in
+// [1e-15, 1), a from 1e-300 up to b and z in [-1e7, -20] is off or refused
+// (worst 2.7e-14), where before 11857 were off by more than 1e-8 and 3291
+// refused. It is slower than the fraction was: about 7 us at z = -700 for the
+// series and just past it for the asymptotic route, against 2 us, and the same
+// 6 us by z = -5000.
+//
+// Near the smallest normal double the sums need two more steps (issue #1793).
+// Where alpha or alpha*x is subnormal, alpha*x and the denominator's next few
+// terms are formed on the subnormal grid, as multiples of 4.9e-324, and every
+// later term is built from them: mratio(9.9999999999995e-311, 1e-310, -20.5)
+// came out 9.6e-7 off, mratio(9.99999994e-316, 1e-315, -20) 1.7e-4 and
+// mratio(5e-324, 1e-322, 10) 3.1e-3, and with a subnormal b inside the box main
+// was wrong the same way. So for b < 1 the denominator is summed times 2^54
+// there: b * 2^54 and (alpha * 2^54) * x are exact and normal, the sum stays
+// below about 2e16 for x <= 700, and b at the same scale in the final product
+// cancels it. Otherwise a subnormal b makes b * sn a subnormal product, which
+// rounds on the same grid, and mratio(-6.29e-162, 5e-324, 0.52) came out 19%
+// off; b is taken times 2^54 for that product alone and the quotient scaled
+// back. Against mpmath, summed directly, over 15000 triples with b below
+// 1e-290, |a| from 5e-324 up to 1e-3, either sign of z and |z| from 1e-14 to
+// 1000, every answer is within 1e-8 of the ratio or within 1e-323 of it,
+// whichever is looser, the worst at a normal ratio 9.4e-11 off; main was
+// outside that at 2014 of them, by up to 0.61. 2239 are refused, every one of
+// them refused or wrong on main as well.
 //
 // The sum stops once a term is below 1e-17 of its series' absolute sum and the
 // ratio of successive terms is at most 1/2 for good. Each ratio is below
@@ -732,19 +808,28 @@ static bool mratio_series(double a, double b, double z, double *out) {
     if (!(alpha > -1.0 && alpha < 1.0)) {
         return false;
     }
-    if (!(x <= 20.0) && !(z < 0.0 && a <= 0.0 && x <= 700.0)) {
+    if (!(x <= 20.0) && !(z < 0.0 && a < b && b < 1.0 && x <= 700.0)) {
         return false;
     }
+    // The denominator is summed times 2^54 as well where alpha or alpha*x is
+    // subnormal, which keeps its first terms off the subnormal grid (see the
+    // note above). Times 1 everywhere else, which changes nothing.
+    const double scale =
+        b < 1.0 && alpha != 0.0 &&
+                ((alpha * x > -2.2250738585072014e-308 && alpha * x < 2.2250738585072014e-308) ||
+                 (alpha > -2.2250738585072014e-308 && alpha < 2.2250738585072014e-308))
+            ? 18014398509481984.0
+            : 1.0;
     double tn = 1.0; // a term of M(alpha + shift, b + 1, x)
     double sn = 1.0;
     double an = 1.0;
-    double td = b; // a term of b * M(alpha, b, x)
-    double sd = b;
-    double ad = b;
+    double td = b * scale; // a term of b * M(alpha, b, x), times scale
+    double sd = td;
+    double ad = td;
     for (int k = 0; k < 3000; ++k) {
         tn = tn * ((alpha + shift + k) / (b + 1.0 + k)) * (x / (k + 1.0));
         if (k == 0) {
-            td = alpha * x;
+            td = (alpha * scale) * x;
         } else {
             td = td * ((alpha + k) / (b + k)) * (x / (k + 1.0));
         }
@@ -755,7 +840,23 @@ static bool mratio_series(double a, double b, double z, double *out) {
         if (k + 1.0 >= 4.0 * x && std::abs(tn) <= 1.0e-17 * an && std::abs(td) <= 1.0e-17 * ad) {
             // b * sn would overflow for a b near the largest double, and sd / b
             // for a tiny one, so the division is ordered by which side of 1 b is.
-            const double value = b < 1.0 ? b * sn / sd : sn / (sd / b);
+            // A scaled denominator takes b at the same scale, so the two cancel.
+            // Otherwise a subnormal b is taken times 2^54 first, which is exact,
+            // since b * sn would round on the subnormal grid: at
+            // mratio(-6.29e-162, 5e-324, 0.52) it went from 8.4e-324 to 1e-323
+            // and the ratio came out 19% off. An overflow of that keeps the
+            // plain order.
+            double value;
+            if (scale != 1.0) {
+                value = (b * scale) * sn / sd;
+            } else if (b < 2.2250738585072014e-308) {
+                value = (b * 18014398509481984.0) * sn / sd;
+                value = value <= 1.7976931348623157e308 && value >= -1.7976931348623157e308
+                            ? value / 18014398509481984.0
+                            : b * sn / sd;
+            } else {
+                value = b < 1.0 ? b * sn / sd : sn / (sd / b);
+            }
             if (!(value == value)) { // NaN
                 return false;
             }
@@ -764,6 +865,27 @@ static bool mratio_series(double a, double b, double z, double *out) {
         }
     }
     return false;
+}
+
+// An argument as a refusal names it: a whole number below 1e15 as an integer,
+// which is how a b BNG writes, |AT-BT| + 1, reads best (-0.0 prints as -0 and
+// reads back as itself), and anything else at the fewest %g digits that read
+// back as the same double. std::to_string printed every one below 5e-7 as
+// 0.000000, so a refusal for a subnormal b read "b=0.000000" beside a clause
+// about b > 0.
+static std::string mratio_arg(double v) {
+    char buf[32];
+    if (v == std::floor(v) && std::abs(v) < 1.0e15) {
+        c_snprintf(buf, sizeof(buf), "%.0f", v);
+        return buf;
+    }
+    for (int digits = 1; digits <= 17; ++digits) {
+        c_snprintf(buf, sizeof(buf), "%.*g", digits, v);
+        if (c_strtod(buf, nullptr) == v) {
+            break;
+        }
+    }
+    return buf;
 }
 
 double expr_compat::mratio(double a, double b, double z) {
@@ -786,12 +908,15 @@ double expr_compat::mratio(double a, double b, double z) {
             "mratio(a, b, z): the continued fraction this uses is not reliable for these "
             "arguments and would return a wrong value without saying so, and the asymptotic "
             "expansion that covers part of the rest cannot vouch for an answer here either (a=" +
-            std::to_string(a) + ", b=" + std::to_string(b) + ", z=" + std::to_string(z) +
+            mratio_arg(a) + ", b=" + mratio_arg(b) + ", z=" + mratio_arg(z) +
             "). The fraction is reliable for b > 0, and then when a is a negative integer, "
-            "when a <= 0 and z <= 0 (past z = -20 only with b - a >= 1), when |z| <= 20, or "
-            "when b*b >= 64*|z*a| and z is either negative or no more than half of b. BNG "
-            "builds a = -min(AT,BT), b = |AT-BT|+1 and z = -1/Keq, which is inside that "
-            "region, so a model reaching this is using mratio in its own way.");
+            "when a <= 0 and z <= 0, when |z| <= 20, or when b*b >= 64*|z*a| and z is either "
+            "negative or no more than half of b; but, a negative integer a aside, not past "
+            "z = -20 with b < 1 and 0 < b - a < 1, nor where b and |alpha*z| are both subnormal "
+            "(below 2.2250738585072014e-308) and nonzero, with alpha = a for z > 0 and b - a for "
+            "z < 0. BNG builds "
+            "a = -min(AT,BT), b = |AT-BT|+1 and z = -1/Keq, which is inside that region, so a "
+            "model reaching this is using mratio in its own way.");
     }
     constexpr double eps = 1.0e-16;
     constexpr double tiny = 1.0e-32;
@@ -830,8 +955,8 @@ double expr_compat::mratio(double a, double b, double z) {
                                      std::to_string(max_iter) +
                                      " iterations "
                                      "(a=" +
-                                     std::to_string(a) + ", b=" + std::to_string(b) +
-                                     ", z=" + std::to_string(z) + ")");
+                                     mratio_arg(a) + ", b=" + mratio_arg(b) +
+                                     ", z=" + mratio_arg(z) + ")");
         }
 
         double p;
