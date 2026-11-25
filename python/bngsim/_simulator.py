@@ -874,11 +874,11 @@ class Simulator:
           Requires ``xml_path`` keyword argument.
         - ``"nf_exact"`` — Exact non-local network-free algorithm
           (RuleMonkey). Requires ``xml_path`` keyword argument.
+        - ``"nf_fixed"`` — Legacy compatibility token.
+          Recognized but unavailable in this build.
 
         ``xml_path`` is a ``str`` or a :class:`os.PathLike` such as the
         :class:`pathlib.Path` :func:`bngsim.examples.path` returns.
-        - ``"nf_fixed"`` — Legacy compatibility token.
-          Recognized but unavailable in this build.
 
         **Legacy aliases** (accepted for compatibility):
 

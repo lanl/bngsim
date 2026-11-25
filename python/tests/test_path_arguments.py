@@ -37,7 +37,7 @@ def _has(method: str) -> bool:
 @pytest.mark.parametrize("method", ["nf", "rm"])
 def test_a_network_free_simulator_takes_the_path_examples_hands_out(model, method):
     if not _has(method):
-        pytest.skip(f"{method} not built")
+        pytest.skip(("NFsim" if method == "nf" else "RuleMonkey") + " not compiled in")
     assert isinstance(XML, pathlib.Path)
     from_path = bngsim.Simulator(model, method=method, xml_path=XML).run(**RUN)
     from_str = bngsim.Simulator(model, method=method, xml_path=str(XML)).run(**RUN)
@@ -50,7 +50,7 @@ def test_a_network_free_simulator_takes_the_path_examples_hands_out(model, metho
 @pytest.mark.parametrize("bad", [b"m.xml", 3])
 def test_an_xml_path_that_is_no_path_is_refused_by_name(model, method, bad):
     if not _has(method):
-        pytest.skip(f"{method} not built")
+        pytest.skip(("NFsim" if method == "nf" else "RuleMonkey") + " not compiled in")
     with pytest.raises(UsageError, match="xml_path must be a str or os.PathLike") as err:
         bngsim.Simulator(model, method=method, xml_path=bad)
     assert err.value.code == "usage.invalid_argument"
@@ -60,7 +60,7 @@ def test_an_xml_path_that_is_no_path_is_refused_by_name(model, method, bad):
 @pytest.mark.parametrize("missing", ["", None])
 def test_no_xml_path_is_still_the_missing_argument(model, method, missing):
     if not _has(method):
-        pytest.skip(f"{method} not built")
+        pytest.skip(("NFsim" if method == "nf" else "RuleMonkey") + " not compiled in")
     with pytest.raises(UsageError, match="requires xml_path") as err:
         bngsim.Simulator(model, method=method, xml_path=missing)
     assert err.value.code == "usage.missing_argument"

@@ -44,7 +44,7 @@ begin groups
 end groups
 """
 
-on_posix = pytest.mark.skipif(os.name == "nt", reason="CcJit is POSIX-only")
+on_posix = pytest.mark.skipif(os.name == "nt", reason="POSIX-specific: CcJit has no Windows build")
 requires_cc = pytest.mark.skipif(shutil.which("cc") is None, reason="no C compiler available")
 on_macos = pytest.mark.skipif(
     platform.system() != "Darwin" or shutil.which("lipo") is None,
@@ -152,12 +152,12 @@ def rosetta_toolchain():
     arm64 binary that runs from a translated process) because the ``/usr/bin/cc``
     shim loads an arm64-only libxcrun from the Command Line Tools."""
     if platform.system() != "Darwin" or platform.machine() != "arm64":
-        pytest.skip("needs an Apple Silicon Mac")
+        pytest.skip("needs Rosetta 2 on an Apple Silicon Mac")
     if not os.path.exists("/Library/Apple/usr/libexec/oah/libRosettaRuntime"):
         pytest.skip("needs Rosetta 2")
     cxx, clang, sdk = _xcrun("-f", "clang++"), _xcrun("-f", "clang"), _xcrun("--show-sdk-path")
     if not (cxx and clang and sdk):
-        pytest.skip("needs Apple's clang and an SDK")
+        pytest.skip("needs Rosetta 2 and Apple's clang and an SDK")
     return cxx, clang, sdk
 
 
@@ -188,3 +188,47 @@ def test_under_rosetta_the_header_builds_x86_64_and_keeps_arm64_apart(rosetta_to
         out = subprocess.run(["lipo", "-archs", so], capture_output=True, text=True, check=True)
         assert out.stdout.split() == [machine]
     assert len(_libraries(cache)) == 2
+
+
+@on_posix
+@requires_cc
+def test_the_threads_of_one_run_replicates_all_run_cc_on_a_cold_cache(cc_run, tmp_path):
+    """The temps were named by process alone, so on a cold cache one thread
+    removed the source another was compiling, and about half the replicates fell
+    back to interpreted propensities (review of #1927)."""
+    model = bngsim.Model.from_net(str(tmp_path / "dimer.net"))
+    sim = bngsim.Simulator(model, method="ssa")
+    runs = sim.run_replicates(16, t_span=(0.0, 1.0), n_points=3, seed=1, num_processors=8)
+    assert [r.ssa_diagnostics["propensity_backend"] for r in runs] == ["cc"] * 16
+    _, cache, _ = cc_run
+    assert len(_libraries(cache)) == 1
+
+
+@on_posix
+@requires_cc
+def test_a_cache_dir_with_a_quote_still_compiles(cc_run, tmp_path, monkeypatch):
+    run, _, _ = cc_run
+    cache = tmp_path / "it's a cache"
+    cache.mkdir()
+    monkeypatch.setenv("BNGSIM_CODEGEN_CACHE_DIR", str(cache))
+    assert run().ssa_diagnostics["propensity_backend"] == "cc"
+    assert len(_libraries(cache)) == 1
+
+
+@on_posix
+@requires_cc
+def test_a_cache_dir_under_home_is_expanded(cc_run, monkeypatch):
+    run, _, home = cc_run
+    monkeypatch.setenv("BNGSIM_CODEGEN_CACHE_DIR", "  ~/cc-cache  ")
+    assert run().ssa_diagnostics["propensity_backend"] == "cc"
+    assert len(_libraries(home / "cc-cache")) == 1
+
+
+@on_posix
+@requires_cc
+def test_a_blank_cc_is_an_unset_one(cc_run, monkeypatch):
+    run, cache, _ = cc_run
+    run()
+    monkeypatch.setenv("CC", "   ")
+    assert run().ssa_diagnostics["propensity_backend"] == "cc"
+    assert len(_libraries(cache)) == 1

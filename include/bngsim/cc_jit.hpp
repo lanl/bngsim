@@ -26,14 +26,16 @@
 #include <string>
 
 #ifndef _WIN32
+#include <atomic>
 #include <cstdint>
 #include <cstdio>  // std::snprintf, std::rename, std::remove
 #include <cstdlib> // std::getenv, std::system
 #include <filesystem>
 #include <fstream>
+#include <pwd.h> // getpwnam, getpwuid
 #include <sys/stat.h>
 #include <system_error>
-#include <unistd.h> // getpid
+#include <unistd.h> // getpid, getuid
 #endif
 
 namespace bngsim {
@@ -67,33 +69,73 @@ class CcJit {
     /// this process's machine (issue #1927), as the Python codegen does since
     /// #1759; a CC naming another -arch then builds a universal library.
     static std::string compile_command(const std::string &cpath, const std::string &sotmp) {
+        // A CC of only whitespace is unset, as the Python codegen reads it.
         const char *cc_env = std::getenv("CC");
-        std::string cmd = (cc_env && *cc_env) ? cc_env : "cc";
+        std::string cmd = trim(cc_env ? cc_env : "");
+        if (cmd.empty())
+            cmd = "cc";
 #if defined(__APPLE__)
         if (std::string(machine()) != "unknown")
             cmd += std::string(" -arch ") + machine();
 #endif
-        cmd += " -O3 -shared -fPIC -o '" + sotmp + "' '" + cpath + "' -lm";
+        cmd += " -O3 -shared -fPIC -o " + shell_quote(sotmp) + " " + shell_quote(cpath) + " -lm";
         return cmd;
     }
 
-    /// The cache directory: BNGSIM_CODEGEN_CACHE_DIR when set, as the Python
-    /// codegen reads it, else ~/.cache/bngsim/codegen.
+    /// `s` as one POSIX shell word: single-quoted, with each ' written '\''.
+    static std::string shell_quote(const std::string &s) {
+        std::string out = "'";
+        for (char c : s) {
+            if (c == '\'')
+                out += "'\\''";
+            else
+                out += c;
+        }
+        return out + "'";
+    }
+
+    static std::string trim(const std::string &s) {
+        const char *ws = " \t\n\r\f\v";
+        const auto b = s.find_first_not_of(ws);
+        return b == std::string::npos ? "" : s.substr(b, s.find_last_not_of(ws) - b + 1);
+    }
+
+    /// The home directory: HOME, else the password database, as Python's
+    /// Path.home() reads it.
+    static std::string home_dir() {
+        const char *home = std::getenv("HOME");
+        if (home && *home)
+            return home;
+        if (const passwd *pw = getpwuid(getuid()); pw && pw->pw_dir)
+            return pw->pw_dir;
+        return "/tmp";
+    }
+
+    /// A leading ~ or ~user expanded as Python's Path.expanduser() does; a user
+    /// the password database does not know leaves the path as it is.
+    static std::string expand_user(const std::string &path) {
+        if (path.empty() || path[0] != '~')
+            return path;
+        const auto slash = path.find('/');
+        const std::string user =
+            path.substr(1, slash == std::string::npos ? std::string::npos : slash - 1);
+        const std::string rest = slash == std::string::npos ? "" : path.substr(slash);
+        if (user.empty())
+            return home_dir() + rest;
+        if (const passwd *pw = getpwnam(user.c_str()); pw && pw->pw_dir)
+            return std::string(pw->pw_dir) + rest;
+        return path;
+    }
+
+    /// The cache directory: BNGSIM_CODEGEN_CACHE_DIR when set (trimmed, with a
+    /// leading ~ expanded), as the Python codegen reads it, else
+    /// ~/.cache/bngsim/codegen.
     static std::string cache_dir() {
         const char *env = std::getenv("BNGSIM_CODEGEN_CACHE_DIR");
-        std::string dir = env ? env : "";
-        const auto b = dir.find_first_not_of(" \t\n\r\f\v");
-        dir = b == std::string::npos ? ""
-                                     : dir.substr(b, dir.find_last_not_of(" \t\n\r\f\v") - b + 1);
-        const char *home = std::getenv("HOME");
-        const std::string h = home ? home : "/tmp";
+        const std::string dir = trim(env ? env : "");
         if (dir.empty())
-            return h + "/.cache/bngsim/codegen";
-        if (dir == "~")
-            return h;
-        if (dir.rfind("~/", 0) == 0)
-            return h + dir.substr(1);
-        return dir;
+            return home_dir() + "/.cache/bngsim/codegen";
+        return expand_user(dir);
     }
 
     /// Stable cache path (no compile). Lets a caller invalidate a cached .so
@@ -129,10 +171,14 @@ class CcJit {
             // which file.
             std::error_code ec;
             std::filesystem::create_directories(so.substr(0, so.find_last_of('/')), ec);
-            // Process-unique temps so concurrent ensembles don't collide; the
+            // Temps unique to this process and this compile, so concurrent
+            // ensembles, and the threads of one run_replicates, don't collide
+            // (one thread removed the source another was compiling); the
             // finished .so is renamed into place atomically.
-            const std::string stem =
-                so.substr(0, so.size() - 3) + "." + std::to_string(static_cast<long>(getpid()));
+            static std::atomic<unsigned long> counter{0};
+            const std::string stem = so.substr(0, so.size() - 3) + "." +
+                                     std::to_string(static_cast<long>(getpid())) + "_" +
+                                     std::to_string(counter.fetch_add(1));
             const std::string cpath = stem + ".c";
             const std::string sotmp = stem + ".so.tmp";
             {
