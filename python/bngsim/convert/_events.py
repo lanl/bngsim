@@ -45,17 +45,22 @@ if TYPE_CHECKING:
 # ─── numeric MathML folding ──────────────────────────────────────────────────
 
 
-def _const_env(sbml_model) -> tuple[dict[str, float], dict[int, dict[str, float]]]:
+def _const_env(
+    sbml_model,
+) -> tuple[dict[str, float], dict[int, dict[str, float]], dict[str, Any]]:
     """The names that fold to a constant in a trigger/delay/assignment: global
     parameters and compartment sizes (species are *not* constants — a reference
     to one makes the expression state-dependent, i.e. non-fixed-time).
 
-    Returns ``(env, own)``. ``env`` holds each name that keeps one value through
-    the run, at that value: the declared one, or what its initialAssignment
-    folds to (the assignment overrides the declared value), or what its
-    assignment rule folds to over the others. A name a rate rule or an event
+    Returns ``(env, own, unfolded)``. ``env`` holds each name that keeps one
+    value through the run, at that value: the declared one, or what its
+    initialAssignment folds to (the assignment overrides the declared value), or
+    what its assignment rule folds to over the others. A name a rate rule or an event
     changes is left out, as is one whose math does not fold (it reads a species
     or the time): a reference to it is refused.
+
+    ``unfolded`` maps each name that keeps one value but whose initialAssignment
+    does not fold (it reads a species' initial value, say) to that math.
 
     ``own[i]`` holds the targets event ``i`` alone writes, at their start values,
     for its assigned values to read: nothing changes such a target before the
@@ -114,7 +119,9 @@ def _const_env(sbml_model) -> tuple[dict[str, float], dict[int, dict[str, float]
     for sid, events in writers.items():
         if len(events) == 1 and sid in start and sid not in rated and sid not in assigned:
             own.setdefault(next(iter(events)), {})[sid] = start[sid]
-    return env, own
+    # Kept through the run, but from an initialAssignment that does not fold.
+    unfolded = {sid: m for sid, m in initial.items() if sid not in moving and sid not in env}
+    return env, own, unfolded
 
 
 def _fold_all(env: dict[str, float], pending: dict[str, Any]) -> None:
@@ -316,16 +323,11 @@ class _Fire(NamedTuple):
     """One event's execution: when, in what order, and what it sets."""
 
     time: float
-    # A strict trigger is true only past its threshold, so the run executes the
-    # event after every other event of that instant, whatever the priorities:
-    # `time > 1` after `time >= 1`. It executes where it reads the trigger true,
-    # a little past the threshold (see _landing).
+    # A strict trigger is true only past its threshold, and the run reads it
+    # there, a little past it (see _landing), so neither it nor its delayed
+    # execution is on one double for certain. Written after the rest of its
+    # instant, where it sets nothing they set differently.
     past: bool
-    # Delayed from a strict trigger, it executes the delay after the point
-    # past the threshold where the run read the trigger true, which can round
-    # to the instant itself or land past it: `time > 0` with delay 1 joins the
-    # events at t = 1, and `time > 0.5` with delay 0.5 runs after them.
-    loose: bool
     priority: float | None  # None: not a constant
     # No priority as the loader writes it: none, or a plain number that is 0.
     # Where every event of a tie has none, the run executes the delayed ones
@@ -341,6 +343,9 @@ class _Fire(NamedTuple):
     delay: float = 0.0
     # Read at the start of the run, where it was true already: there exactly.
     pinned: bool = False
+    # Its time is the translation's own fold, which can differ from the run's
+    # in the last places, where the run's evaluator could not be asked.
+    approx: bool = False
 
     def sort_key(self) -> tuple[float, bool, float, bool, float, int]:
         # Higher priority first; among equal ones, those not delayed, then the
@@ -390,19 +395,30 @@ def _chain_end(points: list[float], t: float, span: float) -> float:
 
 
 def _landing(f: _Fire, points: list[float], span: float) -> tuple[float, float]:
-    """The earliest and latest times the run can execute ``f`` at. Its trigger
-    is read on its own time, or on a stop it is merged into, and a strict one
-    up to a root's reach past it; a delay counts from where it is read. Read
-    at the start, it is read there exactly."""
+    """The earliest and latest times the run can execute ``f`` at.
+
+    Its trigger is read on its own time, or on a stop it is merged into. A
+    strict one is read past its threshold, up to a root's reach. So is any
+    other that has a stop, a row or an execution within that reach before it:
+    having just executed or stopped there, the run can step over the trigger's
+    own stop and find it by its root (measured, up to 0.26 of the reach late).
+    A delay counts from where the trigger is read. Read at the start, it is
+    read there exactly. A time that is the translation's own fold, not the
+    run's, is widened by the reach both ways.
+    """
     if f.pinned:
         lo = hi = f.read
     else:
         lo = f.read
         hi = _chain_end(points, f.read, span)
-        if f.past:
-            hi = max(hi, f.read + _instant_reach(f.read, span))
+        reach = _instant_reach(f.read, span)
+        j = bisect.bisect_left(points, f.read)
+        if f.past or (j > 0 and points[j - 1] >= f.read - reach):
+            hi = max(hi, f.read + reach)
     if f.triggered is not None:
         lo, hi = lo + f.delay, hi + f.delay
+    if f.approx:
+        lo, hi = lo - _instant_reach(lo, span), hi + _instant_reach(hi, span)
     return lo, hi
 
 
@@ -438,19 +454,22 @@ def _run_stops(model: Model, t_start: float, t_end: float) -> list[float]:
     return [float(t) for t in times]
 
 
-def _unordered_writes(fires: list[_Fire], span: float, stops: list[float]) -> list[str]:
+def _unordered_writes(
+    fires: list[_Fire], span: float, stops: list[float], rows: list[float]
+) -> list[str]:
     """A note for each species that events the run can execute together leave
     at a value their order decides, when that order is not known ahead.
 
-    Executions whose landings (:func:`_landing`) come within reach of each
-    other (:func:`_instant_reach`) are one cluster: the run can execute them as
+    Executions whose landings (:func:`_landing`, over the run's ``stops`` and
+    its output ``rows``) come within reach of each other (:func:`_instant_reach`)
+    are one cluster: the run can execute them as
     one instant, by priority, or apart, as its rounding and its stops fall. A
     cluster that is one instant for certain, every execution on one double, is
     ordered as the run orders an instant (:func:`_order_note`). In any other,
     a species two of them set to different values has no value an action can
     set.
     """
-    points = sorted({*stops, *(f.read for f in fires), *(f.time for f in fires)})
+    points = sorted({*stops, *rows, *(f.read for f in fires), *(f.time for f in fires)})
     landed = sorted(((*_landing(f, points, span), f) for f in fires), key=lambda x: x[0])
     clusters: list[list[tuple[float, float, _Fire]]] = []
     reach_to = -math.inf
@@ -466,12 +485,14 @@ def _unordered_writes(fires: list[_Fire], span: float, stops: list[float]) -> li
             continue
         group = [f for _, _, f in members]
         t = group[0].time
-        # One instant for certain: every execution due on one double, and
-        # each one not strict read there exactly, or all of them triggered on
-        # it together, with nothing delayed or strict beside them.
+        # One instant for certain: every execution lands on one double, or all
+        # of them are triggered together on it, as the run reads it, by
+        # triggers that are not strict, with nothing delayed beside them.
         exact = all(f.time == t for f in group) and (
-            all(f.past or lo == hi == t for lo, hi, f in members)
-            or all(not f.past and f.triggered is None and f.read == t for f in group)
+            all(lo == hi == t for lo, hi, _ in members)
+            or all(
+                not f.past and not f.approx and f.triggered is None and f.read == t for f in group
+            )
         )
         writes: dict[int, list[tuple[_Fire, float]]] = {}
         var: dict[int, str] = {}
@@ -504,17 +525,15 @@ def _apart_note(var: str, ws: list[tuple[_Fire, float]]) -> str | None:
 def _order_note(
     t: float, var: str, ws: list[tuple[_Fire, float]], group: list[_Fire]
 ) -> str | None:
-    """Why the value the executions ``ws`` at instant ``t`` leave in ``var``
-    is not known ahead, or None where it is. ``group`` is every execution at
-    ``t``.
+    """Why the value the executions ``ws``, on the double ``t`` for certain,
+    leave in ``var`` is not known ahead, or None where it is. ``group`` is
+    every execution there.
 
-    The last of them to execute sets it. That is one of those in the last part
-    of the instant, of the lowest priority there; of the ones among those that
-    may execute last (:func:`_may_execute_last`), the run picks at random. Where
-    those set different values, the species has none an action can set. A
-    priority that is not a constant, or a loose execution (see :class:`_Fire`),
-    leaves the order unknown wherever the values differ, unless a loose one
-    executes after all the rest wherever it lands.
+    The last of them to execute sets it: one of the lowest priority, and of the
+    ones among those that may execute last (:func:`_may_execute_last`), the run
+    picks at random. Where those set different values, the species has none an
+    action can set. A priority that is not a constant leaves the order unknown
+    wherever the values differ.
     """
     if len({val for _, val in ws}) < 2:
         return None
@@ -523,74 +542,24 @@ def _order_note(
         other = next(g for g, v in among if v != val)
         return f"events {f.eid!r} and {other.eid!r} set {var!r} to different values at t = {t:g}"
 
-    last: list[tuple[_Fire, float]] = []
-    tied = ""
-    fixed = [(f, val) for f, val in ws if not f.loose]
-    loose = [(f, val) for f, val in ws if f.loose]
-    if fixed:
-        past = max(f.past for f, _ in fixed)
-        part = [(f, val) for f, val in fixed if f.past == past]
-        unknown = [(f, val) for f, val in part if f.priority is None]
-        if unknown:
-            if len({val for _, val in part}) > 1:
-                f, val = unknown[0]
-                return (
-                    f"{apart(f, val, part)}, and {f.eid!r} has a non-constant priority — "
-                    "which executes last cannot be scheduled"
-                )
-            last = part[:1]
-        else:
-            low = min(f.priority for f, _ in part if f.priority is not None)
-            lowest = [(f, val) for f, val in part if f.priority == low]
-            # The run's tie: what has that priority there, and may: a priority
-            # that is not a constant, or a loose execution, which can land there.
-            tie = [
-                f
-                for f in group
-                if (f.past == past or f.loose) and (f.priority is None or f.priority == low)
-            ]
-            last = _may_execute_last(lowest, tie)
-            if len({val for _, val in last}) > 1:
-                f, val = last[0]
-                tied = (
-                    f"{apart(f, val, last)} with equal priority, and the run executes "
-                    "them in a random order — the value they leave has no actions form"
-                )
-
-            def overwrites(f: _Fire) -> bool:
-                # Whether loose f executes after the writers here wherever it
-                # lands. Past the instant it does. In the instant it is in the
-                # first part, so before the strict triggers' part, and after
-                # the writers of the first part where its priority is lower. Of
-                # equal priority, where no writer was triggered after it (past
-                # its threshold, f triggered after any non-strict trigger at
-                # the same time): delayed executions run in the order they were
-                # triggered, so after them where they are all delayed, and
-                # after those not delayed too where no event of the tie has a
-                # priority.
-                if past or f.priority is None or f.priority > low:
-                    return False
-                no_later = all(
-                    g.triggered is None or (f.triggered or 0.0) >= g.triggered for g, _ in lowest
-                )
-                return (
-                    f.priority < low
-                    or (all(g.unprioritised for g in tie) and no_later)
-                    or (all(g.triggered is not None for g, _ in lowest) and no_later)
-                )
-
-            if any(overwrites(f) for f, _ in loose):
-                last, tied = [], ""
-    if tied:
-        return tied
-    for f, val in loose:
-        if any(v != val for _, v in last):
-            return (
-                f"{apart(f, val, last)}, and {f.eid!r}, delayed from a strict "
-                "trigger, executes before or after the other as the run's rounding "
-                "falls — the value they leave has no actions form"
-            )
-        last.append((f, val))
+    unknown = [(f, val) for f, val in ws if f.priority is None]
+    if unknown:
+        f, val = unknown[0]
+        return (
+            f"{apart(f, val, ws)}, and {f.eid!r} has a non-constant priority — "
+            "which executes last cannot be scheduled"
+        )
+    low = min(f.priority for f, _ in ws if f.priority is not None)
+    # The run's tie: what has that priority there, and may, a priority that is
+    # not a constant.
+    tie = [f for f in group if f.priority is None or f.priority == low]
+    last = _may_execute_last([(f, val) for f, val in ws if f.priority == low], tie)
+    if len({val for _, val in last}) > 1:
+        f, val = last[0]
+        return (
+            f"{apart(f, val, last)} with equal priority, and the run executes "
+            "them in a random order — the value they leave has no actions form"
+        )
     return None
 
 
@@ -614,6 +583,85 @@ def _may_execute_last(
         if all(f.unprioritised for f in tie):
             return delayed
     return [(f, val) for f, val in ws if f.triggered is None] + delayed
+
+
+# ─── what the run reads ──────────────────────────────────────────────────────
+# The run evaluates a trigger's threshold, a delay and a priority with its own
+# evaluator, which folds constants in its own order (`d*3*7` as `d*21`), and
+# holds a parameter an initialAssignment or a rule sets as an expression it
+# evaluates the same way. So the doubles it compares are read from it, not
+# folded again here, which can differ in the last places.
+
+
+def _run_value(core, text: str, at: float) -> float | None:
+    """``text`` as the run's evaluator reads it at time ``at``, or None where
+    it does not compile."""
+    try:
+        return float(core.evaluate_over_times(text, [at])[0])
+    except Exception:
+        return None
+
+
+def _run_param(model: Model, sid: str) -> float | None:
+    """The value the loaded model holds for SBML parameter or compartment
+    ``sid`` (renamed where it is an evaluator's word), or None."""
+    for name in (sid, f"_ant_{sid}"):
+        try:
+            value = float(model.get_param(name))
+        except Exception:
+            continue
+        if math.isfinite(value):
+            return value
+    return None
+
+
+def _threshold_text(trigger: str) -> str | None:
+    """The threshold side of a trigger as the loader writes it,
+    ``(time()>=X)`` or ``(X<=time())`` and their strict twins, or None."""
+    for op in (">=", ">"):
+        head = f"(time(){op}"
+        if trigger.startswith(head) and trigger.endswith(")"):
+            return trigger[len(head) : -1]
+    for op in ("<=", "<"):
+        tail = f"{op}time())"
+        if trigger.startswith("(") and trigger.endswith(tail):
+            return trigger[1 : -len(tail)]
+    return None
+
+
+def _reads_clock(node) -> bool:
+    import libsbml
+
+    if node is None:
+        return False
+    if _is_time(node) or node.getType() == libsbml.AST_NAME_TIME:
+        return True
+    return any(_reads_clock(node.getChild(i)) for i in range(node.getNumChildren()))
+
+
+def _unfolded_note(
+    eid: str,
+    what: str,
+    node,
+    env: dict[str, float],
+    unfolded: dict[str, Any],
+    species_ids: set[str],
+) -> str | None:
+    """A note for ``what`` of event ``eid`` not folding because it reads a name
+    that keeps one value but is set by an initialAssignment that does not fold,
+    or None."""
+    names = sorted(set(_dynamic_names(node, env)) & set(unfolded))
+    if not names:
+        return None
+    why = (
+        "reads a species' initial value, which the translation does not fold"
+        if _dynamic_names(unfolded[names[0]], {}) & species_ids
+        else "does not fold to a number"
+    )
+    return (
+        f"event {eid!r} {what} that reads {names[0]!r}, which keeps one value through "
+        f"the run, but its initialAssignment {why}"
+    )
 
 
 # ─── public entry ────────────────────────────────────────────────────────────
@@ -673,9 +721,17 @@ def sbml_events_to_protocol(
     if n_events == 0:
         return None, []
 
-    env, own = _const_env(sbml_model)
+    env, own, unfolded = _const_env(sbml_model)
+    # Each constant at the double the run holds it at (see _run_value).
+    for sid in env:
+        held = _run_param(model, sid)
+        if held is not None:
+            env[sid] = held
     species_ids = {sbml_model.getSpecies(i).getId() for i in range(sbml_model.getNumSpecies())}
     name_to_idx = _codegen_species_names(model)
+    core = model._core
+    # The loader names an event its id, or `_event_<i>` where it has none.
+    run_events = {e["id"]: e for e in core.events_as_written()}
 
     t_start = float(t_span[0])
     lossy: list[str] = []
@@ -684,11 +740,19 @@ def sbml_events_to_protocol(
     for i in range(n_events):
         ev = sbml_model.getEvent(i)
         eid = ev.getId() or f"event #{i + 1}"
+        run_ev = run_events.get(ev.getId() or f"_event_{i}")
         trig = ev.getTrigger().getMath() if ev.isSetTrigger() else None
         threshold, reason = _trigger_fire_time(trig, env, species_ids)
         if threshold is None:
-            lossy.append(f"event {eid!r} {reason}")
+            note = _unfolded_note(eid, "has a trigger", trig, env, unfolded, species_ids)
+            lossy.append(note or f"event {eid!r} {reason}")
             continue
+        # The threshold as the run reads it, where its evaluator can be asked.
+        text = _threshold_text(run_ev["trigger"]) if run_ev else None
+        held = _run_value(core, text, t_start) if text else None
+        approx = held is None
+        if held is not None:
+            threshold = held
         # `time > T` (or `T < time`) is true only past T, not at it.
         strict = trig is not None and trig.getType() in (
             libsbml.AST_RELATIONAL_GT,
@@ -699,7 +763,7 @@ def sbml_events_to_protocol(
         # just before, which is what its initialValue says (true where unset,
         # as the loader reads it). Otherwise it never turns true, as time only
         # moves on, and the event never fires.
-        fire_t, past, loose, pinned = threshold, strict, False, False
+        fire_t, past, pinned = threshold, strict, False
         triggered: float | None = None
         if threshold < t_start or (threshold == t_start and not strict):
             trigger = ev.getTrigger()
@@ -710,10 +774,27 @@ def sbml_events_to_protocol(
 
         # A constant delay shifts the fire time; a non-constant one is unschedulable.
         if ev.isSetDelay() and ev.getDelay() is not None and ev.getDelay().getMath() is not None:
-            d = _eval_const(ev.getDelay().getMath(), env)
-            if d is None:
-                lossy.append(f"event {eid!r} has a non-constant delay (cannot be scheduled)")
+            dmath = ev.getDelay().getMath()
+            if _dynamic_names(dmath, env) or _reads_clock(dmath):
+                note = _unfolded_note(eid, "has a delay", dmath, env, unfolded, species_ids)
+                lossy.append(
+                    note or f"event {eid!r} has a non-constant delay (cannot be scheduled)"
+                )
                 continue
+            # The delay as the run reads it where it triggers; folded here
+            # only where its evaluator cannot be asked.
+            d = None
+            if run_ev is not None:
+                d = (
+                    _run_value(core, run_ev["delay_expr"], fire_t)
+                    if run_ev["delay_expr"]
+                    else float(run_ev["delay"])
+                )
+            if d is None:
+                d = _eval_const(dmath, env)
+                approx = True
+            if d is None:
+                d = math.nan
             # The run reads a delay within rounding of 0 below it as 0, and
             # refuses one further below, or not finite, where it fires.
             if not math.isfinite(d) or d < -1e-9 * max(1.0, abs(fire_t)):
@@ -727,15 +808,23 @@ def sbml_events_to_protocol(
                 triggered = fire_t
             fire_t += d
             delay = d
-            loose = past and d > 0
 
         # An unset priority is 0, as the loader writes it, and so is one that
         # is a plain number 0: the run tells neither from no priority at all.
+        # A priority that reads something that moves is not a constant; one
+        # that is, the run reads with its evaluator.
         priority: float | None = 0.0
         unprioritised = True
         if ev.isSetPriority() and ev.getPriority().getMath() is not None:
             priority = _eval_const(ev.getPriority().getMath(), env)
             unprioritised = _eval_const(ev.getPriority().getMath(), {}) == 0.0
+        if priority is not None and run_ev is not None:
+            unprioritised = not run_ev["priority_expr"] and run_ev["priority"] == 0
+            priority = (
+                _run_value(core, run_ev["priority_expr"], fire_t)
+                if run_ev["priority_expr"]
+                else float(run_ev["priority"])
+            )
 
         assigns: list[tuple[int, float, str]] = []
         ok = True
@@ -745,8 +834,12 @@ def sbml_events_to_protocol(
             var = ea.getVariable()
             val = _eval_const(ea.getMath(), value_env) if ea.isSetMath() else None
             if val is None:
+                note = _unfolded_note(
+                    eid, f"assigns {var!r} a value", ea.getMath(), value_env, unfolded, species_ids
+                )
                 lossy.append(
-                    f"event {eid!r} assigns {var!r} a non-constant value — the "
+                    note
+                    or f"event {eid!r} assigns {var!r} a non-constant value — the "
                     "actions channel carries only scheduled, pre-known changes"
                 )
                 ok = False
@@ -765,7 +858,6 @@ def sbml_events_to_protocol(
                 _Fire(
                     fire_t,
                     past,
-                    loose,
                     priority,
                     unprioritised,
                     triggered,
@@ -775,12 +867,17 @@ def sbml_events_to_protocol(
                     read,
                     delay,
                     pinned,
+                    approx,
                 )
             )
 
     t_end = max([float(t_span[1]), *(f.time for f in fires)])
-    stops = _run_stops(model, t_start, t_end) if len(fires) > 1 else []
-    lossy.extend(_unordered_writes(fires, t_end - t_start, stops))
+    if len(fires) > 1:
+        import numpy as np
+
+        stops = _run_stops(model, t_start, t_end)
+        rows = [float(t) for t in np.linspace(t_start, float(t_span[1]), max(int(n_points), 2))]
+        lossy.extend(_unordered_writes(fires, t_end - t_start, stops, rows))
     if lossy:
         return None, lossy
     if not fires:

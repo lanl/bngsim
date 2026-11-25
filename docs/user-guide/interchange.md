@@ -100,23 +100,28 @@ event changes is refused, since its time or value isn't known before the run.
 
 A trigger that is already true at the start of `t_span` fires there only if
 its `initialValue` is false; otherwise the event never fires. Events at one
-time apply in the order BNGsim executes them: a strict trigger such as
-`time > 1` after the rest, then each in priority order, highest first, with no
-priority counting as 0. Of equal priority, delayed events execute in the order
-they were triggered, and where none of the events has a priority (a plain 0
-counts as none), after the ones that aren't delayed. BNGsim draws among the
-rest at random, and where that draw decides what a species is left at, the
-conversion is refused.
+time apply in the order BNGsim executes them: in priority order, highest
+first, with no priority counting as 0. Of equal priority, delayed events
+execute in the order they were triggered, and where none of the events has a
+priority (a plain 0 counts as none), after the ones that aren't delayed.
+BNGsim draws among the rest at random, and where that draw decides what a
+species is left at, the conversion is refused.
 
 Events due very close together BNGsim can execute as one instant or apart, as
 its rounding and its other stops fall: it merges two stops on the clock a few
-doubles apart into the later one, executes a strict trigger a little past its
-threshold, and counts a delay from where it read the trigger. So where events
-due within 256·ε·max(|t|, 1) of each other, or 100·ε·(|t| + the run's length)
-where that is more (ε the double precision), or triggered that close before
-another stop of the run, set a species to different values, the conversion is
-refused too. A delay that is negative or not finite is refused, as BNGsim
-refuses it.
+doubles apart into the later one, reads a strict trigger such as `time > 1` a
+little past its threshold, reads any trigger a little late just after it
+stops or executes an event, and counts a delay from where it read the
+trigger. So events are one instant for certain only where each lands on one
+double. Where events due within 256·ε·max(|t|, 1) of each other, or
+100·ε·(|t| + the run's length) where that is more (ε the double precision),
+set a species to different values, and any of them has a strict trigger, a
+trigger that close after another stop of the run, an output time or another
+event, or a due time apart from the others, the conversion is refused too.
+The times compared are BNGsim's own: a threshold, delay or priority as its
+evaluator reads it, which can differ from the SBML's arithmetic in the last
+places. A delay that is negative or not finite is refused, as BNGsim refuses
+it.
 
 A species set by an assignment rule is handled as in `.net`. Its molecule is
 named after the rule, `@comp1:$__ar_B()`, next to the function `B()`. BNGsim

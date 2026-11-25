@@ -134,10 +134,14 @@ def _write(tmp_path: Path, xml: str, name: str = "m.xml") -> Path:
     return path
 
 
-def _convert(tmp_path: Path, xml: str, t_span: tuple[float, float] = (0.0, 3.0)):
+def _convert(
+    tmp_path: Path, xml: str, t_span: tuple[float, float] = (0.0, 3.0), n_points: int = 7
+):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return sbml_to_bngl(_write(tmp_path, xml), None, strict=True, t_span=t_span, n_points=7)
+        return sbml_to_bngl(
+            _write(tmp_path, xml), None, strict=True, t_span=t_span, n_points=n_points
+        )
 
 
 def _schedule(report) -> list[tuple[float, str, float]]:
@@ -445,7 +449,8 @@ def test_a_name_folds_to_the_value_the_run_gives_it(tmp_path, events, body, want
         pytest.param(
             [_event("E1", _at(_cn(1)), {"A": _ci("v")})],
             {"parameters": _param("v", 1), "extra": _initial(v=_ci("B"))},
-            "'E1' assigns 'A' a non-constant value",
+            "'E1' assigns 'A' a value that reads 'v', which keeps one value through the run, "
+            "but its initialAssignment reads a species' initial value",
             id="a value whose initialAssignment reads a species",
         ),
         pytest.param(
@@ -456,7 +461,8 @@ def test_a_name_folds_to_the_value_the_run_gives_it(tmp_path, events, body, want
                     v=f"<apply><power/>{_cn(-8)}<apply><divide/>{_cn(1)}{_cn(3)}</apply></apply>"
                 ),
             },
-            "'E1' assigns 'A' a non-constant value",
+            "'E1' assigns 'A' a value that reads 'v', which keeps one value through the run, "
+            "but its initialAssignment does not fold to a number",
             id="a value whose initialAssignment has no real value",
         ),
         pytest.param(
@@ -476,6 +482,20 @@ def test_a_name_folds_to_the_value_the_run_gives_it(tmp_path, events, body, want
             {"parameters": _param("d", 1), "extra": _initial(d=_cn(-0.5))},
             "'E1' has a delay of -0.5, which the run refuses",
             id="a delay an initialAssignment makes negative",
+        ),
+        pytest.param(
+            [
+                _event(
+                    "E1",
+                    _at(_cn(1)),
+                    {"A": _cn(5)},
+                    delay=f"<apply><divide/>{_cn(1)}{_cn(0)}</apply>",
+                )
+            ],
+            {},
+            "'E1' has a delay of inf, which the run refuses: an event delay must be a "
+            "finite, non-negative number",
+            id="a delay of 1/0",
         ),
         pytest.param(
             [_event("E1", _at(_cn(1)), {"A": _ci("D")})],
@@ -513,11 +533,10 @@ def test_a_name_a_rule_or_event_moves_is_not_folded(tmp_path, events, body, note
 # ─── a trigger true at the start, and events at one instant (issue #1785) ──
 # initialValue is the trigger's value just before the run starts, so a trigger
 # already true there fires only where it is false. Events at one instant
-# execute as the run executes them: those whose strict trigger turns true just
-# past the instant after the rest, and each part in priority order, higher
-# first, an unset priority counting as 0. Of equal priority, delayed executions
-# keep the order they were triggered in, and where no event has a priority,
-# they follow the rest; the run draws among what is left.
+# execute as the run executes them: in priority order, higher first, an unset
+# priority counting as 0. Of equal priority, delayed executions keep the order
+# they were triggered in, and where no event has a priority, they follow the
+# rest; the run draws among what is left.
 
 
 def _gt(threshold: str) -> str:
@@ -613,14 +632,6 @@ def test_a_trigger_true_at_the_start_fires_only_where_initial_value_is_false(
         ),
         pytest.param(
             [
-                _a("E2", _gt(_cn(1)), 10, priority=_cn(2)),
-                _a("E1", _at(_cn(1)), 5, priority=_cn(1)),
-            ],
-            [5.0, 10.0],
-            id="a strict trigger after the rest, whatever its priority",
-        ),
-        pytest.param(
-            [
                 _a("E2", _gt(_cn(0.5)), 5, priority=_cn(2), delay=_cn(0.5)),
                 _a("E1", _at(_cn(1)), 5, priority=_cn(1)),
                 _event("E3", _at(_cn(1)), {"B": _cn(7)}),
@@ -681,49 +692,6 @@ def test_a_trigger_true_at_the_start_fires_only_where_initial_value_is_false(
             ],
             [5.0, 10.0],
             id="delayed executions of one priority in the order they were triggered",
-        ),
-        pytest.param(
-            [
-                _a("E0", _gt(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(-1)),
-                _a("E1", _at(_cn(1)), 5),
-                _a("E2", _at(_cn(1)), 7),
-            ],
-            [5.0, 7.0, 10.0],
-            id="a tie that a strict trigger's delayed execution of lower priority overwrites",
-        ),
-        pytest.param(
-            [
-                _a("E0", _gt(_cn(0)), 10, delay=_cn(1)),
-                _a("E1", _at(_cn(1)), 5),
-                _a("E2", _at(_cn(1)), 7, priority=_cn(0)),
-            ],
-            [5.0, 7.0, 10.0],
-            id="a tie with no priorities that a strict trigger's delayed execution overwrites",
-        ),
-        pytest.param(
-            [
-                _a("E0", _gt(_cn(0.5)), 7, delay=_cn(0.5), priority=_cn(1)),
-                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(1)),
-            ],
-            [10.0, 7.0],
-            id="a strict trigger's delayed execution after delayed ones triggered no later",
-        ),
-        pytest.param(
-            [
-                _a("E0", _gt(_cn(0)), 7, delay=_cn(1), priority=_cn(1)),
-                _a("E2", _at(_cn(0)), 10, delay=_cn(1), priority=_cn(1), initial_value=False),
-            ],
-            [10.0, 7.0],
-            id="a strict trigger's delayed execution that lands in the instant, after them",
-        ),
-        pytest.param(
-            [
-                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(1)),
-                _a("E3", _at(_cn(0.5)), 5, delay=_cn(0.5), priority=_cn(1)),
-                _a("E0", _gt(_cn(0.5)), 7, delay=_cn(0.5), priority=_cn(1)),
-            ],
-            [10.0, 5.0, 7.0],
-            id="a tie of delayed ones that a strict trigger's delayed execution overwrites",
         ),
         pytest.param(
             [
@@ -801,14 +769,6 @@ def test_equal_priorities_that_set_different_species_are_carried(tmp_path):
         ),
         pytest.param(
             [
-                _a("E2", _gt(_cn(0.5)), 10, priority=_cn(2), delay=_cn(0.5)),
-                _a("E1", _at(_cn(1)), 5, priority=_cn(1)),
-            ],
-            "'E2', delayed from a strict trigger, executes before or after the other",
-            id="a strict trigger's delayed execution, which the run's rounding places",
-        ),
-        pytest.param(
-            [
                 _a("E1", _at(_cn(1)), 5, priority=_cn(1)),
                 _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(1)),
             ],
@@ -845,14 +805,6 @@ def test_equal_priorities_that_set_different_species_are_carried(tmp_path):
             ],
             "events 'E1' and 'E2' set 'A' to different values at t = 1 with equal priority",
             id="the note names the tie, not an event before it",
-        ),
-        pytest.param(
-            [
-                _a("E2", _at(_cn(0.25)), 10, delay=_cn(0.75), priority=_cn(1)),
-                _a("E0", _gt(_cn(0)), 7, delay=_cn(1), priority=_cn(1)),
-            ],
-            "'E0', delayed from a strict trigger, executes before or after the other",
-            id="a strict trigger's delayed execution beside a delayed one triggered after it",
         ),
         pytest.param(
             [
@@ -967,3 +919,205 @@ _SEVEN_TENTHS = {"parameters": _param("T3", 0), "extra": _initial(T3=_times(_cn(
 def test_events_the_run_can_take_as_one_instant_or_apart_are_refused(tmp_path, events, body, note):
     with pytest.raises(ConversionError, match=note):
         _convert(tmp_path, _sbml(*events, **body))
+
+
+@pytest.mark.parametrize("n_points", [11, 7])
+def test_a_trigger_just_after_another_events_instant_is_refused(tmp_path, n_points):
+    """Just after EB executes at 0.6 (on the row there with 11 points), the
+    run steps over the stop of E1's trigger, a double later at 6*0.1, and
+    finds it by its root dozens of doubles late, so E1's delayed execution
+    comes due after E0, not with it at 1.1."""
+    xml = _sbml(
+        _event("EB", _at(_cn(0.6)), {"B": _cn(7)}),
+        _a("E1", _at(_times(_cn(6), _cn(0.1))), 4, delay=_cn(0.5), priority=_cn(2)),
+        _a("E0", _at(_cn(1.1)), 5, priority=_cn(1)),
+    )
+    with pytest.raises(ConversionError, match="events 'E1' and 'E0' set 'A' to different"):
+        _convert(tmp_path, xml, n_points=n_points)
+
+
+_D_3_7 = _times(_ci("d"), _cn(3), _cn(7))  # the run's evaluator folds it as d*21
+
+
+@pytest.mark.parametrize(
+    ("events", "body"),
+    [
+        pytest.param(
+            [
+                _a("E1", _at(_cn(0.5)), 4, delay=_D_3_7, priority=_cn(1)),
+                _a(
+                    "E3",
+                    _at(_plus(_cn(0.5), _times(_cn(0.1), _cn(3), _cn(7)))),
+                    5,
+                    priority=_cn(2),
+                ),
+            ],
+            {"parameters": _param("d", 0.1)},
+            id="a delay the run reads as 2.1, beside a threshold it reads as 2.6000000000000005",
+        ),
+        pytest.param(
+            [
+                _a("E1", _at(_ci("T")), 4, delay=_cn(0.5), priority=_cn(1)),
+                _a(
+                    "E3",
+                    _at(_plus(_cn(0.5), _times(_cn(0.1), _cn(3), _cn(7)))),
+                    5,
+                    priority=_cn(2),
+                ),
+            ],
+            {
+                "parameters": _param("T", 0) + _param("h", 0.1),
+                "extra": _initial(T=_times(_ci("h"), _cn(3), _cn(7))),
+            },
+            id="an initialAssignment the run reads as 2.1",
+        ),
+    ],
+)
+def test_times_a_double_apart_as_the_run_reads_them_are_refused(tmp_path, events, body):
+    """Folded left to right here, d*3*7 is 2.1000000000000005, and E1 seemed
+    due with E3. The run reads d*21 = 2.1, and executes E1 at 2.6, before E3."""
+    with pytest.raises(
+        ConversionError,
+        match="events 'E1' and 'E3' set 'A' to different values at t = 2.6 and "
+        "t = 2.6000000000000005",
+    ):
+        _convert(tmp_path, _sbml(*events, **body))
+
+
+def test_a_delay_is_read_as_the_run_reads_it(tmp_path):
+    """The run reads d*3*7 as d*21 = 2.1, so E1 is due on 2.6, with E3, and
+    runs after it by priority."""
+    xml = _sbml(
+        _a("E1", _at(_cn(0.5)), 4, delay=_D_3_7, priority=_cn(1)),
+        _a("E3", _at(_cn(2.6)), 5, priority=_cn(2)),
+        parameters=_param("d", 0.1),
+    )
+    rep = _convert(tmp_path, xml)
+    assert rep.ok, rep.lossy
+    assert _schedule(rep) == [(2.6, "A", 5.0), (2.6, "A", 4.0)]
+    _assert_runs_as_the_model(xml, rep)
+
+
+# A strict trigger is read a little past its threshold, where the run can take
+# it with the other events of the instant, after them, or, where it has a twin
+# on the same residual, in a second part of the instant: which, its spelling
+# and the run's other stops decide. Delayed, it keeps that offset. So beside an
+# event at or just after its time that sets a species differently, it is
+# refused.
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        pytest.param(
+            [
+                _a("E2", _gt(_cn(1)), 10, priority=_cn(2)),
+                _a("E1", _at(_cn(1)), 5, priority=_cn(1)),
+            ],
+            id="a strict trigger beside one not strict on its threshold",
+        ),
+        pytest.param(
+            [
+                _a("E0", _gt(_cn(0)), 10, delay=_cn(1)),
+                _a("E1", _at(_cn(1)), 5),
+                _a("E2", _at(_cn(1)), 7, priority=_cn(0)),
+            ],
+            id="a strict trigger's delayed execution on a tie with no priorities",
+        ),
+        pytest.param(
+            [
+                _a("E0", _gt(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(-1)),
+                _a("E1", _at(_cn(1)), 5),
+                _a("E2", _at(_cn(1)), 7),
+            ],
+            id="a strict trigger's delayed execution of lower priority on a tie",
+        ),
+        pytest.param(
+            [
+                _a("E0", _gt(_cn(0.5)), 7, delay=_cn(0.5), priority=_cn(1)),
+                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(1)),
+            ],
+            id="a strict trigger's delayed execution beside one triggered before it",
+        ),
+        pytest.param(
+            [
+                _a("E0", _gt(_cn(0)), 7, delay=_cn(1), priority=_cn(1)),
+                _a("E2", _at(_cn(0)), 10, delay=_cn(1), priority=_cn(1), initial_value=False),
+            ],
+            id="a strict trigger's delayed execution beside one triggered at the start",
+        ),
+        pytest.param(
+            [
+                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(1)),
+                _a("E3", _at(_cn(0.5)), 5, delay=_cn(0.5), priority=_cn(1)),
+                _a("E0", _gt(_cn(0.5)), 7, delay=_cn(0.5), priority=_cn(1)),
+            ],
+            id="a strict trigger's delayed execution on a tie of delayed ones",
+        ),
+        pytest.param(
+            [
+                _a("E2", _gt(_cn(0.5)), 10, priority=_cn(2), delay=_cn(0.5)),
+                _a("E1", _at(_cn(1)), 5, priority=_cn(1)),
+            ],
+            id="a strict trigger's delayed execution beside one not delayed",
+        ),
+        pytest.param(
+            [
+                _a("E2", _at(_cn(0.25)), 10, delay=_cn(0.75), priority=_cn(1)),
+                _a("E0", _gt(_cn(0)), 7, delay=_cn(1), priority=_cn(1)),
+            ],
+            id="a strict trigger's delayed execution beside one triggered after it",
+        ),
+    ],
+)
+def test_a_strict_trigger_beside_an_event_that_sets_a_species_differently_is_refused(
+    tmp_path, events
+):
+    with pytest.raises(ConversionError, match="which the run can execute as one instant or apart"):
+        _convert(tmp_path, _sbml(*events))
+
+
+def test_strict_triggers_with_and_without_a_twin_are_refused(tmp_path):
+    """E1's and E4's strict triggers have a twin on their residual, E0's
+    non-strict one, and the run holds them to a second part of the instant,
+    where they tie; E3's reads the same double through another spelling and
+    runs in the first part. By priority alone E3 sets B last, at 7; the run
+    leaves 5 or 7 as its draw falls, on some grids."""
+    x = f"<apply><times/>{_cn('0.009523809523809525')}{_cn(3)}{_cn(7)}</apply>"
+    y = f"<apply><times/>{_ci('p')}{_cn(3)}{_cn(7)}</apply>"
+    xml = _sbml(
+        _event(
+            "E0",
+            f"<apply><leq/>{x}{_TIME}</apply>",
+            {"A": _cn(10)},
+            initial_value=False,
+            priority=_cn(2),
+            delay=_cn(1),
+        ),
+        _event(
+            "E1",
+            f"<apply><lt/>{x}{_TIME}</apply>",
+            {"B": _cn(7)},
+            initial_value=False,
+            priority=_cn(2),
+        ),
+        _event("E4", _gt(x), {"B": _cn(5)}, initial_value=False, priority=_cn(2)),
+        _event(
+            "E3", f"<apply><lt/>{y}{_TIME}</apply>", {"A": _cn(10), "B": _cn(7)}, priority=_cn(0)
+        ),
+        parameters=_param("p", "0.009523809523809525"),
+    )
+    with pytest.raises(ConversionError, match="set 'B' to different values"):
+        _convert(tmp_path, xml)
+    after = set()
+    for seed in range(6):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = bngsim.Simulator(bngsim.Model.from_sbml_string(xml), method="ode").run(
+                t_span=(0.0, 3.0), n_points=101, rtol=1e-4, atol=1e-6, seed=seed
+            )
+        times = np.asarray(res.time)
+        i = int(np.searchsorted(times, 0.21 - 1e-9))
+        b = float(np.asarray(res.species)[i, res.species_names.index("B")])
+        after.add(round(b * math.exp(_K * (times[i] - 0.2)), 3))
+    assert after == {5.0, 7.0}
