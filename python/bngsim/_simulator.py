@@ -475,6 +475,9 @@ _NF_METHOD_ALIASES: dict[str, str] = {
     "dynstoc": "nf_fixed",
     "ds": "nf_fixed",
 }
+#: Every method name that runs network-free, as ``Simulator`` and a BNGL
+#: ``method=>`` spell it: the one list the CLI and the protocol parse read.
+_NETWORK_FREE_METHODS = frozenset(_NF_METHOD_ALIASES)
 
 _available_nf_methods = {"nf_reject"}
 _unavailable_nf_methods: dict[str, str] = {}
