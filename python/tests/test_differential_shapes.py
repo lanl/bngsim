@@ -2622,6 +2622,7 @@ def _plant(monkeypatch, state=None, criterion=None, converged=True):
             concentrations=x,
             species_names=ss.species_names,
             residual=ss.residual,
+            continued_run_distance=ss.continued_run_distance,
         )
 
     monkeypatch.setattr(bngsim.Simulator, "steady_state", planted)

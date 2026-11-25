@@ -164,7 +164,7 @@ and stops where that error leaves it, and a run at the same `atol` does not see
 the state move. BIOMD0000000609's species are all below 1.4e-13. At its SED-ML
 file's `atol=1e-9` the march stopped on a root of `f` with two species near
 -1.5e-14, which a run from it leaves at once, and the solve said
-`converged=True` (issue #1895). The run that resolves each species refuses it.
+`converged=True`. The run that resolves each species refuses it.
 If every species not `$`-fixed starts at 0, the start has no scale and the run
 takes the march's `atol`. To solve such a model, leave `atol` unset or pass one
 at its scale.
