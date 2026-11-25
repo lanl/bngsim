@@ -16,15 +16,15 @@ and could not see it, and the wall-clock budget was read only between CVode
 calls. Where the step stayed finite and t + h passed the end at inf, CVODE kept
 the step and interpolated the rows from it, and they were NaN.
 
-Where it happens turns on the model as much as on the span: ``A -> B`` returns
-over ``(-7e307, 0)``, and at k = 0, whose steps CVODE grows the fastest, it
-never returned there, nor over ``(0, 1e306)``. So no ceiling on the span tells
-the two apart. A run is ended, as ``UsageError``, where CVODE's step is no
-longer finite, or as a CVode call returns with its clock at inf; a step
+Where it happens turns on the model as much as on the span: ``A' = 1`` returns
+over ``(0, 1e306)``, and ``A -> B`` at k = 0, whose steps CVODE grows the
+fastest, never returned there, nor over ``(-7e307, 0)``. So no ceiling on the
+span tells the two apart. A run is ended, as ``UsageError``, where CVODE's step
+is no longer finite, or as a CVode call returns with its clock at inf; a step
 attempt whose t + h is inf that CVODE throws away and retries shorter is let
-be, as is a run whose first-step routine tries a time of inf. A run whose
-length is itself past the largest double is refused before it starts. Every
-run that returned before returns the rows it did. And the wall-clock budget is
+be, as is a run whose first-step routine tries a time of inf. A grid of output
+times that cannot be finite is refused before it starts. Every run that
+returned before returns the rows it did. And the wall-clock budget is
 read from the right-hand side, so a run that spends it inside one CVode call
 stops there as ``SimulationTimeout``.
 """
@@ -78,27 +78,32 @@ def _decays_from_1(r, k=1.0):
     )
 
 
+def _span(a, b):
+    return {"t_span": (a, b), "n_points": 5}
+
+
 # Each hung or returned NaN rows before, with no error.
 OVERFLOWS = [
-    pytest.param("k", 1.0, (0.0, 7e307), id="the issue's run that never returned"),
-    pytest.param(READS_THE_CLOCK, 1.0, (0.0, 7e307), id="it, reading the clock"),
-    pytest.param("k", 1.0, (1e308, 1.7e308), id="moved onto (0, 7e307)"),
-    pytest.param(READS_THE_CLOCK, 1.0, (1e308, 1.7e308), id="the issue's nan rows"),
-    pytest.param("k", 1.0, (-1.7e308, -1e308), id="a far run below 0"),
-    pytest.param("k", 0.0, (0.0, 1e306), id="a model at rest"),
-    pytest.param("k", 0.0, (-7e307, 0.0), id="a model at rest, toward 0"),
+    pytest.param("k", 1.0, _span(0.0, 7e307), id="the issue's run that never returned"),
+    pytest.param(READS_THE_CLOCK, 1.0, _span(0.0, 7e307), id="it, reading the clock"),
+    pytest.param("k", 1.0, _span(1e308, 1.7e308), id="moved onto (0, 7e307)"),
+    pytest.param(READS_THE_CLOCK, 1.0, _span(1e308, 1.7e308), id="the issue's nan rows"),
+    pytest.param("k", 1.0, _span(-1.7e308, -1e308), id="a far run below 0"),
+    pytest.param("k", 0.0, _span(0.0, 1e306), id="a model at rest"),
+    pytest.param("k", 0.0, _span(-7e307, 0.0), id="a model at rest, toward 0"),
+    pytest.param("k", 1.0, {"sample_times": [-1e308, 0.0, 1e308]}, id="sample times across 2e308"),
 ]
 
 
-@pytest.mark.parametrize(("law", "k", "span"), OVERFLOWS)
-def test_a_run_whose_step_overflows_ends_there(tmp_path, capfd, law, k, span):
+@pytest.mark.parametrize(("law", "k", "times"), OVERFLOWS)
+def test_a_run_whose_step_overflows_ends_there(tmp_path, capfd, law, k, times):
     sim = _sim(tmp_path, _net(law, k))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         # timeout=30 only so that an overflow that goes unseen fails here as
         # a timeout rather than hanging the suite.
         with pytest.raises(bngsim.UsageError, match="largest double") as info:
-            sim.run(span, 5, timeout=30)
+            sim.run(**times, timeout=30)
     assert isinstance(info.value, ValueError)
     assert info.value.code == "usage.span_out_of_reach"
     assert "larger unit" in str(info.value)
@@ -116,26 +121,50 @@ def test_a_run_whose_step_overflows_ends_there(tmp_path, capfd, law, k, span):
     _decays_from_1(sim.run((0.0, 5.0), 6), k)
 
 
-@pytest.mark.parametrize(
-    "times",
-    [
-        pytest.param({"t_span": (-1e308, 1e308), "n_points": 5}, id="t_span"),
-        pytest.param({"sample_times": [-1e308, 0.0, 1e308]}, id="sample_times"),
-    ],
-)
-def test_a_run_whose_length_overflows_is_refused_before_it_runs(tmp_path, times):
-    # 2e308 is past the largest double: the grid's first time was
-    # -1e308 + 0 * inf, a NaN, and every model tried failed "at t=inf".
+@pytest.mark.parametrize("n_points", [3, 5])
+def test_a_grid_whose_times_cannot_be_finite_is_refused_before_it_runs(tmp_path, n_points):
+    # 2e308 is past the largest double, so the grid's spacing is inf: its
+    # first time was -1e308 + 0 * inf, a NaN, and every model tried failed
+    # "at t=inf", with max_step or without.
     sim = _sim(tmp_path, _net())
     with pytest.raises(bngsim.UsageError, match="too long") as info:
-        sim.run(**times, timeout=30)
+        sim.run((-1e308, 1e308), n_points, max_step=1e306, timeout=30)
     assert info.value.code == "usage.span_out_of_reach"
+    assert "output times" in str(info.value)
     assert "larger unit" in str(info.value)
-    # The output times a t_span grid would space across it are not finite;
-    # sample times are, and the message does not say otherwise.
-    assert ("output times" in str(info.value)) == ("t_span" in times)
     assert sim.current_time == 0.0
     _decays_from_1(sim.run((0.0, 5.0), 6))
+
+
+# A step CVODE keeps at t + h = inf, NaN rows before, is refused as each kind of
+# CVode call returns.
+KEPT_AT_INF = [
+    # Steps of 1e307 from 0: the one past 1.79e308 is kept, in the warm loop's
+    # call, and with max_steps=5 in a batch retry_while_advancing runs.
+    pytest.param("clock", {}, {"max_step": 1e307}, id="the warm loop"),
+    pytest.param("clock", {}, {"max_step": 1e307, "max_steps": 5}, id="a retried batch"),
+    # An event takes the run down the cold loop, and so do sensitivities.
+    pytest.param("event", {}, {}, id="the cold loop"),
+    pytest.param("event", {"sensitivity_params": ["k"]}, {}, id="the cold loop, sensitivities"),
+]
+EVENT = "species A = 1, B = 0; k = 1; J1: A -> B; k*A; E1: at time > 1e10: A = 1;"
+
+
+@pytest.mark.parametrize(("model", "sim_kw", "run_kw"), KEPT_AT_INF)
+def test_a_step_kept_at_inf_is_refused_as_its_call_returns(tmp_path, model, sim_kw, run_kw):
+    if model == "clock":
+        sim = _sim(tmp_path, CLOCK_NET, **sim_kw)
+        span, n_points = (0.0, 1.79e308), 2
+    else:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sim = bngsim.Simulator(bngsim.Model.from_antimony_string(EVENT), "ode", **sim_kw)
+        span, n_points = (1e308, 1.7e308), 5
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(bngsim.UsageError, match="largest double") as info:
+            sim.run(span, n_points, timeout=30, **run_kw)
+    assert info.value.code == "usage.span_out_of_reach"
 
 
 @pytest.mark.parametrize("num_processors", [1, 2], ids=["sequential", "threads"])
@@ -174,22 +203,19 @@ def test_compute_all_sensitivities_ends_it_as_it_is():
         assert "rtol" not in str(info.value)
 
 
-# Each returned these rows before, and returns them still.
+# Each returned these rows before, right in every column, and returns them
+# still.
 def test_far_runs_that_returned_still_return(tmp_path):
-    exp_rows = [1.0, 0.0, 0.0, 0.0, 0.0]
     # A' = 1: A = t - t_start, exactly.
     r = _sim(tmp_path, CLOCK_NET).run((0.0, 1e300), 5)
     np.testing.assert_allclose(np.asarray(r.species)[:, 0], np.asarray(r.time), rtol=1e-12)
-    # A -> B, its first step far longer than its time scale: A is at 0 by the
-    # first row.
-    for span in [(0.0, 1e200), (1e200, 2e200)]:
-        r = _sim(tmp_path, _net()).run(span, 5)
-        np.testing.assert_allclose(np.asarray(r.species)[:, 0], exp_rows, atol=1e-12)
     # Toward 0 its steps stay finite, though they are too small to move the
     # clock out there, and it says so.
     with pytest.warns(bngsim.RoundoffStepWarning):
-        r = _sim(tmp_path, _net()).run((-7e307, 0.0), 5)
-    np.testing.assert_allclose(np.asarray(r.species)[:, 0], exp_rows, atol=1e-12)
+        r = _sim(tmp_path, CLOCK_NET).run((-7e307, 0.0), 5)
+    np.testing.assert_allclose(
+        np.asarray(r.species)[:, 0], np.asarray(r.time) + 7e307, rtol=1e-12, atol=1e295
+    )
     # A' = 1/(1 + t/1e308): CVODE tries two steps whose t + h is inf, throws
     # them away on its error test and goes on from its own finite clock. The
     # rows are 1e308 ln(1 + t/1e308), to 3e-8.
@@ -214,12 +240,32 @@ def test_far_runs_that_returned_still_return(tmp_path):
     np.testing.assert_allclose(np.asarray(far.species)[:, 0], np.asarray(near.time), rtol=1e-12)
 
 
+@pytest.mark.parametrize("max_step", [1e305, 1e306, 1e307])
+def test_a_run_longer_than_the_largest_double_whose_steps_stay_finite_returns(tmp_path, max_step):
+    # Sample times 2e308 apart, max_step bounding every step: CVODE never takes
+    # a step, or reaches a time, past the largest double. (Its first steps at
+    # -1e308 are too small to move the clock, and it says so; the rows are
+    # right.)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        lin = bngsim.Model.from_antimony_string("species A = 0; J1: -> A; time/1e308;")
+        rest = _sim(tmp_path, _net(k=0.0)).run(
+            sample_times=[-1e308, 0.0, 1e308], max_step=max_step, timeout=30
+        )
+        r = bngsim.Simulator(lin, "ode").run(
+            sample_times=[-1e308, 0.0, 1e308], max_step=max_step, timeout=30
+        )
+    assert np.array_equal(np.asarray(rest.species), [[1.0, 0.0]] * 3)
+    # A' = t/1e308: A = (t^2 - 1e616)/2e308.
+    np.testing.assert_allclose(np.asarray(r.species)[:, 0], [0.0, -5e307, 0.0], atol=1e300)
+
+
 def test_a_first_step_cvode_only_tries_at_inf_is_let_be(tmp_path):
     # At rest, and with output rows 2.5e299 apart, CVODE's first-step routine
     # multiplies two times past the largest double and tries t_0 + inf. It goes
     # on from the step it settles on, its own clock finite throughout.
     r = _sim(tmp_path, _net(k=0.0)).run((0.0, 1e300), 5)
-    assert np.array_equal(np.asarray(r.species)[:, 0], np.ones(5))
+    assert np.array_equal(np.asarray(r.species), [[1.0, 0.0]] * 5)
 
 
 # One CVode call: two rows, a step of at most 1e-4, and max_steps out of the

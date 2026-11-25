@@ -573,12 +573,12 @@ longer finite, or where it keeps a step to a time past the largest double,
 instead of hanging past `timeout=` or returning NaN rows. A step CVODE tries
 past it and throws away is no error: `A' = 1/(1 + t/1e308)` over
 `(0, 1.79e308)` returns its rows to 3e-8. Where it happens turns on the model
-as much as on the span: `A -> B` at `k = 1` returns over `(-7e307, 0)`, and at
-`k = 0`, whose steps CVODE grows the fastest, it fails over spans from about
-`1e306`. A `run_batch` row or a scan point that fails so is named in the
-error. A run whose length is itself past the largest double, such as
-`(-1e308, 1e308)`, is refused before it starts. Measure time in a larger unit
-instead.
+as much as on the span: `A' = 1` returns `A = t` over `(0, 1e306)`, and a
+species that does not change, whose steps CVODE grows the fastest, fails
+there. A `run_batch` row or a scan point that fails so is named in the error.
+A grid of three or more output points over a span longer than the largest
+double, such as `(-1e308, 1e308)`, is refused before it starts: its output
+times are not finite. Measure time in a larger unit instead.
 
 ### Steps too small to move the clock
 

@@ -15,8 +15,8 @@ class SparseJacobianUnavailable : public std::runtime_error {
     explicit SparseJacobianUnavailable(const std::string &what) : std::runtime_error(what) {}
 };
 
-// An ODE run over a span CVODE cannot step through (issue #1838): one whose
-// length is past the largest double, refused before it starts, or one where
+// An ODE run over a span CVODE cannot step through (issue #1838): a grid whose
+// output times cannot be finite, refused before it starts, or a run where
 // CVODE's step, or its clock (t + h), passes the largest double, ended there.
 // Only the ODE engine refuses it, so the engine does, not the checks of a span
 // that Python makes for every method. A std::invalid_argument, which the

@@ -196,9 +196,9 @@ struct CvodeUserData;
 // see check_inside_call for where each is found).
 static const char *const kPastTheDoubles =
     "CVODE cannot step through this ODE run: its step, or its clock (t + h), passed the "
-    "largest double (about 1.8e308) before the run reached its end, so the run would never "
-    "return, or return NaN rows. The run is too long, or too far from t = 0. Measure time in "
-    "a larger unit, so that the run's times are smaller.";
+    "largest double (about 1.8e308) before the run reached its end, so CVODE cannot go on. "
+    "The run is too long, or too far from t = 0. Measure time in a larger unit, so that the "
+    "run's times are smaller.";
 
 // A step CVODE took to t + h = inf and kept (issue #1838): it passed its error
 // test, and CVode returned with its clock at inf. Every row from there is
@@ -17599,32 +17599,28 @@ std::tuple<long, int, double> CvodeSimulator::last_run_roundoff_steps() const {
             impl_->last_run_roundoff_spacing};
 }
 
-// Refuse an ODE run whose length is past the largest double (issue #1838):
-// t_end - t_start, or the spread of its sample times, is inf. CVODE measures
-// its steps and the distance it has still to go across that length, and over
-// (-1e308, 1e308) every model tried failed "at t=inf", or with sample times
-// [-1e308, 0, 1e308] never returned. A grid of n_points over it is not finite
-// either: its first time is t_start + 0 * inf, a NaN. Nothing shorter is
-// refused here. A run that is long, or far from t = 0, can still overflow
-// CVODE's step or its clock, but whether it does turns on the model, and the
-// run is ended where it does (check_inside_call). Throws TimeSpanOutOfReach
-// (UsageError in Python).
+// Refuse an ODE run whose output times cannot be finite (issue #1838): a grid
+// of three or more points over a span whose length, t_end - t_start, is past
+// the largest double. Its spacing is inf, so its second time is too, and the
+// first, t_start + 0 * inf, a NaN: every such run tried over (-1e308, 1e308)
+// failed, with max_step or without. Two points are t_start and t_end
+// themselves, and sample times are the caller's own, so neither is refused
+// here: with max_step bounding its steps, A' = t/1e308 over (-1e308, 1e308)
+// returns its rows, (t^2 - 1e616)/2e308, at both ends. Whether any other run
+// gets past the largest double turns on the model and its options, and the run
+// is ended where it does (check_inside_call, refuse_a_clock_past_the_doubles).
+// Throws TimeSpanOutOfReach (UsageError in Python).
 static void require_steppable_ode_span(const TimeSpec &times) {
-    double lo = std::min(times.t_start, times.t_end);
-    double hi = std::max(times.t_start, times.t_end);
-    for (double t : times.sample_times) {
-        lo = std::min(lo, t);
-        hi = std::max(hi, t);
-    }
-    if (std::isfinite(hi - lo))
+    if (!times.sample_times.empty() || times.n_points < 3 ||
+        std::isfinite(times.t_end - times.t_start))
         return;
-    char text[640];
-    std::snprintf(
-        text, sizeof(text),
-        "An ODE run from t = %.17g to %.17g is too long: its length is past the largest "
-        "double (about 1.8e308), so CVODE's steps across it overflow%s. Measure time "
-        "in a larger unit, so that the run is shorter.",
-        lo, hi, times.sample_times.empty() ? ", and so do the output times spaced across it" : "");
+    char text[512];
+    std::snprintf(text, sizeof(text),
+                  "An ODE run from t = %.17g to %.17g over %d output points is too long: its "
+                  "length is past the largest double (about 1.8e308), so the output times spaced "
+                  "across it are not finite. Measure time in a larger unit, so that the run is "
+                  "shorter.",
+                  times.t_start, times.t_end, times.n_points);
     throw TimeSpanOutOfReach(text);
 }
 
@@ -17710,9 +17706,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         return impl_->run_algebraic_only(times);
     }
 
-    // A run whose length is past the largest double (issue #1838), refused
-    // before the far run below moves it. And a run starts with SUNDIALS' error
-    // lines on, whatever ended the last one on this thread: nothing above calls
+    // A run whose output times cannot be finite (issue #1838), refused before
+    // the far run below moves it. And a run starts with SUNDIALS' error lines
+    // on, whatever ended the last one on this thread: nothing above calls
     // SUNDIALS.
     require_steppable_ode_span(times);
     g_rhs_ended_call = false;

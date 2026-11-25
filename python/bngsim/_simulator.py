@@ -6239,9 +6239,10 @@ class Simulator:
         ValueError
             If t_span, n_points or sample_times are invalid (a time that is
             not finite, ``t_end <= t_start``, ``n_points < 2``, fewer than two
-            sample times; for an ODE run, one whose length is past the
-            largest double, or whose step or clock CVODE takes past it before
-            the run ends, a run it cannot step through), if ``start`` is
+            sample times; for an ODE run, a grid of three or more points
+            whose length is past the largest double, or a run whose step or
+            clock CVODE takes past it before the run ends, which it cannot
+            step through), if ``start`` is
             not ``None``, ``"live"`` or ``"initial"``, or ``"initial"`` with
             ``carry_sensitivities=True``, or if output sensitivities
             were requested (``sensitivity_params`` / ``sensitivity_ic``,
