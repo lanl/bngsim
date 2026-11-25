@@ -175,9 +175,17 @@ def _assert_runs_as_the_model(
     xml: str, report, t_span: tuple[float, float] = (0.0, 3.0), prefix: str = ""
 ):
     """The schedule, replayed, gives A and B (named ``prefix`` + id) as
-    bngsim's run of ``xml`` gives them, at every sample but the fire times
-    (where a sample is read before or after the dose as the run lands). For
-    several seeds, grids and tolerances."""
+    bngsim's run of ``xml`` gives them, for several seeds, grids and
+    tolerances, at every sample but the fire times.
+
+    At a fire time the two report different sides of the instant, so the
+    sample there is no check of the trajectory: the run records its row after
+    the executions on its stop there (a trigger read on it) and before those
+    it reads just past it (a strict trigger, or a delay that rounds to
+    nothing), while the actions end their phase there and make the changes
+    after it. The start is the one such row the actions write after their
+    changes; see
+    test_a_strict_trigger_on_the_start_differs_in_the_first_row_alone."""
     schedule = _schedule(report)
     fire_times = {ft for ft, _, _ in schedule}
     # The grid and the tolerance move the run's stops and steps; the seed, its
@@ -1489,3 +1497,87 @@ def test_a_value_that_reads_rate_of_is_refused_as_such(tmp_path):
         ConversionError, match="'E1' assigns 'A' a value that reads rateOf, which the translation"
     ):
         _convert(tmp_path, xml)
+
+
+_ROUNDS_TO_NOTHING = f"<apply><minus/>{_times(_cn(0.1), _cn(3))}{_cn(0.3)}</apply>"  # 5.6e-17
+
+
+@pytest.mark.parametrize(
+    "delay",
+    [
+        pytest.param(_ROUNDS_TO_NOTHING, id="0.1*3 - 0.3"),
+        pytest.param(_cn("1e-17"), id="1e-17"),
+        pytest.param(_cn("1e-300"), id="1e-300"),
+    ],
+)
+def test_a_delay_that_rounds_to_nothing_is_not_on_its_trigger_s_double(tmp_path, delay):
+    """1 + 5.6e-17 is 1, but the run queues E1, finds it due, and executes it
+    after the rest of the instant, whatever its priority: E0 sets A last."""
+    xml = _sbml(
+        _a("E0", _at(_cn(1)), 5, priority=_cn(1)),
+        _a("E1", _at(_cn(1)), 10, delay=delay, priority=_cn(2)),
+    )
+    with pytest.raises(ConversionError, match="events 'E1' and 'E0' set 'A' to different values"):
+        _convert(tmp_path, xml)
+
+
+def test_the_run_executes_a_delay_that_rounds_to_nothing_after_its_instant():
+    xml = _sbml(
+        _a("E0", _at(_cn(1)), 5, priority=_cn(1)),
+        _a("E1", _at(_cn(1)), 10, delay=_ROUNDS_TO_NOTHING, priority=_cn(2)),
+    )
+    for seed in range(4):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = bngsim.Simulator(bngsim.Model.from_sbml_string(xml), method="ode").run(
+                t_span=(0.0, 3.0), n_points=7, seed=seed
+            )
+        a3 = float(np.asarray(res.species)[-1, res.species_names.index("A")])
+        assert a3 == pytest.approx(10 * math.exp(-_K * 2), rel=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("priority", "random"),
+    [
+        pytest.param(_ci("p0"), True, id="a priority that reads a parameter at 0"),
+        pytest.param(_cn(0), False, id="a plain 0, which is no priority"),
+    ],
+)
+def test_a_delayed_event_triggered_at_an_instant_enters_its_tie(tmp_path, priority, random):
+    """E3 triggers at 1 to execute at 2. The run draws it at 1 with E0 and
+    E2's delayed execution; a priority on it, though it is 0, turns off the
+    rule that puts E2 after E0 where no event has one, and the draw is
+    random. A plain 0 is no priority."""
+    xml = _sbml(
+        _a("E0", _at(_cn(1)), 3),
+        _a("E2", _at(_cn(0.5)), 7, delay=_cn(0.5)),
+        _event("E3", _at(_cn(1)), {"B": _cn(10)}, delay=_cn(1), priority=priority),
+        parameters=_param("p0", 0),
+    )
+    if random:
+        with pytest.raises(ConversionError, match="with equal priority, and the run executes"):
+            _convert(tmp_path, xml)
+    else:
+        rep = _convert(tmp_path, xml)
+        assert rep.ok, rep.lossy
+        assert _schedule(rep) == [(1.0, "A", 3.0), (1.0, "A", 7.0), (2.0, "B", 10.0)]
+        _assert_runs_as_the_model(xml, rep)
+
+
+def test_a_strict_trigger_on_the_start_differs_in_the_first_row_alone(tmp_path):
+    """`time > 0` fires just past 0. The actions set A = 5 before the first
+    simulate, so their first row has it; the run's first row has A = 1, from
+    before. Every later row agrees."""
+    xml = _sbml(_a("E1", _gt(_cn(0)), 5))
+    rep = _convert(tmp_path, xml)
+    assert rep.ok, rep.lossy
+    assert isinstance(rep.protocol.steps[0], StateChange)
+    assert _schedule(rep) == [(0.0, "A", 5.0)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = bngsim.Simulator(bngsim.Model.from_sbml_string(xml), method="ode").run(
+            t_span=(0.0, 3.0), n_points=7, rtol=1e-10, atol=1e-12
+        )
+    a = np.asarray(res.species)[:, res.species_names.index("A")]
+    assert a[0] == pytest.approx(_X0["A"])
+    _assert_runs_as_the_model(xml, rep)

@@ -396,28 +396,41 @@ def _chain_end(points: list[float], t: float, span: float) -> float:
         t = points[j]
 
 
-def _landing(f: _Fire, points: list[float], span: float) -> tuple[float, float]:
-    """The earliest and latest times the run can execute ``f`` at.
+def _reading(f: _Fire, points: list[float], span: float) -> tuple[float, float]:
+    """The earliest and latest times the run can read ``f``'s trigger at.
 
-    Its trigger is read on its own time, or on a stop it is merged into. A
-    strict one is read past its threshold, up to a root's reach. So is any
-    other that has a stop, a row or an execution within that reach before it:
-    having just executed or stopped there, the run can step over the trigger's
-    own stop and find it by its root (measured, up to 0.26 of the reach late).
-    A delay counts from where the trigger is read. Read at the start, it is
+    On its own time, or on a stop it is merged into. A strict one is read past
+    its threshold, up to a root's reach. So is any other that has a stop, a
+    row or an execution within that reach before it: having just executed or
+    stopped there, the run can step over the trigger's own stop and find it by
+    its root (measured, up to 0.26 of the reach late). Read at the start, it is
     read there exactly.
     """
     if f.pinned:
-        lo = hi = f.read
-    else:
-        lo = f.read
-        hi = _chain_end(points, f.read, span)
-        reach = _instant_reach(f.read, span)
-        j = bisect.bisect_left(points, f.read)
-        if f.past or (j > 0 and points[j - 1] >= f.read - reach):
-            hi = max(hi, f.read + reach)
+        return f.read, f.read
+    hi = _chain_end(points, f.read, span)
+    reach = _instant_reach(f.read, span)
+    j = bisect.bisect_left(points, f.read)
+    if f.past or (j > 0 and points[j - 1] >= f.read - reach):
+        hi = max(hi, f.read + reach)
+    return f.read, hi
+
+
+def _landing(f: _Fire, points: list[float], span: float) -> tuple[float, float]:
+    """The earliest and latest times the run can execute ``f`` at: where its
+    trigger is read (:func:`_reading`), and a delay after that.
+
+    A delay too small to move the time off the double it was read on still
+    makes the execution wait: the run queues it, finds it due, and executes
+    it after the rest of the instant, whatever its priority. So it is not on
+    that double for certain, and lands up to the reach after it.
+    """
+    lo, hi = _reading(f, points, span)
     if f.triggered is not None:
+        moved = lo + f.delay != lo
         lo, hi = lo + f.delay, hi + f.delay
+        if not moved:
+            hi = max(hi, lo + _instant_reach(lo, span))
     return lo, hi
 
 
@@ -467,6 +480,9 @@ def _unordered_writes(
     """
     points = sorted({*stops, *rows, *(f.read for f in fires), *(f.time for f in fires)})
     landed = sorted(((*_landing(f, points, span), f) for f in fires), key=lambda x: x[0])
+    # Where each delayed execution's trigger is read: the run draws it there,
+    # with what executes there, before it waits.
+    readings = [(*_reading(f, points, span), f) for f in fires if f.triggered is not None]
     clusters: list[list[tuple[float, float, _Fire]]] = []
     reach_to = -math.inf
     for lo, hi, f in landed:
@@ -486,7 +502,7 @@ def _unordered_writes(
                 writes.setdefault(idx, []).append((f, val))
                 var[idx] = sid
         for idx, ws in writes.items():
-            note = _species_note(var[idx], ws, members, span)
+            note = _species_note(var[idx], ws, members, span, readings)
             if note:
                 notes.append(note)
     return notes
@@ -497,6 +513,7 @@ def _species_note(
     ws: list[tuple[_Fire, float]],
     members: list[tuple[float, float, _Fire]],
     span: float,
+    readings: list[tuple[float, float, _Fire]] = (),  # type: ignore[assignment]
 ) -> str | None:
     """Why the value the writers ``ws`` of ``var``, in the cluster ``members``,
     leave is not known ahead, or None where it is.
@@ -507,7 +524,9 @@ def _species_note(
     one double, or all triggered together on one, as the run reads it, by
     triggers that are not strict, with nothing delayed among them, the run
     orders them as it orders an instant (:func:`_order_note`), in a tie with
-    whatever else in the cluster can land with them. Otherwise it is not known.
+    whatever else in the cluster can land with them, and every delayed
+    execution whose trigger is read there (``readings``), which the run draws
+    with them before it waits. Otherwise it is not known.
     """
     landing = {f.order: (lo, hi) for lo, hi, f in members}
 
@@ -528,7 +547,10 @@ def _species_note(
         lo = min(landing[f.order][0] for f in fs)
         hi = max(landing[f.order][1] for f in fs)
         reach = _instant_reach(hi, span)
+        # The run's tie is drawn among what executes there and what triggers
+        # there to wait, so a priority among the latter counts too.
         batch = [g for a, b, g in members if a <= hi + reach and b >= lo - reach]
+        batch += [g for a, b, g in readings if a <= hi + reach and b >= lo - reach]
         return _order_note(t, var, last, batch)
 
     # Name what keeps them from being one instant: a writer that does not land
@@ -1122,6 +1144,12 @@ def _build_protocol(
     the run executes them: see :class:`_Fire`) after the phase that reaches it.
     ``continue=>1`` chains each phase onto the prior end-state. Output steps per
     phase are apportioned by duration.
+
+    A change at the start, before the first phase, is in the first output
+    row. The run's first row has it too for a trigger already true there,
+    and not for a strict one on the start, `time > t0`, which it reads just
+    past t0; no phase of no length can hold that row, so it is the one row
+    the actions report otherwise.
     """
     species = model._core.codegen_data()["species"]
     t_start, t_end = float(t_span[0]), float(t_span[1])

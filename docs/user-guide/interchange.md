@@ -102,13 +102,19 @@ parameter a rate rule or another event changes, since its time or value
 isn't known before the run.
 
 A trigger that is already true at the start of `t_span` fires there only if
-its `initialValue` is false; otherwise the event never fires. Events at one
-time apply in the order BNGsim executes them: in priority order, highest
-first, with no priority counting as 0. Of equal priority, delayed events
-execute in the order they were triggered, and where none of the events has a
-priority (a plain 0 counts as none), after the ones that aren't delayed.
-BNGsim draws among the rest at random, and where that draw decides what a
-species is left at, the conversion is refused.
+its `initialValue` is false; otherwise the event never fires. A strict
+trigger on the start, `time > 0`, fires just past it: the actions set its
+values before the first `simulate`, so their first output row has them,
+where BNGsim's first row has the values from before; every later row agrees.
+Events at one time apply in the order BNGsim executes them: in priority
+order, highest first, with no priority counting as 0. Of equal priority,
+delayed events execute in the order they were triggered, and where none of
+the events that execute or trigger at that time has a priority (a plain 0
+counts as none), after the ones that aren't delayed. BNGsim draws among the
+rest at random, and where that draw decides what a species is left at, the
+conversion is refused. So is an event whose delay is too small to move it
+off its trigger's time, which BNGsim executes after the rest of that
+instant, beside one that sets a species to another value there.
 
 Events due very close together BNGsim can execute as one instant or apart, as
 its rounding and its other stops fall: it merges two stops on the clock a few
