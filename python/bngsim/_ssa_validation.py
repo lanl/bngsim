@@ -77,18 +77,22 @@ def validate_for_ssa(model: Model) -> list[SsaIssue]:
         if rxn.get("is_rate_rule_ode"):
             continuous.update(int(i) for i in rxn.get("products", ()))
 
+    # The amounts the SSA counts, before it rounds them, at the model's time:
+    # a concentration species in a compartment whose size moves is counted at
+    # the size the compartment has then, unless the state is an SSA run's
+    # counts already (issue #1754). Read as stored over the load-time size,
+    # c = 2 written to 3.01 counted X = 50 as 100 molecules for 150.5, and
+    # the run's rounding went unreported here.
+    core = model._core
+    amounts = core.ssa_start_amounts(core.current_time)
     for idx, sp in enumerate(species_meta):
-        if idx in continuous:
+        if idx in continuous or idx >= len(amounts):
             continue
         name = str(sp.get("name", ""))
         volume_factor = float(sp.get("volume_factor", 1.0))
         if not name or not math.isfinite(volume_factor) or volume_factor <= 0.0:
             continue
-        try:
-            storage_value = float(model.get_concentration(name))
-        except Exception:
-            continue
-        amount = storage_value * volume_factor
+        amount = float(amounts[idx])
         if not math.isfinite(amount):
             continue
         rounded_amount = math.floor(amount + 0.5) if amount >= 0.0 else math.ceil(amount - 0.5)

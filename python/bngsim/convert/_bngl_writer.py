@@ -875,10 +875,12 @@ def _actions_block(
         return block  # it generates the network where the protocol did
     # Materialize the network before simulating (generate_network is a build
     # directive parse_bngl_protocol drops, so the serializer never emits it). Honor the
-    # source model's own generate_network verbatim when it carried one -- it may hold a
+    # source's call that builds the network verbatim when there is one -- it may hold a
     # finiteness cap (max_stoich / max_agg / max_iter) that keeps a rule-based network
-    # finite (lanl/PyBNF #485) -- else prepend the bare default. overwrite=>1 is ensured
-    # either way, since the network is (re)built into a fresh path each run.
+    # finite (lanl/PyBNF #485) -- else prepend the bare default: no source call builds
+    # it (SBML/SED-ML, or a .bngl whose network BNG2.pl generates with its defaults).
+    # overwrite=>1 is ensured either way, since the network is (re)built into a fresh
+    # path each run.
     return block.replace(
         "begin actions\n",
         f"begin actions\n\n{_generate_network_line(protocol.network_gen)}\n",
@@ -891,7 +893,8 @@ def _generate_network_line(network_gen: str | None) -> str:
 
     ``network_gen`` is the source model's own call, captured verbatim by
     :func:`~bngsim.convert._protocol.parse_bngl_protocol` (carrying any ``max_stoich`` /
-    ``max_agg`` / ``max_iter`` cap), or ``None`` when the protocol came from SBML/SED-ML.
+    ``max_agg`` / ``max_iter`` cap), or ``None`` when no source call builds the network:
+    SBML/SED-ML, or a ``.bngl`` whose network BNG2.pl generates with its defaults.
     The default is the bare ``generate_network({overwrite=>1})``; a captured call is
     honored as-is, with ``overwrite=>1`` ensured because the network is rebuilt into a
     fresh path each run. A call that is not the ``({...})`` hash form (bare/positional)
