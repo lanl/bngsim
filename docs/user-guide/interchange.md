@@ -95,8 +95,9 @@ An event at a fixed time becomes a `simulate` up to that time, then a
 `setConcentration` for each assignment. Its trigger time, delay and assigned
 values are read at the start of the run, so a parameter that an
 initialAssignment sets, or an assignment rule over constants, has the value
-the run gives it. An event that reads a parameter a rate rule or another
-event changes is refused, since its time or value isn't known before the run.
+the run gives it. An event whose trigger time, delay or assigned value reads
+a parameter a rate rule or another event changes is refused, since its time
+or value isn't known before the run.
 
 A trigger that is already true at the start of `t_span` fires there only if
 its `initialValue` is false; otherwise the event never fires. Events at one

@@ -462,12 +462,9 @@ def _unordered_writes(
 
     Executions whose landings (:func:`_landing`, over the run's ``stops`` and
     its output ``rows``) come within reach of each other (:func:`_instant_reach`)
-    are one cluster: the run can execute them as
-    one instant, by priority, or apart, as its rounding and its stops fall. A
-    cluster that is one instant for certain, every execution on one double, is
-    ordered as the run orders an instant (:func:`_order_note`). In any other,
-    a species two of them set to different values has no value an action can
-    set.
+    are one cluster, which the run can execute as one instant, by priority, or
+    apart, as its rounding and its stops fall. Each species is decided by its
+    own writers in the cluster (:func:`_species_note`).
     """
     points = sorted({*stops, *rows, *(f.read for f in fires), *(f.time for f in fires)})
     landed = sorted(((*_landing(f, points, span), f) for f in fires), key=lambda x: x[0])
@@ -483,42 +480,67 @@ def _unordered_writes(
     for members in clusters:
         if len(members) < 2:
             continue
-        group = [f for _, _, f in members]
-        t = group[0].time
-        # One instant for certain: every execution lands on one double, or all
-        # of them are triggered together on it, as the run reads it, by
-        # triggers that are not strict, with nothing delayed beside them.
-        exact = all(f.time == t for f in group) and (
-            all(lo == hi == t for lo, hi, _ in members)
-            or all(
-                not f.past and not f.approx and f.triggered is None and f.read == t for f in group
-            )
-        )
         writes: dict[int, list[tuple[_Fire, float]]] = {}
         var: dict[int, str] = {}
-        for f in group:
+        for _, _, f in members:
             for idx, val, sid in f.assigns:
                 writes.setdefault(idx, []).append((f, val))
                 var[idx] = sid
         for idx, ws in writes.items():
-            note = _order_note(t, var[idx], ws, group) if exact else _apart_note(var[idx], ws)
+            note = _species_note(var[idx], ws, members, span)
             if note:
                 notes.append(note)
     return notes
 
 
-def _apart_note(var: str, ws: list[tuple[_Fire, float]]) -> str | None:
-    """Why the value executions near one instant, but not on it for certain,
-    leave in ``var`` is not known ahead, or None where they agree."""
-    f, val = ws[0]
-    other = next((g for g, v in ws if v != val), None)
-    if other is None:
+def _species_note(
+    var: str,
+    ws: list[tuple[_Fire, float]],
+    members: list[tuple[float, float, _Fire]],
+    span: float,
+) -> str | None:
+    """Why the value the writers ``ws`` of ``var``, in the cluster ``members``,
+    leave is not known ahead, or None where it is.
+
+    The last to execute sets it, so it is one that no other writer surely
+    executes after: none lands later by more than the reach. Where those
+    agree, it is known. Where they are one instant for certain, all landing on
+    one double, or all triggered together on one, as the run reads it, by
+    triggers that are not strict, with nothing delayed among them, the run
+    orders them as it orders an instant (:func:`_order_note`), in a tie with
+    whatever else in the cluster can land with them. Otherwise it is not known.
+    """
+    landing = {f.order: (lo, hi) for lo, hi, f in members}
+
+    def surely_after(g: _Fire, f: _Fire) -> bool:
+        f_hi = landing[f.order][1]
+        return landing[g.order][0] > f_hi + _instant_reach(f_hi, span)
+
+    last = [(f, v) for f, v in ws if not any(surely_after(g, f) for g, _ in ws if g is not f)]
+    if len({v for _, v in last}) < 2:
         return None
+    fs = [f for f, _ in last]
+    t = fs[0].time
+    together = all(f.time == t for f in fs) and (
+        all(landing[f.order] == (t, t) for f in fs)
+        or all(
+            not f.past and not f.approx and f.triggered is None and f.read == fs[0].read
+            for f in fs
+        )
+    )
+    if together:
+        lo = min(landing[f.order][0] for f in fs)
+        hi = max(landing[f.order][1] for f in fs)
+        reach = _instant_reach(hi, span)
+        batch = [g for a, b, g in members if a <= hi + reach and b >= lo - reach]
+        return _order_note(t, var, last, batch)
+    f, val = last[0]
+    other = next(g for g, v in last if v != val)
     when = f"t = {f.time!r}" if f.time == other.time else f"t = {f.time!r} and t = {other.time!r}"
     return (
         f"events {f.eid!r} and {other.eid!r} set {var!r} to different values at {when}, "
-        "which the run can execute as one instant or apart, in either order, as its "
-        "rounding and its stops fall — the value they leave has no actions form"
+        "close enough together that the translation cannot know which the run "
+        "executes last — the value they leave has no actions form"
     )
 
 
@@ -680,12 +702,15 @@ def sbml_events_to_protocol(
     event, ``protocol`` is a sequence of ``simulate`` phases with
     ``setConcentration`` state changes at each fire time (targets are *codegen
     species names*; the model-block writer translates them to compartment-qualified
-    patterns) and ``lossy`` is empty. When any event cannot be represented
-    faithfully (state-triggered, non-constant trigger/delay/value, unresolvable
-    target), ``protocol`` is ``None`` and ``lossy`` holds one plain-English note
-    per offending event — the caller refuses (strict) or warns (best-effort).
-    A comp document is flattened first, as :meth:`Model.from_sbml` flattens it,
-    and a model that runs an event the document does not declare is refused.
+    patterns) and ``lossy`` is empty. Otherwise ``protocol`` is ``None`` and
+    ``lossy`` holds plain-English notes — the caller refuses (strict) or warns
+    (best-effort): one per event that cannot be represented faithfully
+    (state-triggered, a non-constant trigger time, delay or value, a delay or
+    priority the run refuses, an unresolvable target), and one per species that
+    events the run can execute together leave at a value their order decides
+    (:func:`_unordered_writes`). A comp document is flattened first, as
+    :meth:`Model.from_sbml` flattens it, and a model that runs an event the
+    document does not declare is refused.
 
     The horizon for the trailing ``simulate`` phase comes from ``t_span``; if an
     event fires past it the horizon is extended so no scheduled change is dropped.
@@ -811,24 +836,47 @@ def sbml_events_to_protocol(
 
         # An unset priority is 0, as the loader writes it, and so is one that
         # is a plain number 0: the run tells neither from no priority at all.
-        # A priority that reads something that moves is not a constant; one
-        # that is, the run reads with its evaluator.
+        # A priority that reads something that moves is not a constant (None);
+        # one that reads only what keeps one value, the run reads with its
+        # evaluator, and refuses where that is NaN.
         priority: float | None = 0.0
         unprioritised = True
-        if ev.isSetPriority() and ev.getPriority().getMath() is not None:
-            priority = _eval_const(ev.getPriority().getMath(), env)
-            unprioritised = _eval_const(ev.getPriority().getMath(), {}) == 0.0
-        if priority is not None and run_ev is not None:
-            unprioritised = not run_ev["priority_expr"] and run_ev["priority"] == 0
-            priority = (
-                _run_value(core, run_ev["priority_expr"], fire_t)
-                if run_ev["priority_expr"]
-                else float(run_ev["priority"])
-            )
+        pmath = ev.getPriority().getMath() if ev.isSetPriority() else None
+        if pmath is not None and (
+            set(_dynamic_names(pmath, env)) - set(unfolded) or _reads_clock(pmath)
+        ):
+            priority, unprioritised = None, False
+        else:
+            if pmath is not None:
+                priority = _eval_const(pmath, env)
+                unprioritised = _eval_const(pmath, {}) == 0.0
+            if run_ev is not None:
+                unprioritised = not run_ev["priority_expr"] and run_ev["priority"] == 0
+                priority = (
+                    _run_value(core, run_ev["priority_expr"], fire_t)
+                    if run_ev["priority_expr"]
+                    else float(run_ev["priority"])
+                )
+            if priority is not None and math.isnan(priority):
+                lossy.append(
+                    f"event {eid!r} has a priority that is NaN, which the run refuses: an "
+                    "event priority must be a number"
+                )
+                continue
 
         assigns: list[tuple[int, float, str]] = []
         ok = True
         value_env = {**env, **own[i]} if i in own else env
+        # Each value that reads constants alone as the run rounds it, from the
+        # loader's assignment to the species (its first: a resize adds others
+        # after it). Only where that is the same number in its last places: the
+        # loader's text can be in the run's storage, an amount over its
+        # compartment's size. One that reads the event's own target is read
+        # here: the run's evaluator reads a species as it stands, not at its
+        # start.
+        run_sets: dict[int, str] = {}
+        for sp_idx, text in run_ev["assignments"] if run_ev is not None else ():
+            run_sets.setdefault(int(sp_idx), str(text))
         for j in range(ev.getNumEventAssignments()):
             ea = ev.getEventAssignment(j)
             var = ea.getVariable()
@@ -852,6 +900,14 @@ def sbml_events_to_protocol(
                 )
                 ok = False
                 break
+            reads_own = bool(_dynamic_names(ea.getMath(), env))
+            held = (
+                _run_value(core, run_sets[idx], fire_t)
+                if idx in run_sets and not reads_own
+                else None
+            )
+            if held is not None and abs(held - val) <= 64 * sys.float_info.epsilon * abs(val):
+                val = held
             assigns.append((idx, val, var))
         if ok:
             fires.append(

@@ -12,6 +12,7 @@ refuses. Nothing here needs BNG2.pl.
 from __future__ import annotations
 
 import math
+import sys
 import warnings
 from pathlib import Path
 
@@ -711,6 +712,15 @@ def test_a_trigger_true_at_the_start_fires_only_where_initial_value_is_false(
         ),
         pytest.param(
             [
+                _a("E1", _at(_cn(0.3)), 5, priority=_cn(1)),
+                _a("E2", _at(_cn(0.3)), 10, priority=_cn(2)),
+                _event("EB", _at(_times(_cn(3), _cn(0.1))), {"B": _cn(7)}),
+            ],
+            [10.0, 5.0],
+            id="triggers on one double, read together beside a stop a double after it",
+        ),
+        pytest.param(
+            [
                 _a("E1", _at(_cn(1)), 5, priority=_ci("B")),
                 _a("E2", _at(_cn(2)), 10, priority=_cn(1)),
             ],
@@ -812,7 +822,7 @@ def test_equal_priorities_that_set_different_species_are_carried(tmp_path):
                 _event("E2", _at(_cn(0.1)), {"B": _cn(5)}, delay=_cn(0.8)),
             ],
             "events 'E1' and 'E2' set 'B' to different values at t = 0.8999999999999999 and "
-            "t = 0.9, which the run can execute as one instant or apart, in either order",
+            "t = 0.9, close enough together that the translation cannot know which the run",
             id="a strict trigger's delayed execution a double before another",
         ),
         pytest.param(
@@ -821,7 +831,7 @@ def test_equal_priorities_that_set_different_species_are_carried(tmp_path):
                 _a("E2", _at(_cn(0.1)), 5, delay=_cn(0.2), priority=_cn(0)),
             ],
             "events 'E1' and 'E2' set 'A' to different values at t = 0.3 and "
-            "t = 0.30000000000000004, which the run can execute as one instant or apart",
+            "t = 0.30000000000000004, close enough together that the translation cannot know",
             id="an execution due a double past a strict trigger's time, of higher priority",
         ),
         pytest.param(
@@ -830,7 +840,7 @@ def test_equal_priorities_that_set_different_species_are_carried(tmp_path):
                 _a("E2", _at(_cn(0.1)), 5, delay=_cn(0.2), priority=_cn(1)),
             ],
             "events 'E1' and 'E2' set 'A' to different values at t = 0.3 and "
-            "t = 0.30000000000000004, which the run can execute as one instant or apart",
+            "t = 0.30000000000000004, close enough together that the translation cannot know",
             id="an execution due a double past a strict trigger's time, of its priority",
         ),
     ],
@@ -876,7 +886,7 @@ _SEVEN_TENTHS = {"parameters": _param("T3", 0), "extra": _initial(T3=_times(_cn(
                 _event("E3", _at(_ci("T3")), {"B": _cn(7)}),
             ],
             _SEVEN_TENTHS,
-            "events 'E1' and 'E2' set 'A' to different values at t = 1.2, which the run",
+            "events 'E1' and 'E2' set 'A' to different values at t = 1.2, close enough together",
             id="a delay counted from a trigger read on a stop a double after it",
         ),
         pytest.param(
@@ -889,7 +899,7 @@ _SEVEN_TENTHS = {"parameters": _param("T3", 0), "extra": _initial(T3=_times(_cn(
                 "parameters": _param("T3", 0) + _param("T", 0.7),
                 "extra": _initial(T3=_times(_cn(7), _cn(0.1))),
             },
-            "set 'A' to different values at t = 0.7, which the run can execute",
+            "set 'A' to different values at t = 0.7, close enough together",
             id="a strict trigger read with the rest on a stop a double after them",
         ),
         pytest.param(
@@ -1073,7 +1083,10 @@ def test_a_delay_is_read_as_the_run_reads_it(tmp_path):
 def test_a_strict_trigger_beside_an_event_that_sets_a_species_differently_is_refused(
     tmp_path, events
 ):
-    with pytest.raises(ConversionError, match="which the run can execute as one instant or apart"):
+    with pytest.raises(
+        ConversionError,
+        match="close enough together that the translation cannot know which the run executes last",
+    ):
         _convert(tmp_path, _sbml(*events))
 
 
@@ -1121,3 +1134,122 @@ def test_strict_triggers_with_and_without_a_twin_are_refused(tmp_path):
         b = float(np.asarray(res.species)[i, res.species_names.index("B")])
         after.add(round(b * math.exp(_K * (times[i] - 0.2)), 3))
     assert after == {5.0, 7.0}
+
+
+def test_writers_the_run_may_order_either_way_are_named_as_such(tmp_path):
+    """E2 is due 400 doubles after E1, with EB between: the reach of the run's
+    stops chains E1's to E2's, so the note says only what is true, that the
+    translation cannot know which the run executes last."""
+    eps = sys.float_info.epsilon
+    xml = _sbml(
+        _a("E1", _at(_cn(1)), 5),
+        _event("EB", _at(_cn(repr(1 + 200 * eps))), {"B": _cn(7)}),
+        _a("E2", _at(_cn(repr(1 + 400 * eps))), 10),
+    )
+    with pytest.raises(ConversionError) as refused:
+        _convert(tmp_path, xml)
+    note = str(refused.value)
+    assert "events 'E1' and 'E2' set 'A' to different values" in note
+    assert "close enough together that the translation cannot know which the run" in note
+    assert "in either order" not in note
+
+
+_ABS_MINUS_1 = f"<apply><abs/>{_cn(-1)}</apply>"
+_ZERO_BY_ZERO = f"<apply><divide/>{_cn(0)}{_cn(0)}</apply>"
+
+
+@pytest.mark.parametrize(
+    "priority",
+    [
+        pytest.param(_ABS_MINUS_1, id="abs(-1)"),
+        pytest.param(f"<apply><floor/>{_cn(1.5)}</apply>", id="floor(1.5)"),
+    ],
+)
+def test_a_priority_the_run_reads_as_a_number_is_ordered_by_it(tmp_path, priority):
+    """Not folded here, but it reads nothing that moves: the run's evaluator
+    reads 1, so E2 (priority 2) runs first and E1 sets A last."""
+    xml = _sbml(
+        _a("E1", _at(_cn(1)), 5, priority=priority),
+        _a("E2", _at(_cn(1)), 10, priority=_cn(2)),
+    )
+    rep = _convert(tmp_path, xml)
+    assert rep.ok, rep.lossy
+    assert [v for _, target, v in _schedule(rep) if target == "A"] == [10.0, 5.0]
+    _assert_runs_as_the_model(xml, rep)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param({"priority": _ZERO_BY_ZERO}, id="0/0"),
+        pytest.param(
+            {"priority": _ci("p"), "params": _param("p", 1), "extra": _initial(p=_ZERO_BY_ZERO)},
+            id="a parameter an initialAssignment sets to 0/0",
+        ),
+    ],
+)
+def test_a_priority_the_run_reads_as_nan_is_refused_as_the_run_refuses_it(tmp_path, body):
+    xml = _sbml(
+        _a("E1", _at(_cn(1)), 5, priority=body["priority"]),
+        parameters=body.get("params", ""),
+        extra=body.get("extra", ""),
+    )
+    with pytest.raises(
+        ConversionError,
+        match="'E1' has a priority that is NaN, which the run refuses: an event priority must "
+        "be a number",
+    ):
+        _convert(tmp_path, xml)
+    with warnings.catch_warnings(), pytest.raises(Exception, match="priority that is NaN"):
+        warnings.simplefilter("ignore")
+        bngsim.Simulator(bngsim.Model.from_sbml_string(xml), method="ode").run(
+            t_span=(0.0, 3.0), n_points=7
+        )
+
+
+_H_3_7 = _times(_ci("h"), _cn(3), _cn(7))  # the run reads h*21 = 2.1
+
+
+def test_a_value_is_written_as_the_run_reads_it(tmp_path):
+    """Folded left to right here, h*3*7 is 2.1000000000000005; the run sets
+    2.1, as E2 does, so their tie leaves 2.1 whichever runs last."""
+    xml = _sbml(
+        _event("E1", _at(_cn(1)), {"A": _H_3_7}),
+        _event("E2", _at(_cn(1)), {"A": _cn(2.1)}),
+        parameters=_param("h", 0.1),
+    )
+    rep = _convert(tmp_path, xml)
+    assert rep.ok, rep.lossy
+    assert _schedule(rep) == [(1.0, "A", 2.1), (1.0, "A", 2.1)]
+    _assert_runs_as_the_model(xml, rep)
+
+
+def test_values_a_double_apart_as_the_run_reads_them_are_refused(tmp_path):
+    """The run sets 2.1 and 2.1000000000000005 in a tie, in either order."""
+    xml = _sbml(
+        _event("E1", _at(_cn(1)), {"A": _H_3_7}),
+        _event("E2", _at(_cn(1)), {"A": _cn("2.1000000000000005")}),
+        parameters=_param("h", 0.1),
+    )
+    with pytest.raises(ConversionError, match="with equal priority, and the run executes them"):
+        _convert(tmp_path, xml)
+
+
+def test_a_value_is_the_models_not_the_runs_storage(tmp_path):
+    """The run stores an amount-valued species over its compartment's size,
+    and the loader's assignment says 5/C; the value is the model's 5."""
+    xml = _sbml(
+        _event("E1", _at(_cn(1)), {"A": _cn(5)}),
+        _event("E2", _at(_cn(2)), {"B": _cn(7)}),
+        compartment='<compartment id="C" size="2" spatialDimensions="3" constant="true"/>',
+    )
+    amount = 'initialConcentration="1.0" hasOnlySubstanceUnits="true"'
+    xml = xml.replace('initialConcentration="1.0" hasOnlySubstanceUnits="false"', amount, 1)
+    assert amount in xml
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = bngsim.Model.from_sbml_string(xml)
+    protocol, lossy = sbml_events_to_protocol(_write(tmp_path, xml), model)
+    assert lossy == []
+    sets = [s for s in protocol.steps if isinstance(s, StateChange)]
+    assert [(s.target, s.value) for s in sets] == [("A", 5.0), ("B", 7.0)]
