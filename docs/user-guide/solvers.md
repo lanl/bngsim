@@ -172,7 +172,8 @@ spec = bngsim.convert.read_sedml("simulation.sedml", exact_atol=True)
   `run()` would hold it, given a scalar, from the solve's start.
 - `steady_state(atol=...)` uses a scalar as given. Under `criterion="scaled"`
   it is also the steady-state convergence test's tolerance. The run that test
-  takes reads it as `run()` does, a ceiling per species from the solve's start.
+  takes reads it as `run()` does, a ceiling per species from the solve's start
+  (and, for a species the state holds below zero, from the state).
 
 Use `ExactAtol` to compare with a tool that holds one absolute tolerance for
 every species.

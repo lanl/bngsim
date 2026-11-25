@@ -260,6 +260,40 @@ def test_converged_is_a_rest_at_the_steady_state(tmp_path, name, method, atol):
         assert ss.continued_run_distance > 1.0 or not ss.residual < 1e-9
 
 
+# SRC_NET's feeds, from a sweep of 51 between 0.01 and 1000, at which the
+# march at the issue's atol stops with S and P below zero, far from where
+# they start (S at -6.6e-12 at a feed of 100, past ten thousand times its
+# steady value), and a run held to the start's scales rests there, where
+# run() from it leaves (1.58) or fails (6.31, 100).
+LEFT_BY_A_RUN = [1.584893192461114, 6.309573444801936, 100.0]
+
+
+@pytest.mark.parametrize("atol", [ATOL, "vector"], ids=["scalar", "vector"])
+@pytest.mark.parametrize("method", ["integration", "newton"])
+@pytest.mark.parametrize("kp", LEFT_BY_A_RUN)
+def test_a_state_below_zero_that_a_run_leaves_is_refused(tmp_path, kp, method, atol):
+    """A species the state holds below zero is held, in the run test, as
+    run() would hold it from that state, so a converged state is one run()
+    from it rests at. Before, by integration, all three came back
+    converged=True; run() from each leaves it. (A saddle that run() rests
+    on is converged, as the guide says, and is not judged here.)"""
+    p = tmp_path / "src.net"
+    p.write_text(SRC_NET.format(kp=repr(kp)))
+    model = bngsim.Model.from_net(str(p))
+    start = np.asarray(model.get_state(), dtype=float).copy()
+    sink = np.asarray(model.is_pure_sink(), dtype=bool)
+    if isinstance(atol, str):
+        atol = [ATOL] * len(model.species_names)
+    ss = bngsim.Simulator(model, method="ode").steady_state(
+        method=method, rtol=RTOL, atol=atol, max_time=HORIZON, mask=~sink
+    )
+    x = np.asarray(ss.concentrations, dtype=float)
+    if ss.converged:
+        assert _run_rests_at(bngsim.Model.from_net(str(p)), start, x), x
+    else:
+        assert ss.continued_run_distance > 1.0 or not ss.residual < 1e-9
+
+
 @pytest.mark.parametrize("method", ["integration", "newton"])
 @pytest.mark.parametrize("name", ["apap", "spa", "src"])
 def test_the_default_atol_finds_the_steady_state(tmp_path, name, method):

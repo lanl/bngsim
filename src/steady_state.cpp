@@ -6332,14 +6332,15 @@ static constexpr double kStartScaleShare = 1e-6;
 // (_steady_state_atol takes a share of machine epsilon, the same fallback,
 // and at most 1e-8), so its runs are never capped. A value that is not
 // finite counts as 0, as it does there.
-static std::vector<double> ss_start_scales(const NetworkModel &model, double rtol) {
+static std::vector<double> ss_scales_of(const NetworkModel &model, const double *values,
+                                        double rtol) {
     const int ns = model.n_species();
     std::vector<double> scales(static_cast<size_t>(ns));
     double largest = 0.0;
     double least = std::numeric_limits<double>::infinity();
     double least_any = std::numeric_limits<double>::infinity();
     for (int i = 0; i < ns; ++i) {
-        double v = std::abs(model.species()[i].concentration);
+        double v = std::abs(values[i]);
         if (!std::isfinite(v))
             v = 0.0;
         scales[static_cast<size_t>(i)] = v;
@@ -6365,6 +6366,14 @@ static std::vector<double> ss_start_scales(const NetworkModel &model, double rto
         v = kept ? v : std::max(v, floor);
     }
     return scales;
+}
+
+// The same rule read at the state the solve starts from.
+static std::vector<double> ss_start_scales(const NetworkModel &model, double rtol) {
+    std::vector<double> start(static_cast<size_t>(model.n_species()));
+    for (int i = 0; i < model.n_species(); ++i)
+        start[static_cast<size_t>(i)] = model.species()[i].concentration;
+    return ss_scales_of(model, start.data(), rtol);
 }
 
 // One run of the run test of the "scaled" criterion (issue #1001): from `y`,
@@ -6414,24 +6423,46 @@ static double ss_continued_run_once(NetworkModel &model, SteadyStateRhs &rhs,
     // share of machine epsilon, BIOMD0000000696's species at 0, held to
     // 6e-18 at a stable root they sit on within 1e-19, took some 5,000
     // steps a unit of time, and the run ran out of its steps. The default
-    // atol is never coarser than this, and neither is any atol at the
-    // model's scale: such a run is the one it was, to the bit (a scalar stays
-    // a scalar where no species is capped). Where every species not $-fixed
-    // starts at 0, the scale is run()'s too: a $-fixed species, or 1.
+    // atol is never coarser than this, nor is any atol no coarser than rtol
+    // times each species' scale: such a run is the one it was, to the bit (a
+    // scalar stays a scalar where no species is capped), but for a species
+    // below zero (below). Where every species not $-fixed starts at 0, the
+    // scale is run()'s too: a $-fixed species, or 1.
+    //
+    // A species the state holds below zero is held, too, no coarser than
+    // run() would hold it from the state itself (the same rule read at
+    // `y`). The start's scale does not resolve it where the march's error
+    // carried it far from where it started: SRC_NET (every species not
+    // $-fixed at 0, P fed from a $Src at 1.32e-13) at a feed of 100, marched
+    // at atol 1e-9, came back with S at -6.6e-12, past ten thousand times its
+    // steady value, and P at -8.9e-15, and a run held to the start's scale
+    // stayed there, where run() from it fails. Only a species below zero:
+    // one above it at a stable state is no question of sign, and read at the
+    // state the cap would tighten the default's runs wherever a species has
+    // drained (BIOMD0000000696's species at 0 sit at 1e-19 to 1e-25).
     const auto un_scales = opts.criterion_start_scales.size();
     const bool cap = end == nullptr && un_scales == un;
     const double rtol_c = std::max(opts.rtol, kCriterionRtolLeast);
+    std::vector<double> coarsest;
+    if (cap) {
+        coarsest.resize(un);
+        const std::vector<double> here = ss_scales_of(model, y.data(), rtol_c);
+        for (size_t i = 0; i < un; ++i) {
+            coarsest[i] = rtol_c * opts.criterion_start_scales[i];
+            if (y[i] < 0.0 && !species[static_cast<int>(i)].fixed)
+                coarsest[i] = std::min(coarsest[i], rtol_c * here[i]);
+        }
+    }
     if (cap && run_opts.atol_vec.empty()) {
         bool capped = false;
         for (size_t i = 0; i < un && !capped; ++i)
-            capped = rtol_c * opts.criterion_start_scales[i] < opts.atol;
+            capped = coarsest[i] < opts.atol;
         if (capped)
             run_opts.atol_vec.assign(un, opts.atol);
     }
     if (cap && run_opts.atol_vec.size() == un) {
         for (size_t i = 0; i < un; ++i)
-            run_opts.atol_vec[i] =
-                std::min(run_opts.atol_vec[i], rtol_c * opts.criterion_start_scales[i]);
+            run_opts.atol_vec[i] = std::min(run_opts.atol_vec[i], coarsest[i]);
     }
     run_opts.atol = opts.atol * by;
     for (double &a : run_opts.atol_vec)
