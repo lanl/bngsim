@@ -10014,14 +10014,16 @@ class Simulator:
               ``rtol`` times the largest species the solve starts with or
               reaches. The run is integrated at the march's ``atol`` too, but
               no species held coarser than :meth:`run` would hold it from the
-              same start, given the same scalar (issue #1895): a scalar
+              same start, given the same scalar, and none the state holds
+              below zero coarser than :meth:`run` would from that state
+              (issue #1895), which can hold the default's tighter: a scalar
               ``atol`` is taken as given, and where it is coarser than the
               model the march resolves nothing and stops where its error
               leaves it, which a run at that ``atol`` does not see move.
               BIOMD0000000609, every species under 1.4e-13, asked at
               ``atol=1e-9`` with its adduct accumulator left out by ``mask``,
-              came back converged on a root of ``f`` with two species near
-              -1.5e-14 that a run from it leaves at once. Where every species
+              came back converged on a root of ``f`` with four species below
+              zero that a run from it leaves at once. Where every species
               not ``$``-fixed starts at 0, the scale is :meth:`run`'s there
               too: the smallest species above 0, a ``$``-fixed one included,
               but not above 1, and 1 where every species is at 0. The Newton
@@ -14092,7 +14094,8 @@ class SteadyStateResult:
         measured species, over its tolerance, across the run taken on from
         the state returned; at most 1 passes (issue #1001). The run holds
         no species coarser than :meth:`Simulator.run` would from the solve's
-        start, given the same scalar ``atol`` (issue #1895). ``inf`` where the
+        start, given the same scalar ``atol``, nor one the state holds below
+        zero coarser than it would from the state (issue #1895). ``inf`` where the
         run could not be taken to its time; NaN where none was taken (under ``"residual"``,
         where the parity test already refused, and for a burst-free Newton
         solve).

@@ -174,13 +174,15 @@ or, for a species that starts below a floor, `rtol` times the floor.
   above zero is held by the start's scale alone.
 
 The default `atol` is finer than the start's ceiling, so with no `atol` given
-the run is unchanged unless the state holds a species below zero. A scalar `atol=` is taken as given, so it can be coarser than the
-whole model. Then the march controls no species' error and stops where that
-error leaves it, and a run at the same `atol` does not see the state move.
-BIOMD0000000609's species are all below 1.4e-13. At its SED-ML file's
-`atol=1e-9`, with its adduct accumulator left out by `mask=`, the march stopped
-on a root of `f` with two species near -1.5e-14, which a run from it leaves at
-once, and the solve said `converged=True`. The run that resolves each species
+the run is unchanged unless the state holds a species below zero, where that
+species may be held tighter. A scalar `atol=` is taken as given, so it can be
+coarser than the whole model. Then the march controls no species' error and
+stops where that error leaves it, and a run at the same `atol` does not see the
+state move. BIOMD0000000609's species are all below 1.4e-13. At its SED-ML
+file's `atol=1e-9`, with its adduct accumulator left out by `mask=`, the march
+stopped on a root of `f` with four species below zero, two of them near
+-1.5e-14, which a run from it leaves at once, and the solve said
+`converged=True`. The run that resolves each species
 refuses it. To solve such a model, leave `atol` unset or pass one at its scale.
 
 If a run moves the state, it is taken again at a tenth of the tolerances, a

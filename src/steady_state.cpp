@@ -6330,8 +6330,10 @@ static constexpr double kStartScaleShare = 1e-6;
 // coarse atol, and passed a root of f with S at -7.1e-14 and P at -1.05e-14,
 // from which run() fails. The default atol is finer than rtol times this
 // (_steady_state_atol takes a share of machine epsilon, the same fallback,
-// and at most 1e-8), so its runs are never capped. A value that is not
-// finite counts as 0, as it does there.
+// and at most 1e-8), so its runs are never capped by the start's scale (a
+// species the state holds below zero can be, by its own; see
+// ss_continued_run_once). A value that is not finite counts as 0, as it does
+// there.
 static std::vector<double> ss_scales_of(const NetworkModel &model, const double *values,
                                         double rtol) {
     const int ns = model.n_species();
@@ -6412,7 +6414,8 @@ static double ss_continued_run_once(NetworkModel &model, SteadyStateRhs &rhs,
     // state it stops at is its error, and so is the state's scale:
     // BIOMD0000000609, every species under 1.4e-13 at the start, marched at
     // its SED-ML file's atol of 1e-9 with its accumulator masked, came back
-    // with that accumulator at 3.9e-9 and two species near -1.5e-14, on a
+    // with that accumulator at 3.9e-9 and four species below zero, two of
+    // them near -1.5e-14, on a
     // root of f that is not the model's steady state (eigenvalues 337 and
     // 4.6). A run at the march's atol, or at rtol times the state's largest
     // (3.9e-15), stayed on it and passed it. Each species held to rtol of its

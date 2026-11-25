@@ -6,8 +6,9 @@ was integrated at the march's own atol, which ``steady_state(atol=...)`` takes
 as given (issue #1420 kept it so). BIOMD0000000609, a paracetamol model whose
 species are all below 1.4e-13, asked at its SED-ML file's ``rtol=1e-6`` and
 ``atol=1e-9`` with its adduct accumulator masked, marched with error control
-off, stopped on a root of f with two species near -1.5e-14 (the steady state
-has them at 1.3e-14 and 0) and the accumulator at 3.9e-9, and came back
+off, stopped on a root of f with four species below zero, two near -1.5e-14
+(the steady state has them at 1.3e-14 and 0), and the accumulator at 3.9e-9,
+and came back
 ``converged=True``: a run at an atol of 1e-9 does not see a state at 1e-14
 move. A run from it, as :meth:`Simulator.run` integrates one, fails at
 t = 2.1 with the RHS non-finite. The run test now holds each species to an
@@ -179,8 +180,10 @@ def _model(tmp_path: Path, name: str) -> bngsim.Model:
 
 
 def _solve(tmp_path, name, method, atol=ATOL, state=None):
-    """The solve, and the state it started from. ``atol="vector"`` is the
-    issue's atol as one entry per species, the per-species path."""
+    """The solve, and the state it started from. ``atol`` may name a form of
+    the issue's atol: ``"vector"``, one entry per species (the per-species
+    path); ``"exact"``, an :class:`bngsim.ExactAtol`; ``"set"``, given to
+    :meth:`Simulator.set_tolerances` and not to the call."""
     model = _model(tmp_path, name)
     if state is not None:
         model.set_state(np.asarray(state, dtype=float))
@@ -188,8 +191,13 @@ def _solve(tmp_path, name, method, atol=ATOL, state=None):
     sink = np.asarray(model.is_pure_sink(), dtype=bool)
     assert sink.tolist() == [n == "A()" for n in model.species_names]
     sim = bngsim.Simulator(model, method="ode")
-    if isinstance(atol, str):
+    if atol == "vector":
         atol = [ATOL] * len(model.species_names)
+    elif atol == "exact":
+        atol = bngsim.ExactAtol(ATOL)
+    elif atol == "set":
+        sim.set_tolerances(rtol=RTOL, atol=ATOL)
+        atol = None
     kw = {} if atol is None else {"atol": atol}
     ss = sim.steady_state(method=method, rtol=RTOL, max_time=HORIZON, mask=~sink, **kw)
     return ss, start
@@ -233,7 +241,22 @@ def _run_rests_at(model: bngsim.Model, start, x) -> bool:
     return bool((np.abs(end - x) <= _tolerance(start, x))[keep].all())
 
 
-@pytest.mark.parametrize("atol", [ATOL, "vector"], ids=["scalar", "vector"])
+ATOL_FORMS = [ATOL, "vector", "exact", "set"]
+ATOL_IDS = ["scalar", "vector", "exact", "set_tolerances"]
+
+
+def _refusal_is_one_a_run_leaves(tmp_path, name, ss, start, root=None, text=None) -> None:
+    """A solve that is not converged was refused by the run test or by the
+    residual test; and where its state is the closed form, to its own
+    tolerance, a run from it leaves it: no steady state is refused."""
+    assert ss.continued_run_distance > 1.0 or not ss.residual < 1e-9
+    if not _off_the_root(name, ss, start, root=root):
+        model = bngsim.Model.from_net(text) if text else _model(tmp_path, name)
+        x = np.asarray(ss.concentrations, dtype=float)
+        assert not _run_rests_at(model, start, x), x
+
+
+@pytest.mark.parametrize("atol", ATOL_FORMS, ids=ATOL_IDS)
 @pytest.mark.parametrize("method", ["integration", "newton"])
 @pytest.mark.parametrize("name", sorted(MODELS))
 def test_converged_is_a_rest_at_the_steady_state(tmp_path, name, method, atol):
@@ -249,15 +272,18 @@ def test_converged_is_a_rest_at_the_steady_state(tmp_path, name, method, atol):
     tolerance of the steady state, and a run from it rests. src, whose start
     has only the source's scale, was converged by integration with S at
     -7.1e-14 for 2.9e-15, a run test that took the coarse atol as given
-    finding it moved by 0.004 of its tolerance; a run from it fails. Where the
-    solve does not converge, the run test or the residual test said so."""
+    finding it moved by 0.004 of its tolerance; a run from it fails. The same
+    with the atol given per species, as an ExactAtol, or to set_tolerances.
+    Where the solve does not converge, the run test or the residual test
+    said so, and a state at the steady state is not refused unless a run
+    leaves it."""
     ss, start = _solve(tmp_path, name, method, atol=atol)
     x = np.asarray(ss.concentrations, dtype=float)
     if ss.converged:
         assert _off_the_root(name, ss, start) == [], (x, ss.continued_run_distance)
         assert _run_rests_at(_model(tmp_path, name), start, x), x
     else:
-        assert ss.continued_run_distance > 1.0 or not ss.residual < 1e-9
+        _refusal_is_one_a_run_leaves(tmp_path, name, ss, start)
 
 
 # SRC_NET's feeds, from a sweep of 51 between 0.01 and 1000, at which the
@@ -291,7 +317,7 @@ def test_a_state_below_zero_that_a_run_leaves_is_refused(tmp_path, kp, method, a
     if ss.converged:
         assert _run_rests_at(bngsim.Model.from_net(str(p)), start, x), x
     else:
-        assert ss.continued_run_distance > 1.0 or not ss.residual < 1e-9
+        _refusal_is_one_a_run_leaves(tmp_path, "src", ss, start, _src_root(kp), str(p))
 
 
 @pytest.mark.parametrize("method", ["integration", "newton"])
@@ -299,7 +325,8 @@ def test_a_state_below_zero_that_a_run_leaves_is_refused(tmp_path, kp, method, a
 def test_the_default_atol_finds_the_steady_state(tmp_path, name, method):
     """No atol given, each species is marched at rtol of its own scale and the
     solve reaches the closed form, to the model's scale. The run test's atol
-    is no coarser than that default, so the default's runs are unchanged."""
+    is no coarser than that default but for a species the state holds below
+    zero, which it may hold tighter."""
     ss, start = _solve(tmp_path, name, method, atol=None)
     assert ss.converged
     assert _off_the_root(name, ss, start, atol=0) == []
@@ -342,7 +369,24 @@ def test_steady_state_batch_takes_the_same_test(tmp_path):
         if ss.converged:
             assert _off_the_root("apap", ss, start, root=root) == [], ss.concentrations
         else:
-            assert ss.continued_run_distance > 1.0 or not ss.residual < 1e-9
+            _refusal_is_one_a_run_leaves(tmp_path, "apap", ss, start, root=root)
+
+
+def test_a_burst_free_newton_solve_reports_the_roots_stability(tmp_path):
+    """A burst-free Newton solve (steady_state_batch(newton_burst=False), the
+    one steady_states() enumerates roots with) takes no run test, by design:
+    it finds roots of f, saddles too, and says which kind each is. A root it
+    returns off the closed form is reported unstable, not refused."""
+    model = _model(tmp_path, "src")
+    start = np.asarray(model.get_state(), dtype=float).copy()
+    sink = np.asarray(model.is_pure_sink(), dtype=bool)
+    sim = bngsim.Simulator(model, method="ode")
+    (ss,) = sim.steady_state_batch(
+        params=[{}], method="newton", newton_burst=False, rtol=RTOL, atol=ATOL, mask=~sink
+    )
+    assert np.isnan(ss.continued_run_distance)
+    if ss.converged and _off_the_root("src", ss, start):
+        assert ss.root_stability == "unstable", (ss.concentrations, ss.root_stability)
 
 
 _CORPUS = Path(__file__).resolve().parents[2] / "parity_checks" / "rr_parity" / "models"
