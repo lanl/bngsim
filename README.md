@@ -161,8 +161,19 @@ and manage the compiled-code cache (`bngsim-cache`).
 
 ## Benchmarks & validation
 
-Correctness and efficiency results will be in
-[bngsim-benchmarks](https://github.com/lanl/bngsim-benchmarks).
+[bngsim-benchmarks](https://github.com/lanl/bngsim-benchmarks) checks BNGsim's
+answers against other simulators and times each one. Its
+[published results](https://github.com/lanl/bngsim-benchmarks/tree/main/published)
+cover:
+
+- correctness and timing on test suites of 10 published models, one suite for each
+  BNGsim feature (ODE, SSA, PSA, steady state, sensitivities, network-free) and
+  input format (BNGL, SBML, Antimony);
+- sweeps over large model collections: BNGsim vs libRoadRunner and BNGsim vs AMICI
+  (with sensitivities) on SBML from BioModels and on SBML converted from BioNetGen
+  networks, and RuleMonkey vs NFsim.
+
+Each result names the BNGsim version it was measured on.
 
 ## Contributing
 
