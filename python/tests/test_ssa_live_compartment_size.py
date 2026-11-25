@@ -487,6 +487,24 @@ def test_a_rule_reading_a_resized_compartment_is_read_on_concentrations(method):
         np.testing.assert_allclose(_sel(r, "S")[:, 0], 8.0, rtol=1e-6)
 
 
+@pytest.mark.parametrize("method", STOCHASTIC)
+def test_a_row_reads_a_rule_sized_compartment_on_concentrations(method):
+    """The rows' observables and expressions read S at c2 = 3 + [Y], as the ODE
+    run does: from t = 2, [S] = 16.25, p = 32.5 and q = 26.41. Sized on Y's
+    stored count, c2 was 13 for 8, and they read 10, 20 and 10 beside the
+    same Result's [S] of 16.25."""
+    text = CROSS_SIZED + "p := 2*S; q := S*S/10;\n"
+    r = _run(bngsim.Model.from_antimony_string(text), method, t_span=(0, 3), n_points=4)
+    ode = _run(bngsim.Model.from_antimony_string(text), "ode", t_span=(0, 3), n_points=4)
+    s = np.array([10.0, 10.0, 16.25, 16.25])
+    np.testing.assert_allclose(_sel(r, "[S]")[:, 0], s, rtol=1e-9)
+    np.testing.assert_allclose(_col(r, "observables", "S"), s, rtol=1e-9)
+    np.testing.assert_allclose(_col(r, "expressions", "p"), 2.0 * s, rtol=1e-9)
+    np.testing.assert_allclose(_col(r, "expressions", "q"), s * s / 10.0, rtol=1e-9)
+    for block, name in (("observables", "S"), ("expressions", "p"), ("expressions", "q")):
+        np.testing.assert_allclose(_col(r, block, name), _col(ode, block, name), rtol=1e-6)
+
+
 @pytest.mark.parametrize("method", ["ode", *STOCHASTIC])
 def test_an_event_assigns_a_concentration_at_a_rule_size_read_on_concentrations(method):
     """S = 20 at t = 2, where c2 = 3 + [Y] = 8: 160 molecules from there. The SSA

@@ -829,9 +829,9 @@ std::vector<double> NetworkModel::ssa_rule_values(double t, const double *state,
     if (counts) {
         // A rule reads a concentration: a species an SSA run stores as its
         // count over the load-time size is read at its compartment's size, the
-        // sizes of the compartments rules set taken from the evaluation above,
-        // as the SSA run's rows take them (relive_row). Read as stored,
-        // c2 := V0 + Y read Y = 20 molecules at c1 = 4 as 10 for 5.
+        // sizes of the compartments rules set taken from the evaluation above.
+        // Read as stored, c2 := V0 + Y read Y = 20 molecules at c1 = 4 as 10
+        // for 5.
         std::vector<double> rules(params.size());
         for (std::size_t i = 0; i < rules.size(); ++i)
             rules[i] = impl.parameters[i].value;

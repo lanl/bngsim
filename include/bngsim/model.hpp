@@ -935,15 +935,19 @@ class NetworkModel {
     void ssa_counts_to_concentrations(double t);
 
     // The parameter values with every assignment rule evaluated at time t on
-    // `state` (n_species values, as stored) read as concentrations (issue
-    // #1754): where `counts`, the state is an SSA run's, and a concentration
-    // species in a compartment whose size moves is read at that size first,
-    // the sizes of compartments rules set taken from an evaluation on the
-    // state as stored, as an SSA run's rows take them. The parameter a rule
-    // writes is no record of the size: building an ODE Simulator evaluates
-    // the rules at t = 0, and a write of one of their inputs evaluates none.
-    // The model is left as it was: species, observables, functions,
-    // parameters and clock.
+    // `state` (n_species values, as stored), for the sizes of the compartments
+    // assignment rules set, read on concentrations (issue #1754): where
+    // `counts`, the state is an SSA run's, and a concentration species in a
+    // compartment whose size moves is read at that size, the sizes of
+    // compartments rules set taken from a first evaluation on the state as
+    // stored. A size that reads such a species in a compartment with a state
+    // slot is exact; a value that reads one in a compartment a rule sets
+    // reads it at the first evaluation's size, so callers read the sizes and
+    // nothing else (an SSA run's rows read the rest on a view at these
+    // sizes). The parameter a rule writes is no record of the size: building
+    // an ODE Simulator evaluates the rules at t = 0, and a write of one of
+    // their inputs evaluates none. The model is left as it was: species,
+    // observables, functions, parameters and clock.
     std::vector<double> ssa_rule_values(double t, const double *state, bool counts) const;
 
     // The amount of each species an SSA run starting at t counts, before it

@@ -1198,22 +1198,29 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
     // A no-op unless the model has such a species (live_tags) and the size has
     // moved; then the row's species stay as stored, and the report rescales
     // them (Simulator._apply_varvol_*). An observable B := 2*X read 64 for 32
-    // after c: 2 -> 4.
-    std::vector<double> live_view;
+    // after c: 2 -> 4. The size of a compartment an assignment rule sets is the
+    // rule's value at the row's time, read on the concentrations
+    // (NetworkModel::ssa_rule_values), as the ODE run reads it: read on the
+    // counts, c2 := V0 + Y with Y = 20 molecules at c1 = 4 was 13 for 8, and
+    // the row's observable S, p := 2*S and q := S*S/10 read 10, 20 and 10 for
+    // 16.25, 32.5 and 26.41 (issue #1754).
+    std::vector<double> live_view, rule_sizes;
     auto relive_row = [&](int k, double t_eval, const double *cc) {
         if (!live_tags)
             return;
         const double t_abs = origin + t_eval;
         for (int si = 0; si < ns; ++si)
             sp_vec_ref[si].concentration = cc[si];
-        if (live_param_tags) { // the rule's size at the row's time
-            model.update_observables(cc);
-            model.evaluate_functions(t_abs);
-        }
+        if (live_param_tags)
+            rule_sizes = model.ssa_rule_values(t_abs, cc, true);
         live_view.assign(cc, cc + ns);
         bool moved = false;
         for (int si = 0; si < ns; ++si) {
-            const double v = live_size(si, cc);
+            const Species &sv = sp_vec_ref[si];
+            double v = live_size(si, cc);
+            if (sv.ssa_live_volume_idx0 < 0 && sv.ssa_live_volume_param_idx0 >= 0 &&
+                sv.ssa_live_volume_param_idx0 < static_cast<int>(rule_sizes.size()))
+                v = rule_sizes[static_cast<std::size_t>(sv.ssa_live_volume_param_idx0)];
             const double vf = sp_vec_ref[si].volume_factor;
             if (std::isfinite(v) && v > 0.0 && v != vf) {
                 live_view[si] = cc[si] * vf / v;
