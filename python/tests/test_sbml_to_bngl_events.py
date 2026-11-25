@@ -1564,20 +1564,32 @@ def test_a_delayed_event_triggered_at_an_instant_enters_its_tie(tmp_path, priori
         _assert_runs_as_the_model(xml, rep)
 
 
-def test_a_strict_trigger_on_the_start_differs_in_the_first_row_alone(tmp_path):
-    """`time > 0` fires just past 0. The actions set A = 5 before the first
-    simulate, so their first row has it; the run's first row has A = 1, from
-    before. Every later row agrees."""
-    xml = _sbml(_a("E1", _gt(_cn(0)), 5))
-    rep = _convert(tmp_path, xml)
+@pytest.mark.parametrize(
+    ("event", "t_span"),
+    [
+        pytest.param(_a("E1", _gt(_cn(0)), 5), (0.0, 3.0), id="time > 0"),
+        pytest.param(
+            _a("E1", _at(_cn(5)), 5, initial_value=False, delay=_cn("1e-17")),
+            (5.0, 8.0),
+            id="time >= 5 from 5, a delay that rounds to nothing",
+        ),
+    ],
+)
+def test_a_strict_trigger_on_the_start_differs_in_the_first_row_alone(tmp_path, event, t_span):
+    """`time > 0` fires just past 0, and so does a trigger true at the start
+    whose delay is too small to move it off the start. The actions set A = 5
+    before the first simulate, so their first row has it; the run's first row
+    has A = 1, from before. Every later row agrees."""
+    xml = _sbml(event)
+    rep = _convert(tmp_path, xml, t_span=t_span)
     assert rep.ok, rep.lossy
     assert isinstance(rep.protocol.steps[0], StateChange)
-    assert _schedule(rep) == [(0.0, "A", 5.0)]
+    assert _schedule(rep) == [(t_span[0], "A", 5.0)]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         res = bngsim.Simulator(bngsim.Model.from_sbml_string(xml), method="ode").run(
-            t_span=(0.0, 3.0), n_points=7, rtol=1e-10, atol=1e-12
+            t_span=t_span, n_points=7, rtol=1e-10, atol=1e-12
         )
     a = np.asarray(res.species)[:, res.species_names.index("A")]
     assert a[0] == pytest.approx(_X0["A"])
-    _assert_runs_as_the_model(xml, rep)
+    _assert_runs_as_the_model(xml, rep, t_span=t_span)

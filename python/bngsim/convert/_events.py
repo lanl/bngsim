@@ -1147,9 +1147,10 @@ def _build_protocol(
 
     A change at the start, before the first phase, is in the first output
     row. The run's first row has it too for a trigger already true there,
-    and not for a strict one on the start, `time > t0`, which it reads just
-    past t0; no phase of no length can hold that row, so it is the one row
-    the actions report otherwise.
+    and not for a strict one on the start, `time > t0`, or one true there
+    whose delay is too small to move it off t0, which it reads just past t0;
+    no phase of no length can hold that row, so it is the one row the
+    actions report otherwise.
     """
     species = model._core.codegen_data()["species"]
     t_start, t_end = float(t_span[0]), float(t_span[1])
