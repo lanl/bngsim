@@ -21,12 +21,14 @@ These tests pin:
     only when every surviving failure lies in a column the reference left
     non-finite, so a real bngsim divergence beside the NaN cannot be buried.
   * `_apply_no_ground_truth` — the other — turns a DIFF or PASS into BAD_TEST, and
-    leaves a non-finite DIFF and an uncompared row as they are.
+    leaves a non-finite DIFF and an uncompared row as they are; the live progress
+    line tags a row BADTEST exactly where it does.
 """
 
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import rr_run
 from _core import ALL, CLEAN, FAILING, Outcome
 
@@ -370,3 +372,25 @@ def test_no_ground_truth_leaves_an_uncompared_row_alone():
         outcome, comment, applied = rr_run._apply_no_ground_truth(natural, None, "r", None, "")
         assert (outcome, applied) == (natural, False)
         assert f"natural={natural}" in comment
+
+
+@pytest.mark.parametrize(
+    "status,value",
+    [
+        ("pass", 0.0),
+        ("diff", 0.52),
+        ("diff", float("inf")),
+        ("diff", float("nan")),
+        ("bad_test", None),
+        ("exception", None),
+    ],
+)
+def test_the_progress_line_tags_a_row_badtest_only_where_its_entry_applies(status, value, capsys):
+    """The live line says what the report will make of the row: a non-finite DIFF
+    on a model with an entry stays a scoring DIFF, so it is not tagged BADTEST."""
+    key = "MODEL2310250001:ode"
+    _o, _c, applied = rr_run._apply_no_ground_truth(rr_run._OUTCOME[status], value, "r", None, "")
+    res = {"status": status, "key": key, "model_id": "MODEL2310250001", "method": "ode"}
+    res.update(value=value, metric="max_rel_err", exception="bngsim: x")
+    rr_run._make_progress({}, frozenset({key}))(1, 1, res)
+    assert ("→BADTEST*" in capsys.readouterr().out) is applied
