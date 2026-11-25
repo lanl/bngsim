@@ -767,9 +767,9 @@ class _BooleansAsDoubles:
     booleans as a logical or and will not negate one, so ``((A>0)+(B>0))`` was 1
     where the engine has 2, and ``-(A>B)`` raised. A boolean that is a condition
     (``jnp.where``'s first argument, or a chain's, :func:`_jax_where_chain`), an
-    argument of a ``jnp.logical_*`` call, or
-    an operand of a comparison reads as the double would and is left alone; so is
-    the text of an expression that has no other, which is nearly all of them.
+    argument of a ``jnp.logical_*`` call, or an operand of a comparison reads as
+    the double would and is left alone; so is the text of an expression that has
+    no other, which is nearly all of them.
     Everywhere else, the whole expression included (a function's value is read by
     the functions after it), it is written ``jnp.where(..., 1.0, 0.0)``.
     """

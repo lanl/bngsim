@@ -5242,7 +5242,7 @@ def _bracket_depth_flags(c_source: str, compiler: list[str]) -> list[str]:
     run, which needs the compiled right-hand side, failed.
 
     The depth is measured before the preprocessor runs, which can add a few
-    brackets (``NAN`` at the deepest point adds one), so the flag is given to a
+    brackets (``NAN`` at the deepest point adds two), so the flag is given to a
     source within :data:`_BRACKET_DEPTH_MARGIN` of the limit too: 193 deep or
     more, where an ordinary model's source is under 10. GCC rejects the flag, and
     the compiler is not asked what it is about any other source, so every other
