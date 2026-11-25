@@ -23,8 +23,8 @@ span tells the two apart. A run is ended, as ``UsageError``, where CVODE's step
 is no longer finite, or as a CVode call returns with its clock at inf; a step
 attempt whose t + h is inf that CVODE throws away and retries shorter is let
 be, as is a run whose first-step routine tries a time of inf. A grid of output
-times that cannot be finite is refused before it starts. Every run that
-returned before returns the rows it did. And the wall-clock budget is
+times that cannot be finite is refused before it starts. Every run whose
+clock stayed finite returns the rows it did. And the wall-clock budget is
 read from the right-hand side, so a run that spends it inside one CVode call
 stops there as ``SimulationTimeout``.
 """
