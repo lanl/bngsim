@@ -789,11 +789,12 @@ def combine_protocols(
     The exception is a first spec that :func:`parse_bngl_protocol` read from a
     ``.bngl`` with a model, with ``None`` there and a run with a network method:
     BNG2.pl generated the network those runs start from with its defaults, and the
-    merge keeps ``None``. An actions block run on a network loaded on its own, or
-    read from a ``.net``, generated none. A spec read back from JSON, or built by
-    hand, does not carry what the parse found (it is not part of the spec's
-    value), so it merges with the first cap any spec names winning, whatever its
-    source was.
+    merge keeps ``None``. A merged spec carries its first spec's account of this,
+    so merging it again keeps that ``None`` too. An actions block run on a network
+    loaded on its own, or read from a ``.net``, generated none. A spec read back
+    from JSON, or built by hand, does not carry what the parse found (it is not
+    part of the spec's value), so it merges with the first cap any spec names
+    winning, whatever its source was.
 
     Parameters
     ----------
@@ -1035,11 +1036,10 @@ def _generates_a_network(verb: str, argstr: str) -> bool:
     (cvode, ssa, pla, psa) and hands ``nf`` to ``simulate_nf``, which generates
     none; a scan runs ``simulate`` at each point, and ``bifurcate`` runs scans.
     RuleMonkey's ``rm``, and every other method bngsim runs network-free, builds
-    none either.
-    ``simulate_protocol`` runs the model's ``begin protocol`` block, which the
-    parse does not read, so it counts as a network run. Two actions that are not
-    runs generate it too: ``writeMDL`` (``BNGOutput.pm``) and ``visualize`` of
-    the ``reaction_network`` type (``Visualization/Viz.pm``).
+    none either. Two actions that are not runs generate it too: ``writeMDL``
+    (``BNGOutput.pm``) and ``visualize`` of the ``reaction_network`` type
+    (``Visualization/Viz.pm``). A run of the ``begin protocol`` block is read
+    line by line (:func:`_network_generation_call`).
     """
     from bngsim._simulator import _NETWORK_FREE_METHODS
 
@@ -1048,7 +1048,61 @@ def _generates_a_network(verb: str, argstr: str) -> bool:
         return _run_method(low, _parse_hash(argstr)) not in _NETWORK_FREE_METHODS
     if low == "visualize":
         return _parse_hash(argstr).get("type") == "reaction_network"
-    return low in ("simulate_protocol", "writemdl")
+    return low == "writemdl"
+
+
+def _runs_the_protocol_block(verb: str, argstr: str) -> bool:
+    """Whether this action runs the model's ``begin protocol`` block:
+    ``simulate_protocol``, or a scan or ``bifurcate`` with ``method=>"protocol"``,
+    which runs it at each point (``BNGAction.pm``)."""
+    low = verb.lower()
+    if low == "simulate_protocol":
+        return True
+    method = str(_parse_hash(argstr).get("method", "")).lower()
+    return low in ("parameter_scan", "bifurcate") and method == "protocol"
+
+
+_PROTOCOL_INDEX_RE = re.compile(r"^\d+\s+")
+
+
+def _protocol_block(text: str) -> list[tuple[str, str]]:
+    """The lines of the source's ``begin protocol`` block (the last, if several),
+    as ``(verb, arguments)``: ``BNGModel.pm`` reads each as ``action(options)``,
+    a leading index dropped, and ``simulate_protocol`` runs them in order."""
+    calls: list[tuple[str, str]] = []
+    inside = False
+    for raw in _logical_lines(text):
+        line = raw.strip()
+        low = line.lower()
+        if low.startswith("begin "):
+            inside = low.split(None, 1)[1].strip() == "protocol"
+            if inside:
+                calls = []
+            continue
+        if low.startswith("end "):
+            inside = False
+            continue
+        if inside:
+            m = _ACTION_RE.match(_PROTOCOL_INDEX_RE.sub("", line))
+            if m:
+                calls.append((m.group(1), m.group(2)))
+    return calls
+
+
+def _protocol_line_generates(verb: str, argstr: str) -> bool:
+    """Whether BNG2.pl generates the network at this line of the ``begin protocol``
+    block, when it has none yet.
+
+    ``simulate_protocol`` hands a line whose action has ``simulate`` in its name to
+    ``simulate`` with the line's own hash, so only the method named there counts: a
+    ``simulate_ode`` there names none, which ``simulate`` refuses, and the protocol
+    goes on to the next line. Any other line runs as the action it names.
+    """
+    if "simulate" not in verb.lower():
+        return _generates_a_network(verb, argstr)
+    args = _parse_hash(argstr)
+    method = str(args.get("method", "")).lower()
+    return "poplevel" in args or method in ("ode", "cvode", "ssa", "pla", "psa")
 
 
 def _network_generation_call(text: str) -> tuple[str, str] | None:
@@ -1066,14 +1120,26 @@ def _network_generation_call(text: str) -> tuple[str, str] | None:
     after an NF run with the species the run ends with, unless it sets
     ``get_final_state=>0``, which a ``parameter_scan`` does unless it sets
     ``reset_conc=>0``; those come from running NFsim, which the call's options
-    cannot carry.) It reads past ``quit`` too, as
-    :func:`bngsim._bngl_loader.generation_source` does, which keeps the actions
+    cannot carry.) An action that runs the ``begin protocol`` block is searched
+    through the block's lines (:func:`_protocol_line_generates`), and read past
+    when none of them generates the network. The search reads past ``quit`` too,
+    as :func:`bngsim._bngl_loader.generation_source` does, which keeps the actions
     after one. Only one call is returned: BNG2.pl continues the network at a later
     ``generate_network`` with ``overwrite=>1``, under that call's limits, and what
     that adds is not taken.
     """
+    protocol: list[tuple[str, str]] | None = None
     for verb, argstr in _iter_action_calls(text):
         low = verb.lower()
+        if _runs_the_protocol_block(low, argstr):
+            if protocol is None:
+                protocol = _protocol_block(text)
+            for line_verb, line_args in protocol:
+                if line_verb.lower() == "generate_network":
+                    return line_verb, line_args
+                if _protocol_line_generates(line_verb, line_args):
+                    return None
+            continue
         if low == "generate_network":
             return verb, argstr
         if _generates_a_network(low, argstr):

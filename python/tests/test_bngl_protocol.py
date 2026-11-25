@@ -245,6 +245,26 @@ def test_a_network_run_before_generate_network_leaves_network_gen_none() -> None
     assert parse_bngl_protocol(block).generation_step == p.generation_step
 
 
+@pytest.mark.parametrize(
+    "line, network_gen",
+    [
+        ('simulate({method=>"nf",t_end=>1,n_steps=>1})', "generate_network({max_stoich=>{R=>5}})"),
+        ('simulate({method=>"ode",t_end=>1,n_steps=>1})', None),
+    ],
+    ids=["nf-only", "an-ode-run"],
+)
+def test_simulate_protocol_is_searched_through_the_begin_protocol_block(line, network_gen):
+    """The ``begin protocol`` block's lines decide, as they do for the load."""
+    text = (
+        "begin model\nend model\n"
+        f"begin protocol\n{line}\nend protocol\n"
+        "simulate_protocol()\n"
+        "generate_network({max_stoich=>{R=>5}})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert parse_bngl_protocol(text, strict=False).network_gen == network_gen
+
+
 def test_network_gen_reads_past_quit_as_the_loader_does() -> None:
     """``from_bngl`` keeps the actions after ``quit()`` and forwards the call after
     it, so ``network_gen`` names that call too."""
@@ -254,8 +274,8 @@ def test_network_gen_reads_past_quit_as_the_loader_does() -> None:
 
 @pytest.mark.parametrize(
     "action",
-    ["writeMDL()", 'visualize({type=>"reaction_network"})', "simulate_protocol()"],
-    ids=["writeMDL", "visualize-reaction_network", "simulate_protocol"],
+    ["writeMDL()", 'visualize({type=>"reaction_network"})'],
+    ids=["writeMDL", "visualize-reaction_network"],
 )
 def test_an_action_that_generates_the_network_leaves_network_gen_none(action) -> None:
     """``writeMDL`` and a ``reaction_network`` ``visualize`` generate the network
@@ -608,6 +628,10 @@ def test_combine_protocols_keeps_the_first_specs_network_gen_even_when_none() ->
     read_back = ProtocolSpec.from_json(run_first.to_json())
     assert read_back == run_first
     assert combine_protocols([read_back, capped]).network_gen == "generate_network({max_agg=>5})"
+    # A first spec's own cap is kept, and a merged spec carries its first spec's
+    # account, so merging it again keeps its None.
+    assert combine_protocols([capped, run_first]).network_gen == "generate_network({max_agg=>5})"
+    assert combine_protocols([combine_protocols([run_first, capped]), capped]).network_gen is None
 
 
 def test_combine_protocols_concatenates_dropped_and_lossy() -> None:

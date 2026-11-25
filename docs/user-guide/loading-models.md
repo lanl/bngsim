@@ -224,7 +224,9 @@ run, it stops at that run.
 If a run with a network method (ODE, SSA, PLA or PSA) comes before the first
 `generate_network`, BNG2.pl generates the network at that run with its
 defaults, and so does `from_bngl`. `writeMDL()` and
-`visualize({type=>"reaction_network"})` generate it the same way. A
+`visualize({type=>"reaction_network"})` generate it the same way.
+`simulate_protocol()`, and a `parameter_scan` with `method=>"protocol"`, run
+the `begin protocol` block, whose lines count the same way. A
 network-free run (`simulate_nf`, or `method=>"nf"` or `"rm"` without a
 `poplevel`) generates no network, so the `generate_network` after it still sets
 the limits. After an NF run, BNG2.pl also adds the species the run ends with to

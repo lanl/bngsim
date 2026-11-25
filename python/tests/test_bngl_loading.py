@@ -329,16 +329,14 @@ def test_a_network_free_run_before_generate_network_keeps_its_options(nf_run):
 
 @pytest.mark.parametrize(
     "action",
-    ["writeMDL()", 'visualize({type=>"reaction_network"})', "simulate_protocol()"],
-    ids=["writeMDL", "visualize-reaction_network", "simulate_protocol"],
+    ["writeMDL()", 'visualize({type=>"reaction_network"})'],
+    ids=["writeMDL", "visualize-reaction_network"],
 )
 def test_an_action_that_generates_the_network_takes_none_of_a_later_calls_options(action):
     """Two actions that are not runs generate the network with BNG2.pl's defaults
     when there is none: ``writeMDL`` (``BNGOutput.pm``) and a ``reaction_network``
-    ``visualize`` (``Visualization/Viz.pm``). ``simulate_protocol`` runs the model's
-    ``begin protocol`` block, which the search does not read, so it counts as a
-    network run. The ``generate_network`` after any of them continues that
-    network, so its ``max_iter=>3`` bounds nothing BNG2.pl runs."""
+    ``visualize`` (``Visualization/Viz.pm``). The ``generate_network`` after either
+    continues that network, so its ``max_iter=>3`` bounds nothing BNG2.pl runs."""
     text = (
         "begin model\nend model\n"
         f"{action}\n"
@@ -375,6 +373,61 @@ def test_every_network_free_method_is_read_past(method):
         + "generate_network({max_stoich=>{R=>5}})\n"
     )
     assert generate_network_call(text) == "generate_network({max_stoich=>{R=>5},overwrite=>1})"
+
+
+_CAPPED = "generate_network({max_stoich=>{R=>5},overwrite=>1})"
+_PROTOCOL_SCAN = (
+    'parameter_scan({method=>"protocol",parameter=>"kp",par_min=>1,par_max=>2,n_scan_pts=>2})'
+)
+
+
+@pytest.mark.parametrize(
+    "block, run, expected",
+    [
+        ('simulate({method=>"nf",t_end=>1,n_steps=>1})', "simulate_protocol()", _CAPPED),
+        ('simulate({method=>"nf",t_end=>1,n_steps=>1})', _PROTOCOL_SCAN, _CAPPED),
+        # simulate_protocol hands the line's own hash to simulate, which refuses one
+        # that names no method, and goes on.
+        ("simulate_ode({t_end=>1,n_steps=>1})", "simulate_protocol()", _CAPPED),
+        (
+            'simulate({method=>"ode",t_end=>1,n_steps=>1})',
+            "simulate_protocol()",
+            "generate_network({overwrite=>1})",
+        ),
+        (
+            'simulate({method=>"ode",t_end=>1,n_steps=>1})',
+            _PROTOCOL_SCAN,
+            "generate_network({overwrite=>1})",
+        ),
+        (
+            '1 generate_network({max_iter=>2})\n2 simulate({method=>"ode",t_end=>1,n_steps=>1})',
+            "simulate_protocol()",
+            "generate_network({max_iter=>2,overwrite=>1})",
+        ),
+    ],
+    ids=[
+        "nf-only",
+        "nf-only-by-a-protocol-scan",
+        "a-line-simulate-refuses",
+        "an-ode-run",
+        "an-ode-run-by-a-protocol-scan",
+        "its-own-generate_network",
+    ],
+)
+def test_a_protocol_run_is_searched_through_the_begin_protocol_block(block, run, expected):
+    """``simulate_protocol``, and a scan with ``method=>"protocol"``, run the lines of
+    the ``begin protocol`` block (``BNGAction.pm``). Counted as a network run
+    whatever they held, an NF-only block lost the cap after it, and the load ran
+    to its timeout. A network run there generates the network with BNG2.pl's
+    defaults, and a ``generate_network`` there builds it."""
+    text = (
+        _RL_CHAINS
+        + f"begin protocol\n{block}\nend protocol\n"
+        + f"{run}\n"
+        + "generate_network({max_stoich=>{R=>5}})\n"
+        + 'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert generate_network_call(text) == expected
 
 
 def test_a_generate_network_after_the_first_run_does_not_replace_the_one_before_it():

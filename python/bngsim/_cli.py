@@ -1004,6 +1004,11 @@ def _validate(args: argparse.Namespace) -> None:
         if method in _NETWORK_FREE and not has("xml"):
             # run_until, run_batch and parameter_scan run on the model's own
             # network (ode, ssa, psa); a network-free engine runs from its XML.
+            # One unavailable here (nf_fixed) gets Simulator's own refusal, not
+            # a pointer to a `bngsim run` that refuses it too.
+            from bngsim._simulator import normalize_method
+
+            normalize_method(method)
             call = command.replace("-", "_")
             _refuse(
                 f"{call} runs ode, ssa or psa, not the network-free {method}; "
