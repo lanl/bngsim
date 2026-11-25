@@ -630,7 +630,9 @@ def codegen_cache_dir(cache_dir: str | os.PathLike[str] | None = None) -> Path:
     want a scratch cache without re-``exec``ing under a different environment.
     """
     if cache_dir is not None:
-        return Path(cache_dir).expanduser()
+        # Read as BNGSIM_CODEGEN_CACHE_DIR is, so ``-C '~user/x'`` names the
+        # directory the variable would (issue #1927).
+        return _codegen._expand_cache_dir(os.fspath(cache_dir))
     return Path(_codegen.CACHE_DIR)
 
 

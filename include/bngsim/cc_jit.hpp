@@ -26,6 +26,7 @@
 #include <string>
 
 #ifndef _WIN32
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>  // std::snprintf, std::rename, std::remove
@@ -74,11 +75,11 @@ class CcJit {
         std::string cmd = trim(cc_env ? cc_env : "");
         if (cmd.empty())
             cmd = "cc";
-        // A CC that is itself a compiler's path with a blank or quote in it is
-        // one word, as the Python codegen takes it when shutil.which finds it;
+        // A CC that is itself a compiler, found as one word, with a character
+        // the shell would read in it (a blank, a quote, a backslash) is quoted
+        // as one word, as the Python codegen takes it when shutil.which finds it;
         // otherwise the shell splits it, so `CC="ccache cc"` still works.
-        if (cmd.find_first_of(" \t'\"") != std::string::npos &&
-            cmd.find('/') != std::string::npos && access(cmd.c_str(), X_OK) == 0)
+        if (cmd.find_first_of(" \t\n\r\f\v'\"\\") != std::string::npos && is_program(cmd))
             cmd = shell_quote(cmd);
 #if defined(__APPLE__)
         if (std::string(machine()) != "unknown")
@@ -86,6 +87,24 @@ class CcJit {
 #endif
         cmd += " -O3 -shared -fPIC -o " + shell_quote(sotmp) + " " + shell_quote(cpath) + " -lm";
         return cmd;
+    }
+
+    /// Whether `name` is an executable file: as given when it holds a /, else on
+    /// PATH, as shutil.which looks it up.
+    static bool is_program(const std::string &name) {
+        if (name.find('/') != std::string::npos)
+            return access(name.c_str(), X_OK) == 0;
+        const char *path = std::getenv("PATH");
+        std::string dirs = path ? path : "";
+        size_t start = 0;
+        while (start <= dirs.size()) {
+            const size_t end = std::min(dirs.find(':', start), dirs.size());
+            const std::string dir = dirs.substr(start, end - start);
+            if (!dir.empty() && access((dir + "/" + name).c_str(), X_OK) == 0)
+                return true;
+            start = end + 1;
+        }
+        return false;
     }
 
     /// `s` as one POSIX shell word: single-quoted, with each ' written '\''.

@@ -295,3 +295,97 @@ def test_an_empty_home_is_the_password_databases(tmp_path):
     assert got == f"{pwd.getpwuid(os.getuid()).pw_dir}/.cache/bngsim/codegen"
     got = _python_cache_dir({"HOME": str(tmp_path), "BNGSIM_CODEGEN_CACHE_DIR": " ~/c "})
     assert got == f"{tmp_path}/c"
+
+
+@on_posix
+@requires_cc
+@pytest.mark.parametrize("dirname", ["back\\slash", "a dir"])
+def test_a_cc_path_the_shell_would_read_is_one_word(cc_run, tmp_path, monkeypatch, dirname):
+    run, cache, _ = cc_run
+    tools = tmp_path / dirname
+    tools.mkdir()
+    (tools / "cc").symlink_to(shutil.which("cc"))
+    monkeypatch.setenv("CC", str(tools / "cc"))
+    assert run().ssa_diagnostics["propensity_backend"] == "cc"
+    assert len(_libraries(cache)) == 1
+
+
+@on_posix
+@requires_cc
+def test_a_cc_on_path_whose_name_holds_a_blank_is_one_word(cc_run, tmp_path, monkeypatch):
+    run, cache, _ = cc_run
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    # A wrapper, not a symlink: Apple's /usr/bin/cc picks its tool by the name it
+    # is run as.
+    wrapper = tools / "my cc"
+    wrapper.write_text(f'#!/bin/sh\nexec "{shutil.which("cc")}" "$@"\n')
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("CC", "my cc")
+    assert run().ssa_diagnostics["propensity_backend"] == "cc"
+    assert len(_libraries(cache)) == 1
+
+
+_NO_PASSWD_ENTRY = """
+import pwd
+def _no_entry(uid):
+    raise KeyError(uid)
+pwd.getpwuid = _no_entry
+import bngsim._codegen as c
+print(c.CACHE_DIR)
+"""
+
+
+@on_posix
+@pytest.mark.parametrize("home", [None, ""])
+def test_no_home_and_no_password_entry_is_tmp(home):
+    """A container run as a UID with no password entry and no HOME failed
+    ``import bngsim`` (``Path.home()`` raised), or with an empty HOME put the
+    cache at ``/.cache``; CcJit falls back to ``/tmp``, and so does Python."""
+    env = {k: v for k, v in os.environ.items() if k not in ("HOME", "BNGSIM_CODEGEN_CACHE_DIR")}
+    if home is not None:
+        env["HOME"] = home
+    out = subprocess.run(
+        [sys.executable, "-c", _NO_PASSWD_ENTRY],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=300,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "/tmp/.cache/bngsim/codegen"
+
+
+@on_posix
+def test_a_relative_cache_dir_in_a_removed_working_directory_still_imports(tmp_path):
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    code = (
+        "import os, sys; os.chdir(sys.argv[1]); os.rmdir(sys.argv[1]); "
+        "import bngsim._codegen as c; print(c.CACHE_DIR)"
+    )
+    env = {**os.environ, "BNGSIM_CODEGEN_CACHE_DIR": "relcache"}
+    out = subprocess.run(
+        [sys.executable, "-c", code, str(gone)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=300,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "relcache"
+
+
+def test_the_cache_command_reads_its_directory_as_the_variable_is(tmp_path, monkeypatch):
+    """``bngsim.cache -C '~user/x'`` raised for an unknown user (review of #1927)."""
+    from bngsim.cache import codegen_cache_dir
+
+    monkeypatch.chdir(tmp_path)
+    got = codegen_cache_dir("~nosuchuser-bngsim/x")
+    assert (
+        got == tmp_path.resolve() / "~nosuchuser-bngsim" / "x"
+        or got == tmp_path / "~nosuchuser-bngsim" / "x"
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert codegen_cache_dir("~/x") == tmp_path / "x"
