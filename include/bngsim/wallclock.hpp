@@ -51,9 +51,9 @@ class TimeoutError : public std::runtime_error {
 // `limit_seconds <= 0` disables the budget (check() is a no-op). The hot-path
 // cost is one steady_clock::now() call plus a double comparison, ~30 ns on
 // modern x86. Callers that check inside tight loops should consider amortizing
-// (e.g. one check per N iterations); CVODE/ODE checks once per integration
-// step which is naturally rate-limited, while SSA checks every reaction event
-// because per-step cost is small.
+// (e.g. one check per N iterations): CVODE/ODE checks between CVode calls and,
+// from the right-hand side, once in 256 evaluations inside a call (issue
+// #1838), while SSA checks every reaction event because per-step cost is small.
 class WallClockBudget {
   public:
     explicit WallClockBudget(double limit_seconds = 0.0)

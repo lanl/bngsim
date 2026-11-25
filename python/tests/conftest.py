@@ -327,6 +327,11 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         _ANYWHERE,
         "libSBML reads .gz and .zip SBML files only when built with zlib, as its wheels are",
     ),
+    (
+        "libSBML was built without bzip2",
+        _ANYWHERE,
+        "libSBML reads .bz2 SBML files only when built with bzip2, as its wheels are",
+    ),
     ("KLU not compiled", _ANYWHERE, "KLU-off builds are a supported configuration"),
     (
         "KLU sparse solver not built",
@@ -472,6 +477,13 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "test_switch_residual_unfused.py shows codegen's C unfused against a build "
         "that would fuse; an x86-64 core without FMA (before Haswell, or under "
         "Rosetta) cannot fuse, so there is nothing to show. Every CI runner has one",
+    ),
+    (
+        "no clang on PATH",
+        _ANYWHERE,
+        "issue #1814's builds under clang, whose limit of 256 nested brackets GCC "
+        "does not have; a GCC-only machine is a choice, not a broken toolchain. "
+        "The bracket depth of the generated C is measured on every leg",
     ),
     # Source-tree vs installed-wheel context.
     ("installed wheel", _ANYWHERE, "source-tree-only guard, correctly inert against a wheel"),

@@ -387,6 +387,17 @@ def test_a_network_free_run_checks_as_unsupported_not_failed():
     assert {c["status"] for c in d["check"]["checks"]} == {"unsupported"}
 
 
+def test_a_canonical_network_free_method_takes_a_seed_and_the_xml():
+    """``nf_reject`` is the method ``nf`` resolves to, and ``Simulator`` takes it.
+    The command's own list held only nf, nfsim, rm and rulemonkey, so it refused
+    ``--seed`` (and ``--xml``) for it as a deterministic run's."""
+    xml = str(examples.path("binding", "bng-xml"))
+    net = str(examples.path("binding", "net"))
+    run = _bngsim("run", net, "--method", "nf_reject", "--xml", xml, "--t-end", "5",
+                  "--seed", "1", "--json")  # fmt: skip
+    assert _json(run)["record"]["run"]["seed"] == 1
+
+
 def test_a_species_set_is_a_concentration_and_the_initial_state(tmp_path):
     # A species declared in amounts, 100 in a compartment of size 2: --set A=7
     # is Model.set_concentration's 7, and the run starts from it.

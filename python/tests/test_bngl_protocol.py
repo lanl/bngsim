@@ -209,9 +209,12 @@ def test_no_generate_network_leaves_network_gen_none() -> None:
     assert p.network_gen is None
 
 
-def test_last_generate_network_wins() -> None:
-    # BNG2.pl lets a later generate_network supersede an earlier one; the captured cap
-    # mirrors that (the max_agg cap here, not the earlier bare call).
+def test_network_gen_is_the_first_generate_network_not_a_later_one() -> None:
+    """BNG2.pl builds the network at the first call. A later one does not start it
+    again: with ``overwrite=>1`` it continues it (``continue=>1`` is the default),
+    and a ``max_agg`` there takes no species out of what the first call made. The
+    last call was captured, so a re-emitted block built the network under a cap
+    its source never applied to it (issue #1480)."""
     text = (
         "begin model\nend model\n"
         "generate_network({overwrite=>1})\n"
@@ -219,7 +222,126 @@ def test_last_generate_network_wins() -> None:
         'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
     )
     p = parse_bngl_protocol(text)
-    assert p.network_gen == "generate_network({overwrite=>1,max_agg=>5})"
+    assert p.network_gen == "generate_network({overwrite=>1})"
+
+
+def test_a_network_run_before_generate_network_leaves_network_gen_none() -> None:
+    """The first ODE run generates the network with BNG2.pl's defaults, so the
+    round trip writes the bare call before it, not the later call's cap."""
+    text = (
+        "begin model\nbegin parameters\n k 1\nend parameters\nend model\n"
+        'setParameter("k",2)\n'
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+        "generate_network({max_iter=>3})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    p = parse_bngl_protocol(text)
+    assert p.network_gen is None
+    block = write_bngl_protocol(p)
+    assert "max_iter" not in block
+    lines = [line.strip() for line in block.splitlines() if line.strip()]
+    first_run = next(i for i, line in enumerate(lines) if line.startswith("simulate"))
+    assert lines[first_run - 1] == "generate_network({overwrite=>1})"
+    assert parse_bngl_protocol(block).generation_step == p.generation_step
+
+
+@pytest.mark.parametrize(
+    "line, network_gen",
+    [
+        ('simulate({method=>"nf",t_end=>1,n_steps=>1})', "generate_network({max_stoich=>{R=>5}})"),
+        ('simulate({method=>"ode",t_end=>1,n_steps=>1})', None),
+    ],
+    ids=["nf-only", "an-ode-run"],
+)
+def test_simulate_protocol_is_searched_through_the_begin_protocol_block(line, network_gen):
+    """The ``begin protocol`` block's lines decide, as they do for the load."""
+    text = (
+        "begin model\nend model\n"
+        f"begin protocol\n{line}\nend protocol\n"
+        "simulate_protocol()\n"
+        "generate_network({max_stoich=>{R=>5}})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert parse_bngl_protocol(text, strict=False).network_gen == network_gen
+
+
+def test_simulate_protocol_does_not_run_a_block_below_it() -> None:
+    """BNG2.pl has not read a block below the run yet, so the cap after it still
+    builds the network."""
+    text = (
+        "begin model\nend model\n"
+        "simulate_protocol()\n"
+        'begin protocol\nsimulate({method=>"ode",t_end=>1,n_steps=>1})\nend protocol\n'
+        "generate_network({max_stoich=>{R=>5}})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert parse_bngl_protocol(text, strict=False).network_gen == (
+        "generate_network({max_stoich=>{R=>5}})"
+    )
+
+
+@pytest.mark.parametrize("verb", ["parameter_scan", "bifurcate"])
+def test_a_poplevel_does_not_make_a_protocol_scan_psa(verb) -> None:
+    """A scan with ``method=>"protocol"`` runs the ``begin protocol`` block at each
+    point, and ``simulate_protocol`` hands its lines only a prefix (``BNGAction.pm``),
+    so a ``poplevel`` reaches no run. Read as PSA, the scan was no longer refused as
+    one the protocol cannot carry, and ran as a PSA scan."""
+    text = (
+        "begin model\nend model\n"
+        'begin protocol\nsimulate({method=>"ode",t_end=>1,n_steps=>1})\nend protocol\n'
+        f'{verb}({{method=>"protocol",poplevel=>100,parameter=>"k",par_min=>1,par_max=>2,'
+        "n_scan_pts=>2,t_end=>1})\n"
+    )
+    with pytest.raises(bngsim.ConversionError, match="begin protocol block"):
+        parse_bngl_protocol(text)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert parse_bngl_protocol(text, strict=False).steps[0].method == "protocol"
+
+
+def test_network_gen_reads_past_quit_as_the_loader_does() -> None:
+    """``from_bngl`` keeps the actions after ``quit()`` and forwards the call after
+    it, so ``network_gen`` names that call too."""
+    text = "begin model\nend model\nquit()\ngenerate_network({max_stoich=>{R=>5}})\n"
+    assert parse_bngl_protocol(text).network_gen == "generate_network({max_stoich=>{R=>5}})"
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["writeMDL()", 'visualize({type=>"reaction_network"})'],
+    ids=["writeMDL", "visualize-reaction_network"],
+)
+def test_an_action_that_generates_the_network_leaves_network_gen_none(action) -> None:
+    """``writeMDL`` and a ``reaction_network`` ``visualize`` generate the network
+    with BNG2.pl's defaults when there is none, like a run with a network method."""
+    text = (
+        "begin model\nend model\n"
+        f"{action}\n"
+        "generate_network({max_iter=>3})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert parse_bngl_protocol(text, strict=False).network_gen is None
+
+
+@pytest.mark.parametrize(
+    "nf_run",
+    [
+        'simulate({method=>"nf",t_end=>1,n_steps=>1})',
+        "simulate_nf({t_end=>1,n_steps=>1})",
+        'simulate({method=>"rm",t_end=>1,n_steps=>1})',
+    ],
+    ids=["method-nf", "simulate_nf", "method-rm"],
+)
+def test_a_network_free_run_before_generate_network_keeps_its_cap(nf_run) -> None:
+    """A network-free run generates no network, so the call after it is where
+    BNG2.pl generates one."""
+    text = (
+        "begin model\nend model\n"
+        f"{nf_run}\n"
+        "generate_network({max_stoich=>{R=>5}})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert parse_bngl_protocol(text).network_gen == "generate_network({max_stoich=>{R=>5}})"
 
 
 def test_network_gen_survives_json_round_trip() -> None:
@@ -506,6 +628,59 @@ def test_combine_protocols_skips_empty_specs() -> None:
     assert combine_protocols([empty, empty]).is_empty
 
 
+def test_combine_protocols_keeps_the_first_specs_network_gen_even_when_none() -> None:
+    """The merged steps run on the network the first spec's source generated. Its
+    ``network_gen`` of None, where an action generated the network first (a run with
+    a network method, or ``writeMDL``), says BNG2.pl generated it with its defaults,
+    so a later spec's cap must not take its place. A spec with no source that
+    generated a network still takes the first cap a spec names."""
+    head = "begin model\nend model\n"
+    run = 'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    run_first = parse_bngl_protocol(head + run + "generate_network({max_iter=>3})\n" + run)
+    capped = parse_bngl_protocol(head + "generate_network({max_agg=>5})\n" + run)
+    assert run_first.network_gen is None and run_first.generation_step is not None
+    assert combine_protocols([run_first, capped]).network_gen is None
+    sedml = ProtocolSpec(steps=(Experiment("simulate", "ode", (0.0, 1.0), 2),))
+    assert sedml.generation_step is None
+    assert combine_protocols([sedml, capped]).network_gen == "generate_network({max_agg=>5})"
+    # A .bngl of network-free runs generated no network, so its None is no call,
+    # and the later spec's cap is the one that makes the merged network finite.
+    nf_only = parse_bngl_protocol(head + "simulate_nf({t_end=>1,n_steps=>1})\n")
+    assert nf_only.network_gen is None and nf_only.generation_step is not None
+    assert combine_protocols([nf_only, capped]).network_gen == "generate_network({max_agg=>5})"
+    # An actions block with no model runs on a network loaded on its own, and one
+    # that reads a .net first runs on that, with a model block or without: none of
+    # them generated one (issue #1687).
+    no_model = parse_bngl_protocol(run)
+    read_net = parse_bngl_protocol('readFile({file=>"m.net"})\n' + run, strict=False)
+    model_read_net = parse_bngl_protocol(head + 'readFile({file=>"m.net"})\n' + run, strict=False)
+    for spec in (no_model, read_net, model_read_net):
+        assert spec.network_gen is None and spec.generation_step == 0
+        assert combine_protocols([spec, capped]).network_gen == "generate_network({max_agg=>5})"
+    # Which of these a spec is lives outside its value: equal after JSON, and read
+    # back from it, the spec merges as one built by hand, the first named cap winning.
+    read_back = ProtocolSpec.from_json(run_first.to_json())
+    assert read_back == run_first
+    assert combine_protocols([read_back, capped]).network_gen == "generate_network({max_agg=>5})"
+    # A first spec's own cap is kept, and a merged spec carries its first spec's
+    # verdict, so merging it again keeps its None.
+    assert combine_protocols([capped, run_first]).network_gen == "generate_network({max_agg=>5})"
+    assert combine_protocols([combine_protocols([run_first, capped]), capped]).network_gen is None
+    # The verdict is the first spec's, not one read again from the merged steps, so
+    # merging one spec at a time gives what merging them at once does.
+    ode_nogen = parse_bngl_protocol(head + run)
+    specs = [nf_only, ode_nogen, capped]
+    at_once = combine_protocols(specs).network_gen
+    one_at_a_time = specs[0]
+    for spec in specs[1:]:
+        one_at_a_time = combine_protocols([one_at_a_time, spec])
+    assert at_once == one_at_a_time.network_gen == "generate_network({max_agg=>5})"
+    # writeMDL generates the network with BNG2.pl's defaults where there is none,
+    # though the spec's only run is network-free.
+    mdl_first = parse_bngl_protocol(head + "writeMDL()\nsimulate_nf({t_end=>1,n_steps=>1})\n")
+    assert combine_protocols([mdl_first, capped]).network_gen is None
+
+
 def test_combine_protocols_concatenates_dropped_and_lossy() -> None:
     """Provenance — both the dropped (pure IO) and lossy (fidelity-affecting)
     channels survive the merge so the combined deliverable reports every loss."""
@@ -594,6 +769,21 @@ def test_poplevel_makes_a_run_psa() -> None:
     )
     assert p.steps[0].method == "psa"
     assert parse_bngl_protocol(_REPLAYED).steps[4].method == "psa"
+
+
+def test_poplevel_makes_a_method_nf_run_psa_but_not_simulate_nf() -> None:
+    """``BNGAction.pm``'s simulate sets the method to psa for a poplevel before it
+    looks at the one given, so ``method=>"nf"`` runs PSA; ``simulate_nf`` is its own
+    action and never reads a poplevel."""
+    head = "begin model\nend model\n"
+    nf_method = parse_bngl_protocol(
+        head + 'simulate({method=>"nf",t_end=>1,n_steps=>1,poplevel=>100})\n', strict=False
+    )
+    assert nf_method.steps[0].method == "psa"
+    nf_action = parse_bngl_protocol(
+        head + "simulate_nf({t_end=>1,n_steps=>1,poplevel=>100})\n", strict=False
+    )
+    assert nf_action.steps[0].method == "nf"
 
 
 def test_the_new_steps_round_trip_through_bngl_and_json() -> None:

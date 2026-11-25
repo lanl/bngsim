@@ -93,10 +93,13 @@ def test_the_engine_name_maps_to_the_helper():
 
 # Each case sweeps one argument through the species, so a single trajectory
 # covers a range rather than a point. The last two move a and b, which the
-# real models hold fixed, precisely because nothing else here would. The two
-# with a positive first argument carry a large b, which is what keeps them
-# inside the region the fraction is trusted in (issue #453); a positive a with a
-# small b and a large z is refused now, and has its own test below.
+# real models hold fixed, precisely because nothing else here would. "positive
+# a" and "non-integer a and b" carry a large b, which is what keeps a positive
+# first argument inside the region the fraction is trusted in (issue #453).
+# With a small b and a large |z| the fraction is refused it, and another route
+# answers or nothing does: the asymptotic route at a = 10 below, the summed
+# corner at a tiny a below a b under 1 (issue #1793), and a refusal at
+# mratio(50, 2.5, -1000), which has its own test below.
 CASES = [
     ("z rides the species", -3.0, 5.0, "k*mratio(a,b,-A)", 50.0),
     ("small z", -10.0, 21.0, "k*mratio(a,b,-A/10)", 20.0),
@@ -125,9 +128,12 @@ CASES = [
     # to z = -700, the asymptotic route past it (issue #1080). A decays from 1500
     # to 334, so each of these crosses from one to the other halfway. The ratio
     # is about b/A, which the A/b undoes. The a = 0 one runs the asymptotic
-    # route's exact M(0, b, z) = 1, which nothing else in the file reaches.
+    # route's exact M(0, b, z) = 1, which nothing else in the file reaches. The
+    # positive a is issue #1793's, which the fraction answered on both sides of
+    # z = -700 until the corner was widened to 0 < b - a < 1 with b < 1.
     ("tiny b - a, past z = -20", -1e-12, 1e-9, "k*mratio(a,b,-A)*A/b", 1500.0),
     ("a = 0, tiny b, past z = -20", 0.0, 1e-9, "k*mratio(a,b,-A)*A/b", 1500.0),
+    ("tiny positive a, past z = -20", 1e-30, 1e-9, "k*mratio(a,b,-A)*A/b", 1500.0),
     ("a rides the species", -3.0, 9.0, "k*mratio(-A,b,-20)", 12.0),
     ("b rides the species", -4.0, 0.0, "k*mratio(a,A+2,-8)", 10.0),
 ]
@@ -303,15 +309,96 @@ def test_the_series_route_matches_the_reference_on_both_engines(
             -786022.5708171733,
             1.7255395630598238e-18,
         ),
+        # Issue #1793's, a tiny positive a: the fraction was 1.4e-6 off at the
+        # first and 5.7e-2 at the second.
+        (1e-30, 2e-12, -25.0, 1.3971436819759902e-11),
+        (1e-30, 2e-12, -30000.0, 6.666888903705185e-17),
     ],
-    ids=["the series past z = -20", "a = 0 past z = -700", "a factor of two off"],
+    ids=[
+        "the series past z = -20",
+        "a = 0 past z = -700",
+        "a factor of two off",
+        "a tiny positive a, the series",
+        "a tiny positive a past z = -700",
+    ],
 )
 def test_past_z_minus_20_both_engines_match_the_reference(tmp_path, codegen, a, b, z, true_value):
     """The same constant-rate check as above, for the corner of the a <= 0,
-    z <= 0 clause where b - a < 1 (issue #1080): the series to z = -700 and the
-    asymptotic route past it, which in the generated C are what the trust rule's
-    new clause hands these to."""
+    z <= 0 clause where b - a < 1 (issue #1080), and for the tiny positive a the
+    b*b clause used to let into the fraction there (issue #1793): the series to
+    z = -700 and the asymptotic route past it, which in the generated C are what
+    the trust rule's corner hands these to."""
     p = tmp_path / "m1080b.net"
+    p.write_text(CONSTANT_RATE_NET.format(a=a, b=b, z=z, scale=1.0 / true_value))
+    with contextlib.redirect_stderr(io.StringIO()):
+        model = bngsim.Model.from_net(str(p))
+        sim = bngsim.Simulator(model, method="ode", codegen=codegen)
+        result = sim.run(t_span=(0.0, 1.0), n_points=3)
+    assert sim.codegen_backend in (("cc", "mir") if codegen else ("exprtk",))
+    assert float(result.species[-1][0]) == pytest.approx(1.0, rel=1e-11, abs=0.0)
+
+
+@pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])
+@pytest.mark.parametrize(
+    "a, b, z, true_value",
+    [
+        # Both series summed directly at 60 and 100 digits, which agree.
+        (9.9999999999995e-311, 1e-310, -20.5, 0.9999604811432588),
+        (-5e-324, 1e-322, -21.0, 7.221486122081613e-10),
+        (9.99999994e-316, 1e-315, -20.0, 0.29437439739547216),
+        (5e-324, 1e-322, 10.0, 19.982762895393687),
+    ],
+    ids=[
+        "past z = -20, a one ulp below b",
+        "past z = -20, a <= 0 with a subnormal b",
+        "z = -20",
+        "z > 0",
+    ],
+)
+def test_a_subnormal_alpha_is_summed_right_on_both_engines(tmp_path, codegen, a, b, z, true_value):
+    """alpha, or alpha*x, subnormal: the denominator's first terms rounded on the
+    subnormal grid and the sums came out 9.6e-7, 1.1e-4, 1.7e-4 and 3.1e-3 off.
+    Both copies now sum the denominator times 2^54 there, and both engines are
+    held to the reference with the constant-rate check above."""
+    p = tmp_path / "m1793s.net"
+    p.write_text(CONSTANT_RATE_NET.format(a=a, b=b, z=z, scale=1.0 / true_value))
+    with contextlib.redirect_stderr(io.StringIO()):
+        model = bngsim.Model.from_net(str(p))
+        sim = bngsim.Simulator(model, method="ode", codegen=codegen)
+        result = sim.run(t_span=(0.0, 1.0), n_points=3)
+    assert sim.codegen_backend in (("cc", "mir") if codegen else ("exprtk",))
+    assert float(result.species[-1][0]) == pytest.approx(1.0, rel=1e-11, abs=0.0)
+
+
+@pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])
+def test_with_alpha_past_1_a_subnormal_b_is_refused_on_both_engines(tmp_path, codegen):
+    """Outside the box, with b and alpha*|z| both subnormal, the fraction is
+    not trusted in either copy of the rule: main returned 0.1098 here, where
+    the ratio is 0.1101."""
+    p = tmp_path / "m1793r.net"
+    p.write_text(
+        CONSTANT_RATE_NET.format(a=4.3858021234563624, b=9.4e-323, z=1.73e-322, scale=1.0)
+    )
+    with contextlib.redirect_stderr(io.StringIO()):
+        model = bngsim.Model.from_net(str(p))
+        sim = bngsim.Simulator(model, method="ode", codegen=codegen)
+        with pytest.raises(bngsim.SimulationError, match=r"not reliable.*both subnormal"):
+            sim.run(t_span=(0.0, 1.0), n_points=3)
+    assert sim.codegen_backend in (("cc", "mir") if codegen else ("exprtk",))
+
+
+@pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])
+def test_a_subnormal_b_no_longer_rounds_away_the_ratio_on_both_engines(tmp_path, codegen):
+    """mratio(-6.29e-162, 5e-324, 0.52): b * sn was a subnormal product, and its
+    rounding put the ratio 19% off in both engines. Both now take b times 2^54
+    for it. The ratio is mpmath's, summed directly at 60 and 100 digits."""
+    a, b, z, true_value = (
+        -6.291571905510377e-162,
+        5e-324,
+        0.5206014607652593,
+        -1.9349686515542184e-162,
+    )
+    p = tmp_path / "m1793c.net"
     p.write_text(CONSTANT_RATE_NET.format(a=a, b=b, z=z, scale=1.0 / true_value))
     with contextlib.redirect_stderr(io.StringIO()):
         model = bngsim.Model.from_net(str(p))

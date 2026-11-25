@@ -42,7 +42,10 @@ The region it is trusted in, measured against a 40 digit reference, is all for
   about the even ones. That second half is issue #456: without it this
   clause admitted a corner where the fraction was wrong 60 times, since
   the even numerators carry ``z*(a-b-k)`` and so are about ``z/b`` for a
-  large ``b`` however small ``z*a`` is.
+  large ``b`` however small ``z*a`` is. Nor does it admit, past ``z = -20``,
+  a positive ``a`` below a ``b`` under 1 (issue #1793): a tiny enough ``a``
+  passed the bound, and the fraction lost there what it loses in the corner of
+  the ``a <= 0`` clause, so that corner now takes it.
 
 Everything else is refused by the fraction. That gives up answers it would have
 got right, because in the uncertain region it is right most of the time and
@@ -391,9 +394,10 @@ def test_near_a_pole_the_error_is_what_an_ulp_of_a_does(tmp_path):
         (1.0, 0.026664156824421394, 19.310533421401022, 0.028008147640145812),  # alpha = 1
         (-1.0, 0.5, 10.0, -1.0 / 19.0),  # a negative integer: the fraction terminates
         (-1e-12, 1.0, -19.5, 0.051282051107778356),  # z < 0 with b - a just above 1
-        # |z| past 20, where the box goes on only for a <= 0 and b - a < 1 (the
-        # last section below): a positive a, then b - a just above 1, near and far.
-        (1e-6, 0.5, -20.5, 0.02503515280316255),
+        # |z| past 20, where the box goes on only for 0 < b - a < 1 with b < 1
+        # (the last sections below): a positive a with b = 1, then b - a just
+        # above 1, near and far.
+        (1e-6, 1.0, -20.5, 0.04878049025292664),
         (-1e-12, 1.0, -25.0, 0.039999999999442815),
         (-0.5, 1.5, -1000.0, 0.0014985007496251875),
     ],
@@ -483,6 +487,246 @@ def test_past_z_minus_700_with_b_minus_a_near_the_smallest_double_is_refused(tmp
     only for b - a below about 1e-290."""
     with pytest.raises(Exception, match=r"not reliable.*The fraction is reliable for b > 0"):
         _value(tmp_path, 0.0, 1e-300, -710.0)
+
+
+# ── Issue #1793: the same corner, with a tiny positive a ─────────────────────
+
+# a, b, z, what the fraction returned, and the ratio (mpmath at 80 digits after
+# Kummer's transformation, and at 150 without it, which agree). The corner
+# above was written for a <= 0. A positive a reached the fraction past z = -20
+# through the b*b >= 64*|z*a| clause instead, which a tiny enough a passes, and
+# there the fraction lost what it loses in the corner, about
+# 10*eps*sqrt(-z)/b. The first row is just past z = -20, where at z = -20
+# itself the series already answered; the next four are the issue's, the last
+# of them 5.7% off. The last is the worst of 20000 random triples with b below
+# 1, off by a factor of 7000 and with the wrong sign. The series takes the
+# first three, and the asymptotic route the rest, past z = -700.
+WAS_OFF_1793 = [
+    (1e-30, 2e-12, -20.000001, 2.0612571457511304e-09, 2.061257156856199e-09),
+    (1e-30, 2e-12, -25.0, 1.3971417420721947e-11, 1.3971436819759902e-11),
+    (1e-30, 2e-12, -100.0, 2.0204345020266157e-14, 2.0204125055496302e-14),
+    (1e-30, 2e-12, -1000.0, 1.992426431996472e-15, 2.0020040120482374e-15),
+    (1e-30, 2e-12, -30000.0, 7.046624128694702e-17, 6.666888903705185e-17),
+    (
+        1.6746677479385269e-143,
+        1.0464791789235133e-15,
+        -6549120.474099903,
+        -1.1238198263826546e-18,
+        1.5978929428026101e-22,
+    ),
+]
+
+
+@pytest.mark.parametrize("a, b, z, old, true_value", WAS_OFF_1793)
+def test_past_z_minus_20_a_tiny_positive_a_is_not_answered_wrongly(
+    tmp_path, a, b, z, old, true_value
+):
+    """The corner is now 0 < b - a < 1 with b < 1. For a <= 0 that is the old
+    one, since there b - a < 1 already puts b below 1, and it adds every a
+    between 0 and b for a b below 1. a < b keeps alpha = b - a positive, so
+    every term of both series is still positive and nothing cancels."""
+    assert abs(old - true_value) / true_value > 1e-9
+    assert _value(tmp_path, a, b, z) == pytest.approx(true_value, rel=1e-13, abs=0.0)
+
+
+@pytest.mark.parametrize(
+    "a, b, z, true_value",
+    [
+        # In the corner, where the fraction was right because b is not small, or
+        # where nothing answered: both are summed now. mpmath at 80 digits.
+        (1e-6, 0.5, -20.5, 0.02503515280316255),
+        (0.4999999999, 0.5, -25.0, 0.29234219600186745),  # refused before
+        # A b of 1 or more stays with the fraction where it was trusted. With
+        # b - a < 1 the b*b clause admits there only a tiny a beside a b just
+        # over 1, or a b past about 64*|z|, and both measured clean, worst
+        # 2.3e-14 and 4.4e-16 over 5000 triples each. Past z = -700 nothing
+        # else answers the second kind, which is why the corner stops at b = 1
+        # rather than taking every a < b.
+        (1999.5, 2000.0, -25.0, 0.9999968370848997),
+        (99999.5, 100000.0, -1000.0, 0.9999999494954699),
+        # And an a above b, which the corner never takes: alpha is negative.
+        (1500.5, 1500.0, -20.5, 1.0000046155575413),
+    ],
+)
+def test_past_z_minus_20_with_a_positive_a_what_was_right_still_answers(
+    tmp_path, a, b, z, true_value
+):
+    assert _value(tmp_path, a, b, z) == pytest.approx(true_value, rel=1e-13, abs=0.0)
+
+
+def test_past_z_minus_700_an_a_whose_second_term_underflows_is_summed_as_a_zero(tmp_path):
+    """mratio(-5e-324, 0.5, -701) is 7.137766037665144e-4. Past z = -700 a
+    negative a has only the asymptotic route, and in its denominator the second
+    term, a*(a-b+1)/(-z), underflows to zero. Its zero-term rule read that as a
+    series that never decayed and refused. main sent the positive a to the
+    fraction instead, which this corner no longer trusts there. Every later term
+    carries a as well, so the sum is 1 to the last bit, what a = 0 gives, and it
+    is taken as that now, for either sign."""
+    for a in (5e-324, -5e-324, 0.0):
+        assert _value(tmp_path, a, 0.5, -701.0) == pytest.approx(
+            0.0007137766037665144, rel=1e-15, abs=0.0
+        )
+
+
+# a, b, z and the ratio (mpmath, both series summed directly at 60 and 100
+# digits, which agree). b - a is subnormal in each, which makes alpha*x and the
+# denominator's next few terms subnormal as well, each rounded to a multiple of
+# 4.9e-324, and every later term is built from them. The first three are a
+# positive a one ulp below b, which the corner summed 2.0e-6, 9.6e-7 and 2e-2
+# off when it first took them in; before issue #1793 they were refused. The
+# last is the old corner, a <= 0 with a subnormal b, summed 1.1e-4 off before.
+# The denominator is now summed times 2^54 there, and comes out right.
+SUBNORMAL_ALPHA = [
+    (2.225073858507201e-308, 2.2250738585072014e-308, -100.0, 1.6753732779397372e-28),
+    (9.9999999999995e-311, 1e-310, -20.5, 0.9999604811432588),
+    (9.99999994e-316, 1e-315, -20.5, 0.20193690364704345),
+    (-5e-324, 1e-322, -21.0, 7.221486122081613e-10),
+]
+
+
+@pytest.mark.parametrize("a, b, z, true_value", SUBNORMAL_ALPHA)
+def test_past_z_minus_20_a_subnormal_b_minus_a_is_summed_right(tmp_path, a, b, z, true_value):
+    """b * 2^54 and (alpha * 2^54) * x are exact, and keep the denominator off
+    the subnormal grid; b times the same factor in the final product cancels it,
+    so nothing else about the sum changes."""
+    assert 0.0 < b - a < 2.2250738585072014e-308
+    assert _value(tmp_path, a, b, z) == pytest.approx(true_value, rel=1e-14, abs=0.0)
+
+
+# ── Issue #1793: a subnormal b inside |z| <= 20 ─────────────────────────────
+
+# a, b, z and the ratio (summed directly at 60 and 100 digits). b is subnormal,
+# and so is alpha*|z| (alpha = a for z > 0, b - a for z < 0), so the denominator
+# was summed out of b and alpha*x, each a few multiples of 4.9e-324, on main as
+# well: these were 1.7e-4, 1.5e-4, 1.3e-4, 7.6e-4, 2.1e-2, 3.1e-3, 3.9e-7 and
+# 9.2e-6 off. The first is the corner's own row past z = -20 above, brought to
+# z = -20, and the eighth is M(1, b+1, z), a = 0's closed form. The last is one
+# main had right, to 1.1e-14, and keeps.
+SUBNORMAL_B_IN_THE_BOX = [
+    (9.99999994e-316, 1e-315, -20.0, 0.29437439739547216),
+    (-5e-324, 1e-322, -19.0, 5.335996608601993e-09),
+    (5e-324, 1e-322, -19.0, 5.897680458826413e-09),
+    (1e-323, 3e-323, -10.0, 6.809834881360074e-05),
+    (-2.5e-323, 5e-324, -4.027930015045433, 0.0030132513626954234),
+    (5e-324, 1e-322, 10.0, 19.982762895393687),
+    (2.3e-308, 1e-322, 1e-10, 4.2960384401381394e-05),  # alpha normal, alpha*x not
+    (0.0, 1e-320, -5.0, 0.006737946999085467),
+    (1.8477207213814e-311, 7.08483837769e-312, -13.046178051607425, -1.3422527203230127e-06),
+]
+
+
+@pytest.mark.parametrize("a, b, z, true_value", SUBNORMAL_B_IN_THE_BOX)
+def test_inside_the_box_a_subnormal_b_beside_a_subnormal_alpha_x_is_summed_right(
+    tmp_path, a, b, z, true_value
+):
+    """The same 2^54 on the denominator, wherever alpha or alpha*x is
+    subnormal and b < 1."""
+    assert b < 2.2250738585072014e-308
+    assert _value(tmp_path, a, b, z) == pytest.approx(true_value, rel=1e-14, abs=0.0)
+
+
+def test_with_alpha_past_1_the_fraction_is_still_refused_there(tmp_path):
+    """|alpha| >= 1 is outside the box, so the series does not take these, and
+    with b and alpha*|z| both subnormal the fraction is not trusted: main
+    returned 0.10982658959537571 here, where the ratio is 0.11014296455173382,
+    and was more than 1e-8 off at about one in five such triples. The refusal
+    names the arguments at the digits that read back as them; it used to print
+    b and z as 0.000000."""
+    with pytest.raises(Exception, match=r"not reliable.*both subnormal") as excinfo:
+        _value(tmp_path, 4.3858021234563624, 9.4e-323, 1.73e-322)
+    assert "(a=4.3858021234563624, b=9.4e-323, z=1.73e-322)" in str(excinfo.value)
+    assert "below 2.2250738585072014e-308" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "a, b, z, named",
+    [(2.5, 1500.0, 2000.0, "(a=2.5, b=1500, z=2000)"), (0.5, -10.0, 5.0, "(a=0.5, b=-10, z=5)")],
+)
+def test_a_refusal_names_a_whole_number_argument_as_an_integer(tmp_path, a, b, z, named):
+    """The shortest %g spelling of 1500 is 1.5e+03. A b is usually a whole
+    number, since BNG writes b = |AT-BT| + 1, so a whole number below 1e15 is
+    printed as one."""
+    with pytest.raises(Exception, match="not reliable") as excinfo:
+        _value(tmp_path, a, b, z)
+    assert named in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "a, b, z, old, true_value",
+    [
+        # mpmath summed directly at 60 and 100 digits, which agree.
+        (
+            -6.291571905510377e-162,
+            5e-324,
+            0.5206014607652593,
+            -2.299373846912294e-162,
+            -1.9349686515542184e-162,
+        ),
+        (
+            9.472470316353253e-122,
+            1e-323,
+            0.12873501579820726,
+            7.592772784664567e-202,
+            8.635933922870071e-202,
+        ),
+    ],
+)
+def test_inside_the_box_a_subnormal_b_no_longer_rounds_away_the_ratio(
+    tmp_path, a, b, z, old, true_value
+):
+    """With alpha*x normal the sums are right, but b * sn is a subnormal product
+    and rounds on that grid: 8.4e-324 went to 1e-323 at the first row, 19% of the
+    ratio. b is taken times 2^54 for the product, which is exact, and the
+    quotient scaled back."""
+    assert abs(old - true_value) / abs(true_value) > 0.1
+    assert _value(tmp_path, a, b, z) == pytest.approx(true_value, rel=1e-13, abs=0.0)
+
+
+def _summed_ratio(mpmath, a, b, z):
+    """mratio by both Kummer series summed directly, terms all of one sign after
+    the first: mpmath's hyp1f1 itself goes wrong at a tiny b beside a large
+    alpha/b, which is exactly what this sweeps."""
+    with mpmath.workdps(80):
+        a, b, z = mpmath.mpf(a), mpmath.mpf(b), mpmath.mpf(z)
+        if z == 0:
+            return 1.0
+        p, x, shift = (a, z, 1) if z > 0 else (b - a, -z, 0)
+
+        def m(q, c):
+            t = s = mpmath.mpf(1)
+            k = 0
+            while True:
+                t = t * (q + k) / (c + k) * x / (k + 1)
+                s += t
+                k += 1
+                if t == 0 or (k > 2 * x + 20 and abs(t) < abs(s) * mpmath.mpf(10) ** -70):
+                    return s
+
+        return float(m(p + shift, b + 1) / m(p, b))
+
+
+@pytest.mark.parametrize("b", [5e-324, 1e-322, 1e-318, 2e-308, 1e-300])
+def test_every_answer_near_the_subnormals_is_right_or_refused(tmp_path, b):
+    """A sweep of a, both signs of z and |z| on both sides of 20, beside a b
+    that is subnormal or close to it. Every answer is within 1e-8 of the ratio
+    or within 1e-323 of it, whichever is looser, which is two ulps where the
+    ratio is below about 1e-315; anything else must be a refusal. On main 209
+    of the 740 answers among these 825 calls were wrong, some by the whole of
+    the ratio. Now 750 answer, all right, and 75 are refused."""
+    mpmath = pytest.importorskip("mpmath")
+    tiny = (5e-324, 1e-322, 1e-318, 3e-308, 1e-300, 1e-160, 1e-3)
+    wrong = []
+    for a in (0.0, *tiny, *(-t for t in tiny)):
+        for z in (-25.0, -20.0, -19.0, -4.03, -0.5, -1e-6, 1e-6, 0.5, 10.0, 19.5, 25.0):
+            try:
+                got = _value(tmp_path, a, b, z)
+            except Exception as excinfo:
+                assert "not reliable" in str(excinfo)
+                continue
+            want = _summed_ratio(mpmath, a, b, z)
+            if not abs(got - want) <= max(1e-8 * abs(want), 1e-323):
+                wrong.append((a, b, z, got, want))
+    assert not wrong
 
 
 # ── Issue #1080: a b below about 1e-22, wherever the fraction is trusted ─────

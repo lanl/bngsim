@@ -342,7 +342,16 @@ _compile_counter = itertools.count()
 # failed at dlopen. The source digest already moves; the bump is for an install
 # whose digest is empty, which would go on loading those libraries. Invalidate
 # v43.
-_CODEGEN_VERSION = "44"
+# v45: lanl/bngsim #1793 — bngsim_mratio_trusted and bngsim_mratio_series take
+# the corner past z = -20 as 0 < b - a < 1 with b < 1 rather than a <= 0 with
+# b - a < 1, so a tiny positive a below a b under 1 no longer reaches the
+# fraction there, which was 5.7% off at mratio(1e-30, 2e-12, -3e4). The series
+# sums its denominator times 2^54 where alpha or alpha*x is subnormal and scales
+# a subnormal b's final product; the fraction is refused where b and |alpha*z|
+# are both subnormal; and the asymptotic route takes an underflowed second term
+# as a = 0's. The source digest already moves; the bump is for an install whose
+# digest is empty. Invalidate v44.
+_CODEGEN_VERSION = "45"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -727,17 +736,25 @@ _SPECIAL_FUNCTION_C_LINES = (
     "   clause (issue #768). `a` a negative integer terminates the fraction",
     "   exactly (not a = 0, whose odd numerators start at k = 1 and never",
     "   vanish); `a <= 0` with `z <= 0` measured clean over 487 argument triples and is",
-    "   where BNG models live, except past z = -20 with b - a < 1, where it loses",
-    "   about 10*eps*sqrt(-z)/(b - a) of the ratio and is refused here (issue",
-    "   #1080; the series below takes it to z = -700, the asymptotic route",
-    "   beyond); b*b >= 64*|z*a| means the odd partial numerators",
+    "   where BNG models live, except past z = -20 with 0 < b - a < 1 and b < 1,",
+    "   where it loses about 10*eps*sqrt(-z)/(b - a) of the ratio and is refused",
+    "   here (issue #1080; the series below takes it to z = -700, the asymptotic",
+    "   route beyond). For a <= 0 the b < 1 follows. With it the corner also takes",
+    "   a positive a below b, which the b*b test let through when a was tiny",
+    "   enough, to the same loss (issue #1793); a b of 1 or more stays with the",
+    "   fraction, clean wherever that test admits one past z = -20.",
+    "   b*b >= 64*|z*a| means the odd partial numerators",
     "   are a contraction from the first step; |z| <= 20 was clean over 3400",
     "   hostile triples where the first failure anywhere is at 60. The 2*z <= b",
     "   companion for a positive z bounds the EVEN partial numerators, which the",
     "   b*b test does not reach: they carry z*(a-b-k), so for a large b they are",
     "   about z/b however small z*a is. Where that turns is sharp and it is at",
     "   z = b (clean through z/b = 1.02, 12 of 47 wrong at 1.05), so half of b",
-    "   leaves a factor of two -- issue #456. Anything else is refused unless the",
+    "   leaves a factor of two -- issue #456. None of it where b and |alpha*z|",
+    "   are both subnormal (alpha = a for z > 0, b - a for z < 0), z = 0 and",
+    "   alpha = 0 aside: what the series leaves there is mostly |alpha| >= 1, and",
+    "   the fraction was wrong at 112 of 615 of those (issue #1793). Anything",
+    "   else is refused unless the",
     "   asymptotic route below can vouch for an answer. Kept",
     "   identical to mratio_cf_is_trustworthy in src/expression.cpp. */",
     "static int bngsim_mratio_trusted(double a, double b, double z) {",
@@ -747,8 +764,16 @@ _SPECIAL_FUNCTION_C_LINES = (
     "    if (a < 0.0 && a == floor(a)) {",
     "        return 1;",
     "    }",
-    "    if (a <= 0.0 && z < -20.0 && b - a < 1.0) {",
+    "    if (a < b && b < 1.0 && z < -20.0 && b - a < 1.0) {",
     "        return 0;",
+    "    }",
+    "    if (z != 0.0 && b < 2.2250738585072014e-308) {",
+    "        const double alpha = z > 0.0 ? a : b - a;",
+    "        const double x = z > 0.0 ? z : -z;",
+    "        if (alpha != 0.0 && alpha * x > -2.2250738585072014e-308 &&",
+    "            alpha * x < 2.2250738585072014e-308) {",
+    "            return 0;",
+    "        }",
     "    }",
     "    if (a <= 0.0 && z <= 0.0) {",
     "        return 1;",
@@ -854,8 +879,10 @@ _SPECIAL_FUNCTION_C_LINES = (
     "        x = -1.0 / z;",
     "        sum_num = bngsim_mratio_2f0(a + 1.0, a - b + 1.0, x, &err_num);",
     "        /* a == 0 is M(0, b, z) = 1, all its expansion says, and exact: the",
-    "           zero-term rule would refuse it (issue #1080). */",
-    "        if (a == 0.0) {",
+    "           zero-term rule would refuse it (issue #1080). So is an a whose",
+    "           second term, a*(a-b+1)/(-z), underflows to zero, since every later",
+    "           term carries a as well (issue #1793). */",
+    "        if (a == 0.0 || (a - b + 1.0 != 0.0 && a * (a - b + 1.0) * x == 0.0)) {",
     "            sum_den = 1.0;",
     "            err_den = 0.0;",
     "        } else {",
@@ -928,20 +955,23 @@ _SPECIAL_FUNCTION_C_LINES = (
     "   zero of the ratio, where it is ill-conditioned anyway. The denominator is",
     "   summed times b so a tiny b cannot overflow it. Each term ratio is below",
     "   2*x/(k+1), so from k + 1 >= 4*x on the rest of a series is no larger than",
-    "   its last term. Past |z| = 20 it takes one more corner, a <= 0 and",
-    "   b - a < 1 out to z = -700, where the fraction's loss goes on and grows:",
-    "   there every term of both series is positive and none overflows. Kept",
+    "   its last term. Past |z| = 20 it takes one more corner, 0 < b - a < 1 with",
+    "   b < 1 out to z = -700, where the fraction's loss goes on and grows",
+    "   (issues #1080 and #1793): there a < b, so every term of both series is",
+    "   positive, and none overflows. Where alpha or alpha*x is subnormal and",
+    "   b < 1, the denominator is summed times 2^54, which keeps its first terms",
+    "   off the subnormal grid (they were 2e-2 off at b = 1e-315), and b at the",
+    "   same scale in the final product cancels it; otherwise a subnormal b is",
+    "   scaled for that product alone (issue #1793). Kept",
     "   identical to mratio_series in src/expression.cpp,",
     "   which carries the full note and the measurements; the NaN test is a",
     "   comparison for the reason at bngsim_mratio_is_finite. */",
     "static int bngsim_mratio_series(double a, double b, double z, double *out) {",
-    "    double x, alpha, shift, value;",
+    "    double x, alpha, shift, scale, value;",
     "    double tn = 1.0;",
     "    double sn = 1.0;",
     "    double an = 1.0;",
-    "    double td = b;",
-    "    double sd = b;",
-    "    double ad = b;",
+    "    double td, sd, ad;",
     "    int k;",
     "    if (!(b > 0.0) || !bngsim_mratio_is_finite(b) || z == 0.0) {",
     "        return 0;",
@@ -952,13 +982,26 @@ _SPECIAL_FUNCTION_C_LINES = (
     "    if (!(alpha > -1.0 && alpha < 1.0)) {",
     "        return 0;",
     "    }",
-    "    if (!(x <= 20.0) && !(z < 0.0 && a <= 0.0 && x <= 700.0)) {",
+    "    if (!(x <= 20.0) && !(z < 0.0 && a < b && b < 1.0 && x <= 700.0)) {",
     "        return 0;",
     "    }",
+    "    /* The denominator is summed times 2^54 as well where alpha or alpha*x is",
+    "       subnormal, which keeps its first terms off the subnormal grid. Times",
+    "       1 everywhere else, which changes nothing. */",
+    "    scale =",
+    "        b < 1.0 && alpha != 0.0 &&",
+    "                ((alpha * x > -2.2250738585072014e-308 && "
+    "alpha * x < 2.2250738585072014e-308) ||",
+    "                 (alpha > -2.2250738585072014e-308 && alpha < 2.2250738585072014e-308))",
+    "            ? 18014398509481984.0",
+    "            : 1.0;",
+    "    td = b * scale;",
+    "    sd = td;",
+    "    ad = td;",
     "    for (k = 0; k < 3000; ++k) {",
     "        tn = tn * ((alpha + shift + k) / (b + 1.0 + k)) * (x / (k + 1.0));",
     "        if (k == 0) {",
-    "            td = alpha * x;",
+    "            td = (alpha * scale) * x;",
     "        } else {",
     "            td = td * ((alpha + k) / (b + k)) * (x / (k + 1.0));",
     "        }",
@@ -968,8 +1011,20 @@ _SPECIAL_FUNCTION_C_LINES = (
     "        ad += fabs(td);",
     "        if (k + 1.0 >= 4.0 * x && fabs(tn) <= 1.0e-17 * an && fabs(td) <= 1.0e-17 * ad) {",
     "            /* b * sn overflows for a b near the largest double, sd / b for a",
-    "               tiny one. */",
-    "            value = b < 1.0 ? b * sn / sd : sn / (sd / b);",
+    "               tiny one. A scaled denominator takes b at the same scale. Else a",
+    "               subnormal b is taken times 2^54 first, which is exact, or b * sn",
+    "               rounds on the subnormal grid; an overflow of that keeps the",
+    "               plain order. */",
+    "            if (scale != 1.0) {",
+    "                value = (b * scale) * sn / sd;",
+    "            } else if (b < 2.2250738585072014e-308) {",
+    "                value = (b * 18014398509481984.0) * sn / sd;",
+    "                value = value <= 1.7976931348623157e308 && value >= -1.7976931348623157e308",
+    "                            ? value / 18014398509481984.0",
+    "                            : b * sn / sd;",
+    "            } else {",
+    "                value = b < 1.0 ? b * sn / sd : sn / (sd / b);",
+    "            }",
     "            if (!(value == value)) { /* NaN */",
     "                return 0;",
     "            }",
@@ -1623,12 +1678,26 @@ def _translate_bngl_if_to_piecewise(expr: str) -> str:
             out_parts.append(expr[m.start() : close_paren + 1])
             cursor = close_paren + 1
             continue
-        c_raw, t_raw, f_raw = (a.strip() for a in args)
-        # Recurse so nested ifs are translated too.
-        c = _translate_bngl_if_to_piecewise(c_raw)
-        t = _translate_bngl_if_to_piecewise(t_raw)
-        f = _translate_bngl_if_to_piecewise(f_raw)
-        out_parts.append(f"Piecewise(({t}, {c}), ({f}, True))")
+        # Recurse so nested ifs are translated too, except along a chain of
+        # false branches that are each all one if(): those are followed here
+        # and written in as each other's default, the same nested text without
+        # a Python frame per link (:func:`_bracketed_if_call`).
+        # Each link keeps the brackets its false branch was written in.
+        links = []
+        while True:
+            c_raw, t_raw, f_raw = (a.strip() for a in args)
+            c = _translate_bngl_if_to_piecewise(c_raw)
+            t = _translate_bngl_if_to_piecewise(t_raw)
+            link = _bracketed_if_call(f_raw)
+            if link is None:
+                links.append((c, t, "", ""))
+                break
+            before, args, after = link
+            links.append((c, t, before, after))
+        piecewise = _translate_bngl_if_to_piecewise(f_raw)
+        for c, t, before, after in reversed(links):
+            piecewise = f"Piecewise(({t}, {c}), ({before}{piecewise}{after}, True))"
+        out_parts.append(piecewise)
         cursor = close_paren + 1
     return "".join(out_parts)
 
@@ -5185,6 +5254,63 @@ def _frame_limit_flag() -> str:
     return f"-Wframe-larger-than={_CODEGEN_MAX_FRAME_BYTES}"
 
 
+#: clang's default ``-fbracket-depth``: it stops at a parenthesis, square bracket
+#: or brace nested deeper than this, each kind counted on its own, with "bracket
+#: nesting level exceeded maximum of 256". GCC has no such limit.
+_CLANG_BRACKET_DEPTH = 256
+#: Headroom for the brackets the preprocessor adds to what the source shows:
+#: ``NAN`` is ``(__builtin_nanf (""))`` in glibc, and the source's other macros
+#: are names and attributes. A source this close to the limit is given the flag,
+#: and the flag allows this much past the source's own depth.
+_BRACKET_DEPTH_MARGIN = 64
+_C_COMMENT_OR_LITERAL_RE = re.compile(
+    r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.S
+)
+
+
+def _c_bracket_depth(c_source: str) -> int:
+    """The deepest that one kind of bracket nests in ``c_source``, outside its
+    comments and literals: what clang holds to ``-fbracket-depth``."""
+    import numpy as np
+
+    code = np.frombuffer(
+        _C_COMMENT_OR_LITERAL_RE.sub(" ", c_source).encode("utf-8"), dtype=np.uint8
+    )
+    deepest = 0
+    for opening, closing in (b"()", b"[]", b"{}"):
+        brackets = code[(code == opening) | (code == closing)]
+        if brackets.size:
+            steps = np.where(brackets == opening, 1, -1)
+            deepest = max(deepest, int(np.cumsum(steps).max()))
+    return deepest
+
+
+def _bracket_depth_flags(c_source: str, compiler: list[str]) -> list[str]:
+    """``["-fbracket-depth=<N>"]`` where clang is to build a source nested past
+    its default limit, and nothing for any other source or compiler (issue
+    #1814).
+
+    An ``if()`` chain is written as one ``?:`` chain (:func:`_replace_if_calls`),
+    which keeps the commonest deep nesting shallow, but a model can nest as deep
+    any other way: a chain through the true branches, a sum of sums. A plain run
+    fell back to the interpreter on such a source, and a forward-sensitivity
+    run, which needs the compiled right-hand side, failed.
+
+    The depth is measured before the preprocessor runs, which can add a few
+    brackets (``NAN`` at the deepest point adds two), so the flag is given to a
+    source within :data:`_BRACKET_DEPTH_MARGIN` of the limit too: 193 deep or
+    more, where an ordinary model's source is under 10. GCC rejects the flag, and
+    the compiler is not asked what it is about any other source, so every other
+    build's command is what it was. The flag changes what clang reads, not what
+    it emits, so the cache key does not carry it."""
+    if Path(compiler[0]).stem.lower() == "cl":
+        return []
+    depth = _c_bracket_depth(c_source) + _BRACKET_DEPTH_MARGIN
+    if depth <= _CLANG_BRACKET_DEPTH or not _toolchain.is_clang(compiler):
+        return []
+    return [f"-fbracket-depth={depth}"]
+
+
 #: The tag both compilers end the report with: Clang ``[-Wframe-larger-than]``,
 #: GCC ``[-Wframe-larger-than=]``. Its presence is what refuses a library; the
 #: function name and size are read only to say which. The bracket is part of it:
@@ -5292,7 +5418,11 @@ def _arch_flags() -> list[str]:
 
 
 def _build_compile_cmd(
-    c_path: Path, so_path: Path, opt_flag: str, compiler: list[str] | None = None
+    c_path: Path,
+    so_path: Path,
+    opt_flag: str,
+    compiler: list[str] | None = None,
+    extra_flags: tuple[str, ...] | list[str] = (),
 ) -> list[str]:
     """Build the platform-specific compile command.
 
@@ -5306,6 +5436,9 @@ def _build_compile_cmd(
         Optimization flag for the detected compiler (e.g. "-O3" / "/O2").
     compiler : list[str], optional
         The compiler's base command; :func:`_find_c_compiler` when not given.
+    extra_flags : sequence of str, optional
+        Flags this source needs of a GCC/Clang compile
+        (:func:`_bracket_depth_flags`).
 
     Returns
     -------
@@ -5334,6 +5467,7 @@ def _build_compile_cmd(
             opt_flag,
             _FP_CONTRACT_OFF,
             _frame_limit_flag(),
+            *extra_flags,
             "-shared",
             "-fPIC",
             "-o",
@@ -5938,6 +6072,7 @@ def _compile_one_object(
     c_name: str,
     o_name: str,
     timeout: float | None,
+    extra_flags: tuple[str, ...] | list[str] = (),
 ) -> None:
     """Compile one ``.c`` to ``.o`` (``cc [-arch <machine>] <opt> -fPIC -c``) from
     within ``work`` using relative names, then normalize the object's mtime.
@@ -5951,6 +6086,7 @@ def _compile_one_object(
         opt_flag,
         _FP_CONTRACT_OFF,
         _frame_limit_flag(),
+        *extra_flags,
         "-fPIC",
         "-c",
         "-o",
@@ -5972,6 +6108,7 @@ def _compile_sharded(
     jobs: int,
     timeout: float | None,
     compiler: list[str],
+    extra_flags: tuple[str, ...] | list[str] = (),
 ) -> None:
     """Compile the driver + shard units to ``.o`` with up to ``jobs`` concurrent
     ``cc -c`` processes, then link them into ``tmp_so_path``.
@@ -6005,7 +6142,9 @@ def _compile_sharded(
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
             futures = [
-                ex.submit(_compile_one_object, compiler, opt_flag, work, cn, on, timeout)
+                ex.submit(
+                    _compile_one_object, compiler, opt_flag, work, cn, on, timeout, extra_flags
+                )
                 for cn, on in names
             ]
             # Surface the first failure (cancels not-yet-started compiles).
@@ -6111,6 +6250,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
     # marker is on the first lines of the combined source (RHS is always first).
     chunked = _CHUNK_MARKER in c_source[:512]
     opt_flag = _resolve_opt_flag(compiler_name, len(c_source), chunked=chunked)
+    extra_flags = _bracket_depth_flags(c_source, compiler)
     timeout = _resolve_codegen_timeout()
 
     # Decide serial vs. sharded parallel compile. MSVC keeps the single-shot
@@ -6128,7 +6268,9 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
                 len(units),
                 jobs,
             )
-            _compile_sharded(driver_src, units, tmp_so_path, opt_flag, jobs, timeout, compiler)
+            _compile_sharded(
+                driver_src, units, tmp_so_path, opt_flag, jobs, timeout, compiler, extra_flags
+            )
             _refuse_foreign_library(tmp_so_path, "")
             os.replace(tmp_so_path, so_path)
             _compile_installs.last = str(so_path)
@@ -6138,7 +6280,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
             # default (cp1252 on Windows) would raise UnicodeEncodeError.
             c_path.write_text(c_source, encoding="utf-8")
             try:
-                cmd = _build_compile_cmd(c_path, tmp_so_path, opt_flag, compiler)
+                cmd = _build_compile_cmd(c_path, tmp_so_path, opt_flag, compiler, extra_flags)
                 logger.info("Compiling codegen RHS (%s): %s", opt_flag, " ".join(cmd))
                 # Removed by the supervisor if this process dies mid-compile, as
                 # the finally clauses here remove them otherwise (issue #1552).
@@ -6872,13 +7014,81 @@ def _double_valued_logic(c: str) -> str:
     return "".join(out)
 
 
+_IF_HEAD_RE = re.compile(r"if\s*\(")
+
+
+def _if_call_args(expr: str) -> list[str] | None:
+    """``[cond, t, f]`` where ``expr`` is one ``if(cond, t, f)`` call and nothing
+    else, else ``None``.
+
+    A table of values over time is a chain of such calls, each the false branch
+    of the one before, one link a day; the Mallela 2024 ``phoenix`` model's
+    ``v_rate()`` has 340 (issue #1814). :func:`_replace_if_calls` writes such a false branch as
+    the next link of one C ``?:`` chain. Nested, each link cost two levels of
+    brackets, and the C passed clang's limit of 256 at 128 links.
+
+    :func:`_translate_bngl_if_to_piecewise` follows the chain too, to need no
+    Python frame per link, but writes the nested ``Piecewise`` it always has.
+    One flat ``Piecewise`` is not the same thing to sympy: it merges
+    neighbouring links of one value into an ``Or`` in normal form, which grows
+    exponentially over window conditions, and it drops a link whose condition
+    the ones before it leave nothing for, by reasoning that holds only for
+    numbers: ``if(x<1, a, if(x>=1, b, c))`` loses ``c``, which the C takes where
+    ``x`` is NaN. So the parse text still nests two parentheses a link, and a
+    chain of 99 or more still passes Python's limit of 200 and is not
+    differentiated.
+    """
+    m = _IF_HEAD_RE.match(expr)
+    if m is None:
+        return None
+    close = _find_close_paren_strict(expr, m.end() - 1)
+    if close != len(expr) - 1:
+        return None
+    args = _split_top_level_commas(expr[m.end() : close])
+    return args if len(args) == 3 else None
+
+
+def _bracketed_if_call(expr: str) -> tuple[str, list[str], str] | None:
+    """``(before, [cond, t, f], after)`` where ``expr`` is one ``if(cond, t, f)``
+    call in brackets that hold nothing else, ``((if(c, t, f)))``, or in none;
+    ``before`` and ``after`` are those brackets and the blanks beside them.
+    Else ``None``.
+
+    The false branch of a chain may be written in brackets of its own,
+    ``if(c1, t1, (if(c2, t2, f)))``, and is the next link all the same
+    (:func:`_if_call_args`).
+    """
+    start, end = 0, len(expr)
+    while True:
+        while start < end and expr[start].isspace():
+            start += 1
+        while end > start and expr[end - 1].isspace():
+            end -= 1
+        if start < end and expr[start] == "(" and _find_close_paren_strict(expr, start) == end - 1:
+            start, end = start + 1, end - 1
+            continue
+        break
+    args = _if_call_args(expr[start:end])
+    if args is None:
+        return None
+    return expr[:start], args, expr[end:]
+
+
 def _replace_if_calls(expr: str) -> str:
     """Replace ExprTk if(cond, true_val, false_val) with C ternary.
 
     ExprTk: if(cond, t, f)
     C:      ((cond) ? (t) : (f))
 
-    Handles nested if() calls correctly by matching parentheses.
+    Handles nested if() calls correctly by matching parentheses. An if() that is
+    all of another's false branch, in brackets of its own or not, continues its
+    chain (:func:`_if_call_args`, :func:`_bracketed_if_call`):
+
+    ExprTk: if(c1, t1, if(c2, t2, f))
+    C:      ((c1) ? (t1) : (c2) ? (t2) : (f))
+
+    which C reads as it reads the nested form, since ``?:`` groups from the
+    right, at the same bracket depth however long the chain.
     """
     result = []
     i = 0
@@ -6893,12 +7103,20 @@ def _replace_if_calls(expr: str) -> str:
             paren_start = i + m.end() - 1  # position of '('
             args = _split_if_args(expr, paren_start)
             if args and len(args) == 3:
-                cond, true_val, false_val = args
-                # Recursively process each argument
-                cond = _replace_if_calls(cond.strip())
-                true_val = _replace_if_calls(true_val.strip())
+                # Recursively process each argument, following the chain of
+                # false branches that are if()s of their own.
+                links = []
+                while True:
+                    cond, true_val, false_val = args
+                    cond = _replace_if_calls(cond.strip())
+                    true_val = _replace_if_calls(true_val.strip())
+                    links.append(f"({cond}) ? ({true_val}) : ")
+                    link = _bracketed_if_call(false_val)
+                    if link is None:
+                        break
+                    args = link[1]
                 false_val = _replace_if_calls(false_val.strip())
-                result.append(f"(({cond}) ? ({true_val}) : ({false_val}))")
+                result.append(f"({''.join(links)}({false_val}))")
                 # Find end of the if(...) expression
                 end = _find_matching_paren(expr, paren_start)
                 i = end + 1

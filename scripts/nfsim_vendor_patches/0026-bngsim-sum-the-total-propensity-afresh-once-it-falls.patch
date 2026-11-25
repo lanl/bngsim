@@ -1,0 +1,354 @@
+From 58c980d94d3710745953c17fe236fc559f466fb1 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Tue, 24 Nov 2026 19:14:33 -0700
+Subject: [PATCH] bngsim: sum the total propensity afresh once it falls far,
+ and fire above 0
+
+DirectSelector kept the total propensity as a running sum, Atot - oldA +
+newA, and summed it afresh only when a pick ran past the last reaction.
+A propensity added to a large total is rounded to that total's spacing,
+and is not given back when the large term is taken off again. With A + B
+-> C at kf from 1000 of each beside 0 -> D at 1e-6, the sum held 0 once
+A and B were gone at kf = 1e5, so D never fired, and 1.907e-6 at kf =
+1e4, so D fired at 1.9 times its rate (bngsim GH #1666). A pick that ran
+past the last reaction did sum the propensities afresh, but
+System::a_tot kept the stale total, and every later waiting time was
+drawn from it. The sum goes astray without a fall too, where the
+roundings fall the same way every time: one molecule flipping between
+two reactions beside a fixed background lost 2.2e-16 a cycle, without
+bound, and the reaction listed last loses from every pick what the sum
+has lost.
+
+The selector now sums Atot from each reaction's get_a() once it has
+fallen below 2^-10 of the largest value it has held since it was last
+summed, or below 0, or once it has taken 2^12 updates since then, as
+RuleMonkey sums its own every 4096 events. Each update rounds the sum by
+about an ulp of that peak, so where the total is read it is off by at
+most about 2^-40 of its peak with every rounding the same way: 2^-40 of
+a total near its peak, well below the 2^-32 to which a pick is drawn,
+and 2^-30 of one at 2^-10 of it. update() only counts and keeps the
+peak; the tests are made where the total is read, before a waiting time
+is drawn (getAtotForDraw(), new in ReactionSelector, getAtot() by
+default) and before a pick. Within a firing the total can dip and come
+back, as when a molecule that carries nearly all of it leaves one
+reaction before it joins the next, and a sum is a pass over every
+reaction where a pick may stop at the first: tested in update(), it made
+a model with one such molecule beside 300 reactions 25% slower. Tested
+where the total is read, a sum comes once per 2^12 updates and once per
+fall by a factor of 1024. Each is a pass over all N reactions, so a
+model whose total keeps falling that far below its peak slows at least
+in proportion to N, and more once the reactions no longer fit in cache:
+one A flipping at 1e6 and back at 1e-3, nearly every other firing a
+fall, ran 1.7 to 1.8 times as long beside 1000 births at 1e-9 as without
+the tests, and 17 to 28 times as long beside 10,000, on two machines.
+The count alone costs a pass per 4096 updates. A total that is not
+finite is never summed afresh there, and is kept for the host to report.
+System::getNextRxn takes a_tot from the selector after each pick.
+
+stepTo, sim and singleStep fired nothing while a_tot was at or below
+ATOT_TOLERANCE, 1e-9, a rate in the model's own time unit: 0 -> D at
+5e-10 never fired, and 100 A decaying at 1e-10 stopped at 10, where the
+total is 1e-9 (bngsim GH #1672). With the total kept close to its sum
+they fire at any total above 0, and ATOT_TOLERANCE is gone. The selector
+picks no reaction from a total that is not above 0: random(0) is 0,
+which the first reaction passes with a propensity of 0. stepTo and sim
+then draw again from the total the selector found.
+
+This is RuleWorld/nfsim#123, fixed upstream by RuleWorld/nfsim#128,
+merged as 7501f675, and written here against the pinned base. Upstream
+makes the same test of the fall, below 2^-10 of the peak since the last
+sum or below 0, sums afresh from the propensities the selector holds,
+removes ATOT_TOLERANCE, picks nothing from a total that is not above 0,
+and reads a_tot back after a pick. This carry diverges in four ways. It
+also sums the total afresh every 4096 updates, which upstream lacks and
+RuleWorld/nfsim#130 asks it for: at 7501f675 the running total on
+bngsim's tests/data/nfsim/drifting_flip.xml still loses 2.2e-16 a cycle,
+and the reaction listed last is lost. It keeps the peak at every update,
+not only where the total is read. It also tests before a pick. And where
+a pick finds nothing, stepTo draws again rather than going to the
+stopping time, as the time-table breakpoints of
+bngsim/carry-step-to-time-table-breakpoints need, and sim draws again
+where upstream lets the time pass. When the base moves past 7501f675,
+reduce this carry to the count, moving stepTo's redraw on an empty pick
+into bngsim/carry-step-to-time-table-breakpoints, whose breakpoints need
+it; upstream's stepTo goes to the stopping time there. Drop the carry
+only once RuleWorld/nfsim#130 is fixed upstream (bngsim GH #519).
+---
+ .../reactionSelector/directSelector.cpp       | 97 +++++++++++++++++++
+ .../reactionSelector/reactionSelector.hh      | 18 ++++
+ src/NFcore/system.cpp                         | 36 +++++--
+ 3 files changed, 143 insertions(+), 8 deletions(-)
+
+diff --git a/src/NFcore/reactionSelector/directSelector.cpp b/src/NFcore/reactionSelector/directSelector.cpp
+index 5f75b1f..4b775da 100644
+--- a/src/NFcore/reactionSelector/directSelector.cpp
++++ b/src/NFcore/reactionSelector/directSelector.cpp
+@@ -9,10 +9,60 @@
+ 
+ #include "reactionSelector.hh"
+ 
++#include <cmath>
++
+ using namespace std;
+ using namespace NFcore;
+ 
+ 
++/* update() keeps Atot as a running sum, Atot - oldA + newA. Each update rounds
++ * it twice, each time by at most about half an ulp of the largest value the sum
++ * has held since it was last summed, so n updates leave it off by up to about
++ * n * 2^-52 of that peak. A propensity added to a large total is rounded to the
++ * total's spacing, and is not given back when the large term is taken off
++ * again. A slow channel at 1e-6 beside a fast one at 1e11 was lost outright
++ * once the fast one was 0, and beside one at 1e10 it came back as 1.907e-6
++ * (bngsim GH #1666, RuleWorld/nfsim#123). The sum goes astray without a fall
++ * too, where the roundings fall the same way every time: one molecule flipping
++ * between two reactions beside a fixed background lost 2.2e-16 a cycle, and the
++ * reaction listed last loses from every pick what the sum has lost.
++ *
++ * So Atot is summed afresh once it has fallen below 2^-10 of that peak, or
++ * below 0, or once it has taken 2^12 updates since it was last summed, as
++ * RuleMonkey sums its own every 4096 events. Where it is read, it has then
++ * taken at most 2^12 updates more than one firing makes. With every rounding
++ * the same way, the case that drifts, that leaves it off by at most about
++ * 2^-40 of its peak. That is 2^-40 of a total near its peak, well below the
++ * 2^-32 of the total to which a pick is drawn (NfsimRNG::random), and 2^-30 of
++ * one that sits at 2^-10 of its peak. Where the roundings fall either way, it
++ * is about 2^-46 and 2^-36.
++ *
++ * update() only counts and keeps the peak. The tests are made where the total
++ * is read: before a waiting time is drawn from it (getAtotForDraw()) and before
++ * a pick. Within a firing the total can dip and come back, as when a molecule
++ * that carries nearly all of it leaves one reaction before it joins the next. A
++ * sum is a pass over every reaction, where a pick stops at the one it draws, so
++ * a test in update() would cost such a model a pass per firing. Where the total
++ * is read, a sum comes once per 2^12 updates and once per fall by a factor of
++ * 1024. Each is a pass over all N reactions, so a model whose total keeps
++ * falling that far below its peak slows at least in proportion to N, and more
++ * once the reactions no longer fit in cache. One A flipping at 1e6 and back at
++ * 1e-3, so that nearly every other firing is such a fall, ran 1.7 to 1.8 times
++ * as long beside 1000 births at 1e-9 as without the tests, and 17 to 28 times
++ * as long beside 10,000, on two machines. The count alone costs a pass per
++ * 4096 updates.
++ *
++ * RuleWorld/nfsim#128, merged upstream as 7501f675, makes the same test of the
++ * fall, before a waiting time is drawn, and has no count.
++ *
++ * The sum reads each reaction's get_a(), the propensities the running sum is
++ * made of, rather than computing every rate again as refactorPropensities()
++ * does.
++ *
++ * A total that is not finite is never summed afresh here: it is the model's
++ * own, and the host reports it. */
++static const double ATOT_RESUM_FRACTION = 1.0 / 1024.0;   // 2^-10
++static const unsigned int ATOT_RESUM_UPDATES = 4096;      // 2^12
+ 
+ 
+ DirectSelector::DirectSelector(vector <ReactionClass *> &rxns, System *sys) :
+@@ -25,6 +75,7 @@ DirectSelector::DirectSelector(vector <ReactionClass *> &rxns, System *sys) :
+ 		reactionClassList[r] = rxns.at(r);
+ 		Atot += reactionClassList[r]->get_a();
+ 	}
++	markSummed();
+ }
+ 
+ 
+@@ -42,6 +93,39 @@ double DirectSelector::refactorPropensities()
+ 	for(int r=0; r<n_reactions; r++) {
+ 		Atot += reactionClassList[r]->update_a();
+ 	}
++	markSummed();
++	return Atot;
++}
++
++
++void DirectSelector::resumPropensities()
++{
++	Atot = 0;
++	for(int r=0; r<n_reactions; r++) {
++		Atot += reactionClassList[r]->get_a();
++	}
++	markSummed();
++}
++
++
++void DirectSelector::markSummed()
++{
++	AtotPeak = Atot > 0 ? Atot : 0;
++	AtotResumBelow = AtotPeak * ATOT_RESUM_FRACTION;
++	updatesSinceSum = 0;
++}
++
++
++void DirectSelector::resumIfStale()
++{
++	if(!std::isfinite(Atot)) return;
++	if(Atot < AtotResumBelow || updatesSinceSum >= ATOT_RESUM_UPDATES) resumPropensities();
++}
++
++
++double DirectSelector::getAtotForDraw()
++{
++	resumIfStale();
+ 	return Atot;
+ }
+ 
+@@ -50,6 +134,11 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
+ {
+ 	Atot-=oldA;
+ 	Atot+=newA;
++	++updatesSinceSum;
++	if(Atot > AtotPeak) {
++		AtotPeak = Atot;
++		AtotResumBelow = AtotPeak * ATOT_RESUM_FRACTION;
++	}
+ 	return Atot;
+ }
+ 
+@@ -57,6 +146,14 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
+ 
+ double DirectSelector::getNextReactionClass(ReactionClass *&rc)
+ {
++	resumIfStale();
++	// Nothing fires at a total of 0, or one that is not a number. random(0) is
++	// 0, which the first reaction would pass below with a propensity of 0; a
++	// pick that passed every reaction sums them afresh and comes back here.
++	if(!(Atot > 0)) {
++		rc = 0;
++		return 0;
++	}
+ 	double randNum = sys_->getRNG().random(Atot);
+ 
+ 	double a_sum=0, last_a_sum=0;
+diff --git a/src/NFcore/reactionSelector/reactionSelector.hh b/src/NFcore/reactionSelector/reactionSelector.hh
+index 9913aed..d8b011b 100644
+--- a/src/NFcore/reactionSelector/reactionSelector.hh
++++ b/src/NFcore/reactionSelector/reactionSelector.hh
+@@ -39,6 +39,9 @@ namespace NFcore
+ 			virtual double update(ReactionClass *r,double oldA, double newA) = 0;
+ 			virtual double getNextReactionClass(ReactionClass *&rc) = 0;
+ 			virtual double getAtot() = 0;
++			/* The total to draw a waiting time from. A selector that keeps a
++			 * running total may sum it afresh first. */
++			virtual double getAtotForDraw() { return getAtot(); }
+ 
+ 		protected:
+ 			System *sys_;  // Pointer to System for accessing per-instance RNG
+@@ -58,10 +61,25 @@ namespace NFcore
+ 			virtual double update(ReactionClass *r,double oldA, double newA);
+ 			virtual double getNextReactionClass(ReactionClass *&rc);
+ 			virtual double getAtot();
++			virtual double getAtotForDraw();
+ 
+ 
+ 		protected:
++			/* Sums Atot afresh from the propensity each reaction holds. */
++			void resumPropensities();
++			/* Starts the watch on Atot that has it summed again. */
++			void markSummed();
++			/* Sums Atot afresh if it has fallen far, or taken many updates,
++			 * since it was last summed. */
++			void resumIfStale();
++
+ 			double Atot;
++			/* The largest value Atot has held since it was last summed, and
++			 * the value below which it is summed again. */
++			double AtotPeak;
++			double AtotResumBelow;
++			/* The updates Atot has taken since it was last summed. */
++			unsigned int updatesSinceSum;
+ 			int n_reactions;
+ 			ReactionClass ** reactionClassList;
+ 
+diff --git a/src/NFcore/system.cpp b/src/NFcore/system.cpp
+index 9b1c910..8c2e5c4 100644
+--- a/src/NFcore/system.cpp
++++ b/src/NFcore/system.cpp
+@@ -18,8 +18,6 @@
+ #include "../NFscheduler/NFstream.h"
+ #include "../NFscheduler/Scheduler.h"
+ 
+-#define ATOT_TOLERANCE 1e-9
+-
+ using namespace std;
+ using namespace NFcore;
+ 
+@@ -960,8 +958,14 @@ double System::getNextRxn()
+ 		// Upstream NFsim v1.14.3 consumes and discards the first selector draw
+ 		// here, then uses the second draw/residual. Keep this only as an
+ 		// explicit compatibility mode for same-seed parity with that CLI.
+-		return selector->getNextReactionClass(nextReaction);
+-	}
++		x = selector->getNextReactionClass(nextReaction);
++	}
++	// The selector sums the propensities afresh at a pick from a total that
++	// has fallen far or taken many updates since it was last summed, or at a
++	// draw past the last reaction, and picks from that sum, which a_tot then
++	// follows, so the next waiting time is drawn from it (bngsim GH #1666).
++	// With nothing to fire there it picks no reaction.
++	a_tot = selector->getAtot();
+ 	return x;
+ 
+ 
+@@ -1023,7 +1027,10 @@ double System::sim(double duration, long int sampleTimes, bool verbose)
+ 		//   dt = -ln(rand) / a_tot;
+ 		//Choose a random number on the OPEN interval (0,1) so that we never
+ 		//have a dt=0 or a dt=infinity
+-		if(a_tot>ATOT_TOLERANCE) delta_t = -log(rng_.random_open()) / a_tot;
++		// Summed afresh first if it has fallen far or taken many updates
++		// (bngsim GH #1666).
++		a_tot = selector->getAtotForDraw();
++		if(a_tot>0) delta_t = -log(rng_.random_open()) / a_tot;
+ 		else { delta_t=0; current_time=end_time; }
+ 		if(DEBUG) cout<<"   Determine dt : " << delta_t << endl;
+ 
+@@ -1078,6 +1085,9 @@ double System::sim(double duration, long int sampleTimes, bool verbose)
+ 		//4: Select next reaction class based on smallest j,
+ 		//   such that sum of a_j over all j >= r2*a_tot
+ 		double randElement = getNextRxn();
++		// The selector found nothing to fire in the propensities summed
++		// afresh: draw again from the total it found.
++		if(nextReaction == NULL) continue;
+ 		
+ 		if(DEBUG && verbose && iteration < 5) {
+ 			cout << "Selected: " << (nextReaction ? nextReaction->getName() : "NULL") << endl;
+@@ -1505,7 +1515,14 @@ double System::stepTo(double stoppingTime)
+ 		if(!pendingStepEventValid) {
+ 			// Preserve the pending waiting-time draw across output boundaries so
+ 			// repeated stepTo() calls consume the same RNG stream as sim().
+-			if(a_tot > ATOT_TOLERANCE) {
++			// Any total above 0 has a reaction to fire: read for the draw, the
++			// selector sums the propensities afresh where rounding could have
++			// left a_tot far from their sum (bngsim GH #1666), and it picks
++			// nothing where that sum is 0. A threshold of 1e-9 here, a rate in
++			// the model's own time unit, fired nothing in a model whose total
++			// was that small (bngsim GH #1672).
++			a_tot = selector->getAtotForDraw();
++			if(a_tot > 0.0) {
+ 				pendingStepEventTime =
+ 					current_time + (-log(rng_.random_open()) / a_tot);
+ 				pendingStepEventValid = true;
+@@ -1535,8 +1552,11 @@ double System::stepTo(double stoppingTime)
+ 		// Select and fire the next reaction
+ 		double randElement = getNextRxn();
+ 		if(nextReaction == NULL) {
++			// The selector found nothing to fire in the propensities summed
++			// afresh, so the waiting time was drawn from a stale total: draw
++			// again from the total it found.
+ 			invalidateStepToCache();
+-			break;
++			continue;
+ 		}
+ 
+ 		current_time = pendingStepEventTime;
+@@ -1566,7 +1586,7 @@ void System::singleStep()
+ 
+ 	recompute_A_tot();
+ 	cout<<"  -total propensity (a_total) calculated as: "<<a_tot<<endl;
+-	if(a_tot>ATOT_TOLERANCE) delta_t = -log(rng_.random_open()) / a_tot;
++	if(a_tot>0) delta_t = -log(rng_.random_open()) / a_tot;
+ 	else
+ 	{
+ 		//Otherwise, we can't react for the rest of this step
+-- 
+2.43.7
+

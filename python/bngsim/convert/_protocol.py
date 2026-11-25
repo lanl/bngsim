@@ -441,16 +441,20 @@ class ProtocolSpec:
     (GH #226).
 
     ``network_gen`` keeps the source model's ``generate_network(...)`` call
-    **verbatim** (the last one, if several) when the ``.bngl`` carried one. That
-    directive is still *dropped* from ``steps`` (it is a build directive, not a
-    simulation action), but its text is retained here because it may carry a
-    **finiteness cap** — ``max_stoich`` / ``max_agg`` / ``max_iter`` — without
-    which a rule-based network generates unbounded. A materializer (e.g.
-    :func:`~bngsim.convert._bngl_writer.write_bngl`) that re-emits an actions block
-    honors this instead of prepending a bare ``generate_network({overwrite=>1})``,
-    so a model that is finite only under its cap stays finite (lanl/PyBNF #485).
-    ``None`` when the source had no ``generate_network`` (e.g. a protocol composed
-    from SBML/SED-ML events), in which case the bare default is used.
+    **verbatim** when the ``.bngl`` carried one: the call that builds the network
+    its runs start from (:func:`_network_generation_call`), so not one after a run
+    with a network method or another action where BNG2.pl generates the network
+    with its defaults. That directive is still *dropped* from ``steps`` (it is a
+    build directive, not a simulation action), but its text is retained here
+    because it may carry a **finiteness cap** — ``max_stoich`` / ``max_agg`` /
+    ``max_iter`` — without which a rule-based network generates unbounded. A
+    materializer (e.g. :func:`~bngsim.convert._bngl_writer.write_bngl`) that
+    re-emits an actions block honors this instead of prepending a bare
+    ``generate_network({overwrite=>1})``, so a model that is finite only under its
+    cap stays finite (lanl/PyBNF #485).
+    ``None`` when the source had no such call (e.g. a protocol composed from
+    SBML/SED-ML events, or a file with a run with a network method before its
+    first ``generate_network``), in which case the bare default is used.
 
     ``generation_step`` is where in ``steps`` the source's network was generated:
     at its first ``generate_network`` or, before one, at its first run, where
@@ -476,6 +480,14 @@ class ProtocolSpec:
     generation_step: int | None = None
     lossy_before_generation: int = 0
     dropped_before_generation: int = 0
+    # Whether BNG2.pl generated the runs' network with its defaults: the parse found a
+    # model to generate it from (not an actions block run on a network loaded on its
+    # own or read from a .net, issue #1687), and an action generated it before any
+    # generate_network did (_network_generation). combine_protocols reads it, and a
+    # merged spec carries its first spec's. It is not part of the spec's value: not
+    # compared, not written by to_dict or to_json, and False in a spec read back from
+    # them or built by hand.
+    _generated_with_defaults: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _hold_plain(self)
@@ -775,6 +787,18 @@ def combine_protocols(
     ``source`` labels are joined with ``" + "`` and the ``dropped`` / ``lossy``
     directives are concatenated, so provenance survives the merge.
 
+    ``network_gen`` is the first one any spec names, so a cap survives the merge.
+    The exception is a first spec that :func:`parse_bngl_protocol` read from a
+    ``.bngl`` whose network BNG2.pl generated with its defaults, at an action that
+    generates it before any ``generate_network`` (a run with a network method, or
+    ``writeMDL``): the merge keeps its ``None``. A merged spec carries that verdict
+    from its first spec, so merging specs one at a time, left to right (each merged
+    with the next), gives what merging them at once does. An actions block run on a
+    network loaded on its own, or read from a ``.net``, generated none. A spec read
+    back from JSON, or built by hand, does not carry what the parse found (it is
+    not part of the spec's value), so it merges with the first cap any spec names
+    winning, whatever its source was.
+
     Parameters
     ----------
     specs : sequence of ProtocolSpec
@@ -801,10 +825,20 @@ def combine_protocols(
     sources: list[str] = []
     dropped: list[str] = []
     lossy: list[str] = []
-    network_gen: str | None = None
     # Only the first spec's steps can come before a network is generated: the
     # rest run on the network it leaves, after the reset that separates them.
     generation_step = non_empty[0].generation_step
+    first = non_empty[0]
+    if first._generated_with_defaults:
+        # A .bngl's runs on a network BNG2.pl generated from its model with no call
+        # of its own: its defaults, which a later spec's cap must not replace.
+        network_gen = None
+    else:
+        # The first contributing spec that names a generate_network carries its cap
+        # through the merge (independent SED-ML files rarely carry one at all).
+        network_gen = next(
+            (spec.network_gen for spec in non_empty if spec.network_gen is not None), None
+        )
     # The parameters as the first spec found them at its generation point,
     # after its pre-generation actions (which the network holds, and a replay
     # skips), for every later spec to start from: one spec's setParameter
@@ -839,10 +873,6 @@ def combine_protocols(
             sources.append(spec.source)
         dropped.extend(spec.dropped)
         lossy.extend(spec.lossy)
-        # Carry a cap through the merge: the first contributing spec that names a
-        # generate_network wins (independent SED-ML files rarely carry one at all).
-        if network_gen is None and spec.network_gen is not None:
-            network_gen = spec.network_gen
 
     return ProtocolSpec(
         steps=tuple(steps),
@@ -854,6 +884,7 @@ def combine_protocols(
         # The first spec's entries lead the merged lists.
         lossy_before_generation=non_empty[0].lossy_before_generation,
         dropped_before_generation=non_empty[0].dropped_before_generation,
+        _generated_with_defaults=first._generated_with_defaults,
     )
 
 
@@ -895,7 +926,6 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
     steps: list[object] = []
     dropped: list[str] = []
     lossy: list[str] = []
-    network_gen: str | None = None
     generation_step: int | None = None
     lossy_before: int | None = None  # entries before the generation point
     dropped_before: int | None = None
@@ -909,6 +939,7 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
     # its own, which a run reads as it stands (issue #1687): the block that
     # omex_to_net writes beside its .net set A and then ran from the .net's A.
     generates = _declares_a_model(text)
+    network_read = False  # the generation point is a .net read whole
     for verb, argstr in _iter_action_calls(text):
         low = verb.lower()
         if low == "quit":
@@ -925,6 +956,7 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
                 if generation_step is None:
                     generation_step = len(steps)
                     lossy_before, dropped_before = len(lossy), len(dropped)
+                    network_read = True
             else:
                 generates = True  # a model, whose first run generates its network
         if generation_step is None and (
@@ -956,13 +988,6 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
             _flag_lossy(verb, _LOSSY_VERBS[low], strict=strict, lossy=lossy)
         elif low in _BUILD_VERBS:
             dropped.append(verb)
-            if low == "generate_network":
-                # Drop it from the replayable steps (it is a build directive, not a
-                # simulation action) but keep the call verbatim: it may carry a finiteness
-                # cap (max_stoich / max_agg / max_iter) a re-emitted actions block must honor
-                # rather than override with a bare default (lanl/PyBNF #485). Last one wins,
-                # mirroring BNG2.pl (a later generate_network supersedes an earlier one).
-                network_gen = f"{verb}({argstr})"
         else:
             msg = (
                 f"unrecognized BNGL action {verb!r}: the protocol channel carries "
@@ -977,6 +1002,12 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
     if generation_step is None and not generates:
         # No model and no network read: every step runs on the network given.
         generation_step, lossy_before, dropped_before = 0, 0, 0
+    # generate_network is dropped from the replayable steps (a build directive, not a
+    # simulation action), but the call that builds the network is kept verbatim: it may
+    # carry a finiteness cap (max_stoich / max_agg / max_iter) a re-emitted actions block
+    # must honor rather than override with a bare default (lanl/PyBNF #485).
+    call, with_defaults = _network_generation(text)
+    network_gen = None if call is None else f"{call[0]}({call[1]})"
     return ProtocolSpec(
         steps=tuple(steps),
         source=src_label,
@@ -986,7 +1017,109 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
         generation_step=len(steps) if generation_step is None else generation_step,
         lossy_before_generation=len(lossy) if lossy_before is None else lossy_before,
         dropped_before_generation=len(dropped) if dropped_before is None else dropped_before,
+        _generated_with_defaults=with_defaults and generates and not network_read,
     )
+
+
+def _generates_a_network(verb: str, argstr: str) -> bool:
+    """Whether BNG2.pl generates the network at this action, with its defaults,
+    when it has none yet.
+
+    ``BNGAction.pm``'s ``simulate`` generates it only for the network methods
+    (cvode, ssa, pla, psa) and hands ``nf`` to ``simulate_nf``, which generates
+    none; a scan runs ``simulate`` at each point, and ``bifurcate`` runs scans.
+    RuleMonkey's ``rm``, and every other method bngsim runs network-free, builds
+    none either. Two actions that are not runs generate it too: ``writeMDL``
+    (``BNGOutput.pm``) and ``visualize`` of the ``reaction_network`` type
+    (``Visualization/Viz.pm``). A run of the ``begin protocol`` block is read
+    line by line (:func:`_network_generation`).
+    """
+    from bngsim._simulator import _NETWORK_FREE_METHODS
+
+    low = verb.lower()
+    if low in _SIMULATE_VERBS:
+        return _run_method(low, _parse_hash(argstr)) not in _NETWORK_FREE_METHODS
+    if low == "visualize":
+        return _parse_hash(argstr).get("type") == "reaction_network"
+    return low == "writemdl"
+
+
+def _runs_the_protocol_block(verb: str, argstr: str) -> bool:
+    """Whether this action runs the model's ``begin protocol`` block:
+    ``simulate_protocol``, or a scan or ``bifurcate`` with ``method=>"protocol"``,
+    which runs it at each point (``BNGAction.pm``)."""
+    low = verb.lower()
+    if low == "simulate_protocol":
+        return True
+    method = str(_parse_hash(argstr).get("method", "")).lower()
+    return low in ("parameter_scan", "bifurcate") and method == "protocol"
+
+
+_PROTOCOL_INDEX_RE = re.compile(r"^\d+\s+")
+
+
+def _protocol_line_generates(verb: str, argstr: str) -> bool:
+    """Whether BNG2.pl generates the network at this line of the ``begin protocol``
+    block, when it has none yet.
+
+    ``simulate_protocol`` hands a line whose action has ``simulate`` in its name to
+    ``simulate`` with the line's own hash, so only the method named there counts: a
+    ``simulate_ode`` there names none, which ``simulate`` refuses, and the protocol
+    goes on to the next line. Any other line runs as the action it names.
+    """
+    if "simulate" not in verb.lower():
+        return _generates_a_network(verb, argstr)
+    args = _parse_hash(argstr)
+    method = str(args.get("method", "")).lower()
+    return "poplevel" in args or method in ("ode", "cvode", "ssa", "pla", "psa")
+
+
+def _network_generation(text: str) -> tuple[tuple[str, str] | None, bool]:
+    """The ``generate_network`` call, as ``(verb, arguments)``, whose options build
+    the network the source's runs start from, or ``None`` when no call does; and
+    whether that is because an action generated the network first, with BNG2.pl's
+    defaults.
+
+    That is the first ``generate_network``, unless an action that generates the
+    network comes before it (:func:`_generates_a_network`): a run with a network
+    method, say. BNG2.pl generates it there with its defaults (``simulate`` calls
+    ``generate_network()`` with no arguments), and a later call continues it,
+    which adds nothing to a network that is complete, so its ``max_iter`` does not
+    bound it. A network-free run (``simulate_nf``, ``method=>"nf"`` or ``"rm"``)
+    generates nothing, and neither does ``generate_hybrid_model``, which writes a
+    separate model, so the search reads past both. (BNG2.pl also seeds the call
+    after an NF run with the species the run ends with, unless it sets
+    ``get_final_state=>0``, which a ``parameter_scan`` does unless it sets
+    ``reset_conc=>0``; those come from running NFsim, which the call's options
+    cannot carry.) An action that runs the ``begin protocol`` block is searched
+    through the block's lines (:func:`_protocol_line_generates`), and read past
+    when none of them generates the network. The search reads past ``quit`` too,
+    as :func:`bngsim._bngl_loader.generation_source` does, which keeps the actions
+    after one. Only one call is returned: BNG2.pl continues the network at a later
+    ``generate_network`` with ``overwrite=>1``, under that call's limits, and what
+    that adds is not taken.
+    """
+    protocol: list[tuple[str, str]] = []  # the lines simulate_protocol runs here
+    for verb, argstr in _iter_action_calls(text, protocol=protocol):
+        low = verb.lower()
+        if _runs_the_protocol_block(low, argstr):
+            for line_verb, line_args in protocol:
+                if line_verb.lower() == "generate_network":
+                    return (line_verb, line_args), False
+                if _protocol_line_generates(line_verb, line_args):
+                    return None, True
+            continue
+        if low == "generate_network":
+            return (verb, argstr), False
+        if _generates_a_network(low, argstr):
+            return None, True
+    return None, False
+
+
+def _network_generation_call(text: str) -> tuple[str, str] | None:
+    """The call :func:`_network_generation` finds, ``None`` when none builds the
+    network."""
+    return _network_generation(text)[0]
 
 
 # The blocks of a BNGL model: a file with one of them has a model, which its
@@ -1430,6 +1563,20 @@ def _sample_grid(samples: list[float], t_start: float, t_end: float | None) -> l
     return [t_start, *(t for t in times[:-1] if t_start < t < end), end]
 
 
+def _run_method(verb: str, args: Mapping[str, Any]) -> str:
+    """The method a run in :data:`_SIMULATE_VERBS` runs with: the one its verb
+    names, else its ``method``, ``ode`` when it has none."""
+    kind, forced_method = _SIMULATE_VERBS[verb.lower()]
+    method = forced_method or str(args.get("method", "ode")).lower()
+    protocol_scan = kind != "simulate" and method == "protocol"
+    if "poplevel" in args and forced_method != "nf" and not protocol_scan:
+        # BNG2.pl's simulate runs PSA whenever a poplevel is given, method=>"nf"
+        # included (BNGAction.pm); simulate_nf never reads one, and a scan with
+        # method=>"protocol" hands simulate_protocol only a prefix.
+        method = "psa"
+    return method
+
+
 def _build_experiment(
     verb: str, argstr: str, model_time: float | None
 ) -> tuple[Experiment, list[str], float | None]:
@@ -1449,7 +1596,8 @@ def _build_experiment(
     early (``steady_state``, ``stop_if``, ``max_sim_steps``) leaves the model
     time unknown. A scan reads ``par_scan_vals``, in their order, unless
     ``par_min``, ``par_max`` and ``n_scan_pts`` are all given; ``bifurcate`` is
-    a scan that never resets. ``poplevel`` makes any run but an nf one PSA.
+    a scan that never resets. ``poplevel`` makes any run PSA but ``simulate_nf``
+    and a scan with ``method=>"protocol"``, which runs the ``begin protocol`` block.
     Uneven output times and scan values are held exactly (``sample_times``,
     ``scan_values``) beside the nearest uniform grid and range (issue #1366); an
     argument the parse cannot read without the model is recorded as lossy, and
@@ -1459,12 +1607,9 @@ def _build_experiment(
     any start at a model time an earlier run leaves unknown, which only a
     replay can know.
     """
-    kind, forced_method = _SIMULATE_VERBS[verb.lower()]
+    kind = _SIMULATE_VERBS[verb.lower()][0]
     args = _parse_hash(argstr)
-    method = forced_method or str(args.get("method", "ode")).lower()
-    if "poplevel" in args and method != "nf":
-        # BNG2.pl's simulate runs PSA whenever a poplevel is given (BNGAction.pm).
-        method = "psa"
+    method = _run_method(verb, args)
     reasons: list[str] = []
     time_reasons: list[str] = []  # starts only a replay can place; see the docstring
     if method == "protocol":
@@ -1746,15 +1891,25 @@ def _build_state_change(kind: str, argstr: str) -> StateChange:
 # ─── Lexing helpers ─────────────────────────────────────────────────────────
 
 
-def _iter_action_calls(text: str):
+def _iter_action_calls(text: str, *, protocol: list[tuple[str, str]] | None = None):
     """Yield ``(verb, argstr)`` for each action-scope ``verb(...)`` statement.
 
     Walks the file tracking ``begin <block> … end <block>`` nesting so only
     statements at action scope (outside ``begin model … end model``, optionally
     inside ``begin actions … end actions``) are returned. Handles ``\\`` line
     continuations, ``#`` comments, and an optional trailing ``;``.
+
+    Given a *protocol* list, the walk keeps in it the lines ``simulate_protocol``
+    would run at each statement it yields, as ``(verb, arguments)``: BNG2.pl reads
+    the file in one pass, and ``BNGModel.pm`` reads each line of a ``begin
+    protocol`` block it reaches as ``action(options)``, a leading index dropped,
+    into the model's protocol by position, from the first again for each block and
+    without clearing it. So a later block writes over an earlier one line by line,
+    a shorter one leaves the earlier block's tail in place, and a block below a
+    statement is not yet read there.
     """
     block_stack: list[str] = []
+    index = 0  # where the next protocol line goes
     for raw_line in _logical_lines(text):
         line = raw_line.strip()
         if not line:
@@ -1762,10 +1917,20 @@ def _iter_action_calls(text: str):
         low = line.lower()
         if low.startswith("begin "):
             block_stack.append(low.split(None, 1)[1].strip())
+            index = 0
             continue
         if low.startswith("end "):
             if block_stack:
                 block_stack.pop()
+            continue
+        if protocol is not None and block_stack and block_stack[-1] == "protocol":
+            m = _ACTION_RE.match(_PROTOCOL_INDEX_RE.sub("", line))
+            if m:
+                if index < len(protocol):
+                    protocol[index] = (m.group(1), m.group(2))
+                else:
+                    protocol.append((m.group(1), m.group(2)))
+                index += 1
             continue
         # Inside the model definition (parameters/species/reactions/…) → not an
         # action. Action scope is the empty stack or an explicit `actions` block.
