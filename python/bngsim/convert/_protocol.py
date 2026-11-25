@@ -792,11 +792,12 @@ def combine_protocols(
     ``.bngl`` whose network BNG2.pl generated with its defaults, at an action that
     generates it before any ``generate_network`` (a run with a network method, or
     ``writeMDL``): the merge keeps its ``None``. A merged spec carries that verdict
-    from its first spec, so merging specs one at a time gives what merging them at
-    once does. An actions block run on a network loaded on its own, or read from a
-    ``.net``, generated none. A spec read back from JSON, or built by hand, does
-    not carry what the parse found (it is not part of the spec's value), so it
-    merges with the first cap any spec names winning, whatever its source was.
+    from its first spec, so merging specs one at a time, left to right (each merged
+    with the next), gives what merging them at once does. An actions block run on a
+    network loaded on its own, or read from a ``.net``, generated none. A spec read
+    back from JSON, or built by hand, does not carry what the parse found (it is
+    not part of the spec's value), so it merges with the first cap any spec names
+    winning, whatever its source was.
 
     Parameters
     ----------
@@ -1057,39 +1058,6 @@ def _runs_the_protocol_block(verb: str, argstr: str) -> bool:
 _PROTOCOL_INDEX_RE = re.compile(r"^\d+\s+")
 
 
-def _protocol_block(text: str) -> list[tuple[str, str]]:
-    """The lines ``simulate_protocol`` runs, in order, as ``(verb, arguments)``.
-
-    ``BNGModel.pm`` reads each line of a ``begin protocol`` block as
-    ``action(options)``, a leading index dropped, into the model's protocol by
-    position, from the first again for each block and without clearing it: a
-    later block writes over an earlier one line by line, and a shorter one leaves
-    the earlier block's tail in place.
-    """
-    calls: list[tuple[str, str]] = []
-    inside = False
-    index = 0
-    for raw in _logical_lines(text):
-        line = raw.strip()
-        low = line.lower()
-        if low.startswith("begin "):
-            inside = low.split(None, 1)[1].strip() == "protocol"
-            index = 0
-            continue
-        if low.startswith("end "):
-            inside = False
-            continue
-        if inside:
-            m = _ACTION_RE.match(_PROTOCOL_INDEX_RE.sub("", line))
-            if m:
-                if index < len(calls):
-                    calls[index] = (m.group(1), m.group(2))
-                else:
-                    calls.append((m.group(1), m.group(2)))
-                index += 1
-    return calls
-
-
 def _protocol_line_generates(verb: str, argstr: str) -> bool:
     """Whether BNG2.pl generates the network at this line of the ``begin protocol``
     block, when it has none yet.
@@ -1131,12 +1099,10 @@ def _network_generation(text: str) -> tuple[tuple[str, str] | None, bool]:
     ``generate_network`` with ``overwrite=>1``, under that call's limits, and what
     that adds is not taken.
     """
-    protocol: list[tuple[str, str]] | None = None
-    for verb, argstr in _iter_action_calls(text):
+    protocol: list[tuple[str, str]] = []  # the lines simulate_protocol runs here
+    for verb, argstr in _iter_action_calls(text, protocol=protocol):
         low = verb.lower()
         if _runs_the_protocol_block(low, argstr):
-            if protocol is None:
-                protocol = _protocol_block(text)
             for line_verb, line_args in protocol:
                 if line_verb.lower() == "generate_network":
                     return (line_verb, line_args), False
@@ -1925,15 +1891,25 @@ def _build_state_change(kind: str, argstr: str) -> StateChange:
 # ─── Lexing helpers ─────────────────────────────────────────────────────────
 
 
-def _iter_action_calls(text: str):
+def _iter_action_calls(text: str, *, protocol: list[tuple[str, str]] | None = None):
     """Yield ``(verb, argstr)`` for each action-scope ``verb(...)`` statement.
 
     Walks the file tracking ``begin <block> … end <block>`` nesting so only
     statements at action scope (outside ``begin model … end model``, optionally
     inside ``begin actions … end actions``) are returned. Handles ``\\`` line
     continuations, ``#`` comments, and an optional trailing ``;``.
+
+    Given a *protocol* list, the walk keeps in it the lines ``simulate_protocol``
+    would run at each statement it yields, as ``(verb, arguments)``: BNG2.pl reads
+    the file in one pass, and ``BNGModel.pm`` reads each line of a ``begin
+    protocol`` block it reaches as ``action(options)``, a leading index dropped,
+    into the model's protocol by position, from the first again for each block and
+    without clearing it. So a later block writes over an earlier one line by line,
+    a shorter one leaves the earlier block's tail in place, and a block below a
+    statement is not yet read there.
     """
     block_stack: list[str] = []
+    index = 0  # where the next protocol line goes
     for raw_line in _logical_lines(text):
         line = raw_line.strip()
         if not line:
@@ -1941,10 +1917,20 @@ def _iter_action_calls(text: str):
         low = line.lower()
         if low.startswith("begin "):
             block_stack.append(low.split(None, 1)[1].strip())
+            index = 0
             continue
         if low.startswith("end "):
             if block_stack:
                 block_stack.pop()
+            continue
+        if protocol is not None and block_stack and block_stack[-1] == "protocol":
+            m = _ACTION_RE.match(_PROTOCOL_INDEX_RE.sub("", line))
+            if m:
+                if index < len(protocol):
+                    protocol[index] = (m.group(1), m.group(2))
+                else:
+                    protocol.append((m.group(1), m.group(2)))
+                index += 1
             continue
         # Inside the model definition (parameters/species/reactions/…) → not an
         # action. Action scope is the empty stack or an explicit `actions` block.

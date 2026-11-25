@@ -265,6 +265,21 @@ def test_simulate_protocol_is_searched_through_the_begin_protocol_block(line, ne
     assert parse_bngl_protocol(text, strict=False).network_gen == network_gen
 
 
+def test_simulate_protocol_does_not_run_a_block_below_it() -> None:
+    """BNG2.pl has not read a block below the run yet, so the cap after it still
+    builds the network."""
+    text = (
+        "begin model\nend model\n"
+        "simulate_protocol()\n"
+        'begin protocol\nsimulate({method=>"ode",t_end=>1,n_steps=>1})\nend protocol\n'
+        "generate_network({max_stoich=>{R=>5}})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert parse_bngl_protocol(text, strict=False).network_gen == (
+        "generate_network({max_stoich=>{R=>5}})"
+    )
+
+
 @pytest.mark.parametrize("verb", ["parameter_scan", "bifurcate"])
 def test_a_poplevel_does_not_make_a_protocol_scan_psa(verb) -> None:
     """A scan with ``method=>"protocol"`` runs the ``begin protocol`` block at each
@@ -615,10 +630,10 @@ def test_combine_protocols_skips_empty_specs() -> None:
 
 def test_combine_protocols_keeps_the_first_specs_network_gen_even_when_none() -> None:
     """The merged steps run on the network the first spec's source generated. Its
-    ``network_gen`` of None says a run with a network method came first, where
-    BNG2.pl generates with its defaults, so a later spec's cap must not take its
-    place. A spec with no source that generated a network still takes the first cap
-    a spec names."""
+    ``network_gen`` of None, where an action generated the network first (a run with
+    a network method, or ``writeMDL``), says BNG2.pl generated it with its defaults,
+    so a later spec's cap must not take its place. A spec with no source that
+    generated a network still takes the first cap a spec names."""
     head = "begin model\nend model\n"
     run = 'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
     run_first = parse_bngl_protocol(head + run + "generate_network({max_iter=>3})\n" + run)

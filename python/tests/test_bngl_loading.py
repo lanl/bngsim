@@ -467,6 +467,33 @@ def test_a_protocol_run_is_searched_through_the_begin_protocol_block(block, run,
     assert generate_network_call(text) == expected
 
 
+@pytest.mark.parametrize(
+    "above, below",
+    [
+        ("", 'simulate({method=>"ode",t_end=>1,n_steps=>1})'),
+        (
+            'simulate({method=>"nf",t_end=>1,n_steps=>1})',
+            'simulate({method=>"ode",t_end=>1,n_steps=>1})',
+        ),
+    ],
+    ids=["no-block-above", "an-nf-block-above"],
+)
+def test_a_protocol_run_reads_only_the_blocks_above_it(above, below):
+    """BNG2.pl reads the file in one pass, so ``simulate_protocol()`` runs the
+    blocks it has read: an ODE block below it is not run there, and the
+    ``generate_network`` after the run still builds the network. Every block in
+    the file was read, and the network lost its cap."""
+    text = (
+        _RL_CHAINS
+        + (f"begin protocol\n{above}\nend protocol\n" if above else "")
+        + "simulate_protocol()\n"
+        + f"begin protocol\n{below}\nend protocol\n"
+        + "generate_network({max_stoich=>{R=>5}})\n"
+        + 'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert generate_network_call(text) == _CAPPED
+
+
 def test_a_generate_network_after_the_first_run_does_not_replace_the_one_before_it():
     """The network the first run starts from is the first ``generate_network``'s, so
     its ``max_iter`` is the one that applies. The source's last call was forwarded,
