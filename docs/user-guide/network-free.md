@@ -19,7 +19,7 @@ import bngsim
 
 # The bundled binding model, A(b) + B(a) <-> A(b!1).B(a!1): the .net and the
 # BioNetGen XML that BNG2.pl wrote from its .bngl.
-xml_path = str(bngsim.examples.path("binding", "bng-xml"))
+xml_path = bngsim.examples.path("binding", "bng-xml")
 model = bngsim.Model.from_net(bngsim.examples.path("binding", "net"))
 
 # NFsim: rejection (null-event) sampling.

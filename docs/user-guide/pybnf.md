@@ -167,7 +167,7 @@ import json
 from pathlib import Path
 
 spec = bngsim.EvaluationSpec(
-    model_source=str(bngsim.examples.path("binding", "net")), model_format="net",
+    model_source=bngsim.examples.path("binding", "net"), model_format="net",
     t_span=(0, 100), n_points=101,
     params={"kf": 0.02}, sensitivity_params=("kf",),
     outputs=("observable:C",),

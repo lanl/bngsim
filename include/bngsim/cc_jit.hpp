@@ -8,7 +8,7 @@
 // the SSA loop swaps backends with a one-line change.
 //
 // Unlike MIR's in-process ~1 ms JIT, cc pays the compiler's ~100 ms ONCE, but
-// the .so is cached by a content hash under ~/.cache/bngsim/codegen, so an SSA
+// the .so is cached by a content hash under the codegen cache dir, so an SSA
 // ENSEMBLE (many replicates of one model — the normal stochastic workflow)
 // compiles only on the first replicate and dlopen's the cached .so thereafter,
 // while cc's -O3 code can beat MIR's -O2. The point of the experiment: decide
@@ -43,19 +43,79 @@ class CcJit {
     CcJit() = default;
 
 #ifndef _WIN32
-    /// Content hash → stable cache path (no compile). Lets a caller invalidate a
-    /// cached .so before timing a fresh compile.
+    /// Bumped whenever the compile command or the library's contract changes, so
+    /// a library an older bngsim built is not reused (issue #1927).
+    static constexpr const char *kFormat = "v2";
+
+    /// The machine this process runs as, named as Python's platform.machine()
+    /// and the Python codegen's arch field spell it (issue #1927). Read from the
+    /// compiler's target macros, so it is the process's own architecture: exact
+    /// under Rosetta, where Apple's cc would otherwise build for the hardware.
+    static const char *machine() {
+#if defined(__x86_64__)
+        return "x86_64";
+#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+        return "arm64";
+#elif defined(__aarch64__)
+        return "aarch64";
+#else
+        return "unknown";
+#endif
+    }
+
+    /// The compile command for `cpath` → `sotmp`. On macOS it passes -arch with
+    /// this process's machine (issue #1927), as the Python codegen does since
+    /// #1759; a CC naming another -arch then builds a universal library.
+    static std::string compile_command(const std::string &cpath, const std::string &sotmp) {
+        const char *cc_env = std::getenv("CC");
+        std::string cmd = (cc_env && *cc_env) ? cc_env : "cc";
+#if defined(__APPLE__)
+        if (std::string(machine()) != "unknown")
+            cmd += std::string(" -arch ") + machine();
+#endif
+        cmd += " -O3 -shared -fPIC -o '" + sotmp + "' '" + cpath + "' -lm";
+        return cmd;
+    }
+
+    /// The cache directory: BNGSIM_CODEGEN_CACHE_DIR when set, as the Python
+    /// codegen reads it, else ~/.cache/bngsim/codegen.
+    static std::string cache_dir() {
+        const char *env = std::getenv("BNGSIM_CODEGEN_CACHE_DIR");
+        std::string dir = env ? env : "";
+        const auto b = dir.find_first_not_of(" \t\n\r\f\v");
+        dir = b == std::string::npos ? ""
+                                     : dir.substr(b, dir.find_last_not_of(" \t\n\r\f\v") - b + 1);
+        const char *home = std::getenv("HOME");
+        const std::string h = home ? home : "/tmp";
+        if (dir.empty())
+            return h + "/.cache/bngsim/codegen";
+        if (dir == "~")
+            return h;
+        if (dir.rfind("~/", 0) == 0)
+            return h + dir.substr(1);
+        return dir;
+    }
+
+    /// Stable cache path (no compile). Lets a caller invalidate a cached .so
+    /// before timing a fresh compile. The name carries the machine and kFormat,
+    /// and the hash covers the source and the compile command (with CC), so two
+    /// architectures sharing a cache, or two compilers, never name one library
+    /// alike (issue #1927).
     static std::string cache_path(const std::string &src, const std::string &tag = "ssa_prop") {
         uint64_t h = 1469598103934665603ULL; // FNV-1a 64-bit
-        for (unsigned char c : src) {
-            h ^= c;
+        auto mix = [&h](const std::string &s) {
+            for (unsigned char c : s) {
+                h ^= c;
+                h *= 1099511628211ULL;
+            }
+            h ^= 0xffU; // separator, so ("ab","c") and ("a","bc") differ
             h *= 1099511628211ULL;
-        }
+        };
+        mix(src);
+        mix(compile_command("", ""));
         char hex[20];
         std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(h));
-        const char *home = std::getenv("HOME");
-        std::string dir = std::string(home ? home : "/tmp") + "/.cache/bngsim/codegen";
-        return dir + "/" + tag + "_" + hex + ".so";
+        return cache_dir() + "/" + tag + "_" + machine() + "_" + kFormat + "_" + hex + ".so";
     }
 
     /// Compile `src` to a cached .so (cc -O3 -shared -fPIC) and load it. A cache
@@ -81,10 +141,7 @@ class CcJit {
                     throw std::runtime_error("CcJit: cannot write source " + cpath);
                 f << src;
             }
-            const char *cc_env = std::getenv("CC");
-            const std::string cc = cc_env ? cc_env : "cc";
-            const std::string cmd =
-                cc + " -O3 -shared -fPIC -o '" + sotmp + "' '" + cpath + "' -lm";
+            const std::string cmd = compile_command(cpath, sotmp);
             const int rc = std::system(cmd.c_str());
             std::remove(cpath.c_str());
             if (rc != 0) {
@@ -110,6 +167,7 @@ class CcJit {
     static std::string cache_path(const std::string &, const std::string & = "ssa_prop") {
         return "";
     }
+    static const char *machine() { return "unknown"; }
 #endif
 
     template <typename T> T symbol(const std::string &name) const { return lib_.symbol<T>(name); }
