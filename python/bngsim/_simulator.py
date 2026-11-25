@@ -563,6 +563,11 @@ _PASSED_THROUGH = (SimulationTimeout, SensitivityUnsupportedError, SparseJacobia
 # they fell past before. The run paths pass them through unchanged instead.
 _ONCE_PLAIN = (UsageError, ArgumentTypeError, NotFoundError, InvalidModelError, NotSupportedError)
 
+# Issue #1838: the code of an ODE run CVODE cannot step through, a UsageError
+# the engine raises. Whether a run gets there can turn on the model's values, so
+# a batch row and a scan point name themselves on it, as on a refusal mid-run.
+_SPAN_OUT_OF_REACH = "usage.span_out_of_reach"
+
 
 def normalize_method(requested: str) -> tuple[str, str]:
     """Normalize a user-requested method token to its canonical form.
@@ -5932,6 +5937,12 @@ class Simulator:
         sim = self._sim if sim is None else sim
         try:
             out = self._ode_attempts(times, opts, restore, sim, core)
+        except _ONCE_PLAIN:
+            # A refusal of the run's arguments, its span among them (issue
+            # #1838): there are no rows for such steps to be wrong in, and over
+            # (1e308, 1.7e308) the steps where t + h == t were the far span's
+            # own doing, which the refusal says.
+            raise
         except BaseException:
             _note_roundoff_steps_raised(sim, times)
             raise
@@ -6234,9 +6245,12 @@ class Simulator:
         ValueError
             If t_span, n_points or sample_times are invalid (a time that is
             not finite, ``t_end <= t_start``, ``n_points < 2``, fewer than two
-            sample times), if ``start`` is not ``None``, ``"live"`` or
-            ``"initial"``, or ``"initial"`` with ``carry_sensitivities=True``,
-            or if output sensitivities
+            sample times; for an ODE run, a grid of three or more points
+            whose length is past the largest double, or a run whose step or
+            clock CVODE takes past it before the run ends, which it cannot
+            step through), if ``start`` is
+            not ``None``, ``"live"`` or ``"initial"``, or ``"initial"`` with
+            ``carry_sensitivities=True``, or if output sensitivities
             were requested (``sensitivity_params`` / ``sensitivity_ic``,
             including the ``carry_sensitivities`` path) on a model that
             contains events. Events reinitialise the CVODE state
@@ -8566,6 +8580,15 @@ class Simulator:
                         # a continuation scan continues the last point on purpose.
                         start="live",
                     )
+                except UsageError as e:
+                    if e.code != _SPAN_OUT_OF_REACH:
+                        raise
+                    # Whether a point gets there turns on its value: named, as a
+                    # run_batch row is (issue #1838).
+                    raise UsageError(
+                        f"scan point {i} ({parameter} = {float(value)!r}): {e}",
+                        code=_SPAN_OUT_OF_REACH,
+                    ) from None
                 except StopConditionMet as stop:
                     # One point's stop is not the scan's (issue #1369): the point
                     # comes back cut, as a run_batch row does. run() integrated the
@@ -8877,6 +8900,12 @@ class Simulator:
             # can turn on the row's values, and a scan has to say which row. A
             # runtime_error said so as "Batch simulation N failed".
             raise type(e)(f"run_batch row {index}: {e}") from None
+        except UsageError as e:
+            if e.code != _SPAN_OUT_OF_REACH:
+                raise
+            # Over (0, 3e306) a row at k = 1 returns and one at k = 1e-300 does
+            # not: the row is named, as for a refusal partway (issue #1838).
+            raise UsageError(f"run_batch row {index}: {e}", code=_SPAN_OUT_OF_REACH) from None
         except _PASSED_THROUGH + _ONCE_PLAIN:
             # A timeout or a refusal is the row's, as it is from run().
             raise
@@ -9390,6 +9419,10 @@ class Simulator:
             # (issue #1857): it rode on the error, and goes on the recovered
             # columns or on the error raised here.
             _notices.carry(exc)
+            if isinstance(exc, _ONCE_PLAIN):
+                # A refusal of the call's arguments, its span among them (issue
+                # #1838): a column alone is refused too.
+                raise exc
             if isinstance(exc, _ConditionReadOtherwise):
                 # No column runs alone either: the code is not the code for the
                 # model as it is, and the pass ahead of the chunks did not say.
@@ -9551,6 +9584,9 @@ class Simulator:
                         )
                     )
                 except Exception as solo:  # noqa: BLE001 — classified, then reported below
+                    if isinstance(solo, _ONCE_PLAIN):
+                        # A refusal of the call's arguments (issue #1838).
+                        raise solo from None
                     if isinstance(solo, SensitivityUnsupportedError) and not isinstance(
                         solo, SensitivityRefusedForParametersError
                     ):
@@ -9701,6 +9737,11 @@ class Simulator:
 
         try:
             core_result = sim.run(ts, opts)
+        except _ONCE_PLAIN:
+            # A refusal of the chunk's arguments, its span among them (issue
+            # #1838), as run() passes it: wrapped below, it was a "Sensitivity
+            # chunk failed" whose columns were retried and blamed on tolerance.
+            raise
         except SensitivityUnsupportedError:
             # The solver's refusal of the model mid-run (issue #1279), typed as
             # one raised while the chunk sets up: no column runs alone either.

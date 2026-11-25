@@ -74,6 +74,10 @@ Things to know:
   `bngsim.ExactAtol(value)` to hold every species to exactly that number.
 - `max_step=` bounds the size of a single step. Use it for a narrow pulse the
   solver could step over.
+- `timeout=` bounds a run's wall-clock time, in seconds, and raises
+  `bngsim.SimulationTimeout` past it. An ODE run reads it at each output point
+  and, inside the solver, every 256 right-hand-side evaluations, so a run that
+  spends it between two output points stops too.
 
 ### Solver statistics
 
@@ -559,6 +563,23 @@ sensitivity run is refused with `SensitivityRefusedForParametersError` (a
 moves a requested column, rounds onto the start or past the run's end. A
 column the crossing does not move can still be run alone.
 
+**A run CVODE cannot step through ends with an error.** CVODE is given no
+largest step unless `max_step=` asks for one, and grows its step up to tenfold
+a step, ten thousandfold after its first. In a run long enough, or far enough
+from 0, the step, or the clock (t + h), can pass the largest double (about
+1.8e308) before the run ends. Such a run raises `bngsim.UsageError` (a
+`ValueError`, with the code `usage.span_out_of_reach`) where CVODE's step is no
+longer finite, or where it keeps a step to a time past the largest double,
+instead of hanging past `timeout=` or returning NaN rows. A step CVODE tries
+past it and throws away is no error: `A' = 1/(1 + t/1e308)` over
+`(0, 1.79e308)` returns its rows to 3e-8. Where it happens turns on the model
+as much as on the span: `A' = 1` returns `A = t` over `(0, 1e306)`, and a
+species that does not change, whose steps CVODE grows the fastest, fails
+there. A `run_batch` row or a scan point that fails so is named in the error.
+A grid of three or more output points over a span longer than the largest
+double, such as `(-1e308, 1e308)`, is refused before it starts: its output
+times are not finite. Measure time in a larger unit instead.
+
 ### Steps too small to move the clock
 
 Before each step CVODE checks whether `t + h == t` in double precision. Where
@@ -678,4 +699,6 @@ BNGsim drops the warnings itself for runs whose rate laws switch on state, or
 on time in an SBML model, since they restart at each switch, and for KINSOL
 solves, unless `SUNLOGGER_WARNING_FILENAME` is set. A BNGL rate law that
 switches on time keeps its warnings. The `[ERROR]` lines of a solve BNGsim
-expects to fail and recovers from are always dropped.
+expects to fail and recovers from are always dropped, and so is the one of a
+solver call that `timeout=` ends, or that BNGsim ends because CVODE's step
+passed the largest double: the run raises its own error.

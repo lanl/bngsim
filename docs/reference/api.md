@@ -91,11 +91,12 @@ Simulation:
 When the budget is exceeded, `run` / `run_batch` raise
 `bngsim.SimulationTimeout` (a typed `BngsimError`) carrying `timeout`
 (the configured limit) and `elapsed` (actual wall-clock time at the trip).
-Supported on every backend (ODE, SSA, PSA, NFsim, RuleMonkey). NFsim and
-RuleMonkey poll the budget at a coarser granularity than ODE/SSA/PSA
-(between `stepTo()` output points for NFsim; every ~1024 SSA events for
-RuleMonkey, via its upstream cancellation hook), so the surfaced elapsed
-time may overshoot the budget by one such interval.
+Supported on every backend (ODE, SSA, PSA, NFsim, RuleMonkey). ODE reads
+the budget at each output point and, inside the solver, every 256
+right-hand-side evaluations. NFsim and RuleMonkey poll it at a coarser
+granularity than ODE/SSA/PSA (between `stepTo()` output points for NFsim;
+every ~1024 SSA events for RuleMonkey, via its upstream cancellation hook),
+so the surfaced elapsed time may overshoot the budget by one such interval.
 
 Interactive:
 - **`run_until(t, *, n_points, seed)`** → `Result`
