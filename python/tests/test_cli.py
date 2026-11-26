@@ -200,6 +200,37 @@ def test_out_a_file_cannot_be_written_to_is_a_usage_error_that_writes_nothing(ou
     assert (tmp_path / "a_file").read_text(encoding="utf-8") == "a file"
 
 
+def test_out_a_write_that_fails_part_way_exits_1_and_leaves_no_file(tmp_path):
+    # A full disk after the file is made: not a usage error, and no half file.
+    script = textwrap.dedent(
+        """
+        import errno
+        import bngsim._cli as cli
+
+        class Full:
+            def __init__(self, f):
+                self.f = f
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                self.f.close()
+            def write(self, data):
+                self.f.write(data[:100])
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        cli.open = lambda path, mode: Full(open(path, mode))
+        """
+    )
+    target = tmp_path / "SKILL.md"
+    target.write_text("old", encoding="utf-8")
+    error = _json_error(
+        _bngsim("skill", "--out", str(target), "--json", script=script), 1, "error"
+    )
+    assert error["type"] == "OSError"
+    assert "No space left" in error["message"]
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_examples_lists_every_example_with_its_files():
     listed = _json_out(_bngsim("examples", "--json"))["examples"]
     assert [e["name"] for e in listed] == bngsim.examples.names()

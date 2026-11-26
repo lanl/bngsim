@@ -974,12 +974,13 @@ def _write_text(out: str, text: str, name: str) -> str:
     the console's code page, and Windows PowerShell 5.1 writes it again as
     UTF-16.
 
-    A path that names no file this can write is a usage error naming ``--out``:
+    A path that names no file this can make is a usage error naming ``--out``:
     a folder (or a path ending in a separator, which ``abspath`` would drop), an
     empty string, ``-``, a ``~`` that names no home folder, and a file the
-    system will not let it make."""
+    system will not let it make. A failure while writing the file it made (a
+    full disk) is not: that raises, and leaves no part of the file."""
     seps = "".join(s for s in (os.sep, os.altsep) if s)
-    example = os.path.join(out.rstrip(seps) or out, name)
+    example = os.path.join(out, name)
 
     def refuse(why: str, *, suggest: bool = True) -> NoReturn:
         hint = f"; give the file's path, such as {example}" if suggest else ""
@@ -999,16 +1000,34 @@ def _write_text(out: str, text: str, name: str) -> str:
         head = expanded
         for sep in seps:
             head = head.split(sep)[0]
-        refuse(f"{head} is not a home folder on this machine", suggest=False)
+        refuse(
+            f"{head} is not a home folder on this machine; for a file whose name "
+            f"starts with ~, write {os.path.join(os.curdir, out)}",
+            suggest=False,
+        )
     path = os.path.abspath(expanded)
     if os.path.isdir(path):
         refuse("that is a folder")
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            f.write(text.encode("utf-8"))
+        f = open(path, "wb")  # noqa: SIM115  (closed below, after the write)
     except OSError as error:
-        refuse(f"cannot write {path}: {error.strerror or error}", suggest=False)
+        # The path the system names, when not the file's: a parent that is a
+        # file, or a folder it may not write.
+        where = error.filename
+        if where and os.path.abspath(where) != path:
+            is_file = os.path.isfile(where)
+            reason = f"{where} is a file" if is_file else f"{where}: {error.strerror}"
+        else:
+            reason = error.strerror or str(error)
+        refuse(f"cannot write {path}: {reason}", suggest=False)
+    try:
+        with f:
+            f.write(text.encode("utf-8"))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+        raise
     return path
 
 
