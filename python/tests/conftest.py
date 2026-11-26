@@ -71,6 +71,7 @@ _REDIRECTED_CACHES: tuple[tuple[str, str, str], ...] = (
     ("BNGSIM_CODEGEN_CACHE_DIR", "bngsim._codegen", "codegen"),
     ("BNGSIM_BNGL_CACHE_DIR", "bngsim._bngl_loader", "networks"),
     ("BNGSIM_BIOMODELS_CACHE_DIR", "bngsim._biomodels", "biomodels"),
+    ("BNGSIM_AMICI_CACHE_DIR", "bngsim._check_amici", "amici"),
 )
 
 #: Set only when the cache root is a temp directory this session created, in

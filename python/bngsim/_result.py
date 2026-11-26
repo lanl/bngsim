@@ -3546,6 +3546,21 @@ class Result:
               parameter, are not judged (``not_judged``). It costs four runs
               per column and one more, within ``budget``; the columns the
               budget does not reach are named in ``timed_out``.
+            - ``"sensitivity_second_engine"``: the forward sensitivities
+              against AMICI's, where AMICI is installed (it is no dependency
+              or extra of bngsim: it compiles C++ per model), for a run that
+              ``"second_engine"`` could make again from the file. AMICI reads
+              the file, so this is the one sensitivity check that does not
+              read the model as bngsim loaded it. A model with an event, or
+              with a switch in its math (a piecewise, a comparison, ``floor``,
+              ``min``, ``max``, ...), is skipped: AMICI reads some of those
+              differently from bngsim. Each parameter column AMICI has is
+              judged series by series as a path is, on the larger of the two
+              engines' peaks, with the series' move at the tighter tolerance
+              as its drift, and the states are compared too; an initial
+              amount is not judged (``not_judged``), as AMICI gives
+              sensitivities to parameters only. AMICI's build is cached in
+              ``~/.cache/bngsim/amici`` (or ``$BNGSIM_AMICI_CACHE_DIR``).
             - ``"replicates"``: a stochastic run made again at ``replicates``
               other seeds; for each observable at the last time, the mean
               over them, its standard error, and how many standard errors this
@@ -3555,8 +3570,8 @@ class Result:
             Seconds of wall time for all the bngsim reruns (a run's own
             recorded ``timeout`` still applies where it is shorter). A check
             that does not fit reports ``"timeout"``, none is dropped, and the
-            report is then not ``ok``. Loading the model and running
-            libRoadRunner are not bounded.
+            report is then not ``ok``. Loading the model, running
+            libRoadRunner, and building and running AMICI are not bounded.
         replicates : int
             The reruns of the replicates check (default 10, at least 2).
 
@@ -3595,7 +3610,15 @@ class Result:
             reason), ``timed_out``, ``allowance``, ``n_not_converged``
             (series the tolerance check finds not converged, judged on the
             tolerance alone) and ``diff_not_converged`` (a diff in those
-            series alone, which ``next`` reads as the tolerance's).
+            series alone, which ``next`` reads as the tolerance's);
+            ``"sensitivity_second_engine"`` gives those of ``margin``,
+            ``n_judged``, ``not_judged``, ``n_not_converged`` and
+            ``diff_not_converged`` too, and ``state_margin`` and
+            ``state_diff`` (the states against AMICI's),
+            ``species_not_compared`` (with the reason) and ``engine``
+            (AMICI's ``version``, its ``commit`` where the install records
+            one, and ``pinned``: whether that is the commit bngsim's AMICI
+            parity suite pins).
 
         Raises
         ------

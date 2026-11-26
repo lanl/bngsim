@@ -117,8 +117,10 @@ DETERMINISTIC = ("tolerance", "grid", "jacobian", "linear_solver", "backend", "s
 STOCHASTIC = ("replicates",)
 #: The checks of a run's forward sensitivities (issue #1893): what ``"all"``
 #: adds for a run that computed them. ``sensitivity`` judges the tolerance
-#: check's run; ``sensitivity_fd`` makes a difference quotient.
-SENSITIVITY = ("sensitivity", "sensitivity_fd")
+#: check's run; ``sensitivity_fd`` makes a difference quotient;
+#: ``sensitivity_second_engine`` makes the run in AMICI, where it is installed
+#: (issue #1923, :mod:`bngsim._check_amici`).
+SENSITIVITY = ("sensitivity", "sensitivity_fd", "sensitivity_second_engine")
 #: What ``checks=None`` runs: the cheap checks that catch the common case, and
 #: of a run that computed sensitivities, :data:`DEFAULT_SENSITIVITY` too.
 DEFAULT_DETERMINISTIC = ("tolerance", "grid")
@@ -441,6 +443,20 @@ def _next(out: Report, roundoff: bool = False) -> str:
             "(sensitivity_fd): on a model bngsim accepts, that is a bug worth reporting at "
             "https://github.com/lanl/bngsim/issues, with json.dumps(report), result.record and "
             "the model file. Do not report those sensitivities."
+        )
+    if diffs and diffs[0]["name"] == "sensitivity_second_engine":
+        if diffs[0].get("diff_not_converged"):
+            return (
+                "The sensitivities that disagree with AMICI's are not converged at the run's "
+                "tolerance: rerun at a tighter rtol and atol (result.rerun(rtol=..., atol=...)) "
+                "and check that run's sensitivities."
+            )
+        what = "trajectory" if diffs[0].get("state_diff") else "forward sensitivities"
+        return (
+            f"bngsim and AMICI disagree on this model's {what}: one of them reads the model "
+            "differently, or computes its sensitivities wrong. Report it at "
+            "https://github.com/lanl/bngsim/issues with json.dumps(report) and the model file, "
+            "and do not report those sensitivities."
         )
     if diffs and diffs[0]["name"] == "second_engine":
         return (
@@ -927,6 +943,11 @@ class _Context:
 
         return _check_sensitivity.check_sensitivity_fd(self)
 
+    def check_sensitivity_second_engine(self) -> dict[str, Any]:
+        from bngsim import _check_amici
+
+        return _check_amici.check(self)
+
     def check_replicates(self, n: int) -> dict[str, Any]:
         if not self.stochastic:
             return _verdict("replicates", "unsupported", note="the run is deterministic")
@@ -975,36 +996,21 @@ class _Context:
         )
 
 
-def _second_engine(ctx: _Context) -> dict[str, Any]:
-    """The run made again in libRoadRunner, from the model file, where it can be
-    made the same: an SBML or Antimony model, unchanged since its load, run
-    from its initial state at the file's own parameters."""
-    name = "second_engine"
+def same_as_file(ctx: _Context, name: str, engine: str) -> dict[str, Any] | None:
+    """Why another *engine* cannot make the run again from the model file
+    alone, as the check *name*'s skip verdict, or None where it can: the run
+    started from the model's initial state, of a model unchanged since its
+    load, over a plain ``t_span``, at the file's own parameters (none pinned)
+    and from the file's initial state. Shared by :func:`_second_engine` and the
+    AMICI check (:mod:`bngsim._check_amici`), whose reruns read the file and
+    nothing the session did to the model."""
     model = ctx.rec.get("model") or {}
-    fmt = model.get("format")
-    if fmt not in ("sbml", "antimony"):
-        return _verdict(
-            name,
-            "unsupported",
-            note=f"libRoadRunner reads SBML and Antimony; this model is {fmt!r}",
-        )
-    try:
-        import roadrunner
-    except ImportError:
-        return _verdict(
-            name,
-            "skip",
-            note="libRoadRunner is not installed (pip install 'bngsim[roadrunner]'): the model as "
-            "bngsim read it was not checked against an independent reader",
-        )
     if ctx.run.get("started_from") != "initial":
         return _verdict(name, "skip", note="the run did not start from the model's initial state")
     if model.get("edits"):
         return _verdict(name, "skip", note="the model was changed after its load")
     if ctx.run.get("sample_times") is not None or ctx.run.get("steady_state"):
-        return _verdict(
-            name, "skip", note="only a plain t_span run is made again in libRoadRunner"
-        )
+        return _verdict(name, "skip", note=f"only a plain t_span run is made again in {engine}")
     if ctx.run.get("parameters_pinned"):
         return _verdict(name, "skip", note="a derived parameter was pinned by set_param")
     path = model.get("path")
@@ -1037,6 +1043,35 @@ def _second_engine(ctx: _Context) -> dict[str, Any]:
         equal_nan=True,
     ):
         return _verdict(name, "skip", note="the run did not start from the file's initial state")
+    return None
+
+
+def _second_engine(ctx: _Context) -> dict[str, Any]:
+    """The run made again in libRoadRunner, from the model file, where it can be
+    made the same: an SBML or Antimony model, unchanged since its load, run
+    from its initial state at the file's own parameters."""
+    name = "second_engine"
+    model = ctx.rec.get("model") or {}
+    fmt = model.get("format")
+    if fmt not in ("sbml", "antimony"):
+        return _verdict(
+            name,
+            "unsupported",
+            note=f"libRoadRunner reads SBML and Antimony; this model is {fmt!r}",
+        )
+    try:
+        import roadrunner
+    except ImportError:
+        return _verdict(
+            name,
+            "skip",
+            note="libRoadRunner is not installed (pip install 'bngsim[roadrunner]'): the model as "
+            "bngsim read it was not checked against an independent reader",
+        )
+    skip = same_as_file(ctx, name, "libRoadRunner")
+    if skip:
+        return skip
+    path = model.get("path")
     try:
         if fmt == "antimony":
             import antimony
