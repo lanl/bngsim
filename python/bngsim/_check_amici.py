@@ -1354,13 +1354,14 @@ def _judge(
             # Two rules hold without a test of their own:
             # - a series failing at the run's tolerance is past 100 of its
             #   floors from AMICI, and one neither engine resolves a decade
-            #   tighter is within 20 of them there, so it shrinks;
+            #   tighter is within 20 of them there, so it shrinks (a gap not
+            #   finite there is never the reading's, so needs no such rule);
             # - a species keeps its drift at both levels, so one that fails at
             #   both holds at least 9/11 of its gap (each level's gap is past
             #   ten times the move between them), and needs no shrink test.
             with np.errstate(invalid="ignore"):
                 shrinks = np.isfinite(lv1.d) & (lv1.d <= SHRINK * lv.d)
-            reading = lv.failing & lv1.failing & ~shrinks & lv1.converged
+            reading = lv.failing & lv1.failing & np.isfinite(lv1.d) & ~shrinks & lv1.converged
             reading_x = lv.failing_x & lv1.failing_x & lv1.x_conv & lv1.am_x_conv
             tolerance = lv.failing & lv1.use & (~lv1.failing | shrinks)
             tolerance_x = lv.failing_x & ~lv1.failing_x

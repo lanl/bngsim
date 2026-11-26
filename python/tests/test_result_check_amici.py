@@ -1016,6 +1016,27 @@ def test_a_series_amici_converges_keeps_its_reference_beside_one_that_goes_deepe
     assert v["status"] == "diff" and v["n_judged_deeper"] == 1, v
     assert v["worst_column"] == "dA/dk" and v["diff_not_converged"] is True
 
+    # dA/dk keeps AMICI's own move (9e-4, at the run's tolerance) as its drift,
+    # which forgives a 5e-3 error in the run alone; the states keep AMICI at a
+    # tenth as their reference, though its run at a hundredth is 2% off.
+    fake = _ClosedForm({"A": A0, "B": 0.1})
+
+    def edit2(x, sx):
+        sx = sx.copy()
+        n = len(fake.calls)
+        if n == 1:
+            sx[:, 0, :] *= 1 + 9e-4
+            sx[:, 1, :] *= 1 + 1e-2
+        elif n >= 3:
+            x = x * (1 + 2e-2)
+        return x, sx
+
+    fake.edit = edit2
+    engine(fake)
+    v = _verdict(_scaled(_decay(_two(tmp_path)), 0, 1 + 5e-3, row=0))
+    assert v["status"] == "pass" and v["n_judged_deeper"] == 1, v
+    assert v["state_margin"] < 0.01
+
 
 def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, engine):
     # dB/dk off by +2e-3 of its peak at the run's tolerance, -2e-3 a decade
@@ -1060,6 +1081,44 @@ def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, e
     assert v["status"] == "pass" and v["floor_held"] == [], v
     assert v["n_judged_deeper"] == 0 and v["no_reference"] == ["dB/dk"]
     assert [c["name"] for c in v["columns"]] == ["k"]
+
+
+def test_a_gap_not_finite_a_decade_tighter_is_not_the_readings(tmp_path, monkeypatch, engine):
+    # dA/dk2 is 0 (k2 moves nothing). bngsim gives it as 1000 of its floors at
+    # the run's tolerance, and as one floor with a value not finite at one
+    # time a decade tighter, where neither engine resolves it: a finding, but
+    # not one a decade tighter settles.
+    path = _write_sbml(
+        tmp_path / "idle.xml",
+        species=[("A", A0, False)],
+        params={"k": K0, "k2": 1.0},
+        reactions=[("J1", ["A"], [], "k*A", {})],
+    )
+    engine(_ClosedForm({"A": A0}, free={"amici_k": K0, "k2": 1.0}))
+    r = _decay(path, params=["k", "k2"])
+    floor = float(_check_sensitivity._Columns(_check._Context(r, r.record, None)).atol[0, 1])
+    real = Simulator.run
+    base = r.record["run"]["rtol"]
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if not len(out._sensitivity_params):
+            return out
+        out = copy.copy(out)
+        sens = np.asarray(out._sensitivities, dtype=float).copy()
+        if (kw.get("rtol") or base) > base / 5:
+            sens[1:, 0, 1] = 1000 * floor
+        else:
+            sens[1:, 0, 1] = floor
+            sens[5, 0, 1] = np.nan
+        out._sensitivities = sens
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run)
+    v = _verdict(_decay(path, params=["k", "k2"]))
+    assert v["status"] == "diff" and v["worst_column"] == "dA/dk2", v
+    assert v["confirmed_tighter"] is None
+    assert "the reading's, not the tolerance's" not in v["note"]
 
 
 def test_a_diff_that_cannot_be_compared_tighter_says_so(engine):
