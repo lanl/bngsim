@@ -62,6 +62,8 @@ import json
 import math
 import os
 import shlex
+import shutil
+import stat
 import sys
 from collections.abc import Callable, Iterator
 from typing import Any, NoReturn
@@ -234,19 +236,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "compiler codegen would use. Run it first in a new environment, and "
         "paste it into a bug report.",
     )
-    sub.add_parser(
+    guide = sub.add_parser(
         "guide",
         parents=[common],
         help="print the agent guide of this version",
         description="Print the BNGsim agent guide of this version (bngsim.agent_guide()).",
     )
-    sub.add_parser(
+    skill = sub.add_parser(
         "skill",
         parents=[common],
         help="print the agent guide as a SKILL.md file",
-        description="Print the agent guide as a SKILL.md file, for agent "
-        "harnesses that load skills: bngsim skill > ~/.claude/skills/bngsim/SKILL.md",
+        description="Print the agent guide as a SKILL.md file, for agent harnesses that "
+        "load skills. For Claude Code, in every project: "
+        "bngsim skill --out ~/.claude/skills/bngsim/SKILL.md "
+        "(or .claude/skills/bngsim/SKILL.md for one project). Run it again after an "
+        "upgrade: the guide is the installed version's.",
     )
+    for p, what in ((guide, "the guide"), (skill, "the SKILL.md file")):
+        p.add_argument(
+            "--out",
+            metavar="FILE",
+            help=f"write {what} to FILE, as UTF-8, instead of printing it: makes FILE's "
+            "folder and replaces any such file. A leading ~ is your home folder, in any shell",
+        )
     examples = sub.add_parser(
         "examples",
         parents=[common],
@@ -942,9 +954,117 @@ def _guide(args: argparse.Namespace) -> tuple[Any, str]:
 
     skill = args.command == "skill"
     text = bngsim.agent_guide(skill=skill)
-    payload = {"version": bngsim.__version__, "format": "skill" if skill else "markdown"}
-    payload["text"] = text
-    return payload, text
+    payload: dict[str, Any] = {
+        "version": bngsim.__version__,
+        "format": "skill" if skill else "markdown",
+        "text": text,
+        "out": None,
+    }
+    if args.out is None:
+        return payload, text
+    path = _write_text(args.out, text, "SKILL.md" if skill else "agent_guide.md")
+    # The text is in the file: the payload says where, and does not carry it too.
+    payload.update(text=None, out=path)
+    return payload, f"{'skill' if skill else 'guide'} written to {path}\n"
+
+
+def _write_text(out: str, text: str, name: str) -> str:
+    """``text`` written to the file ``out``, as the UTF-8 bytes the command
+    prints, its folder made first; the file's absolute path. ``~`` is expanded
+    here, not by the shell: PowerShell passes it to the program as it is. Not
+    through a shell redirect: PowerShell before 7.4 reads a program's output in
+    the console's code page, and Windows PowerShell 5.1 writes it again as
+    UTF-16.
+
+    A path that names no file this can make is a usage error naming ``--out``:
+    a folder (or a path ending in a separator, which ``abspath`` would drop), an
+    empty string, ``-``, a ``~`` that names no home folder, and a file the
+    system will not let it make, or one that is read-only. A failure while
+    writing (a full disk) is not: that raises, and leaves the file as it was."""
+    seps = "".join(s for s in (os.sep, os.altsep) if s)
+    example = os.path.join(out, name)
+
+    def refuse(why: str, *, suggest: bool = True) -> NoReturn:
+        hint = f"; give the file's path, such as {example}" if suggest else ""
+        _refuse(f"--out {out or repr(out)}: {why}{hint}", "--out", value=out)
+
+    if out == "":
+        refuse("an empty path names no file", suggest=False)
+    if out == "-":
+        refuse(
+            "this writes a file named '-'; leave out --out to print to standard output",
+            suggest=False,
+        )
+    if out.endswith(tuple(seps)):
+        refuse("a path ending in a separator is a folder")
+    expanded = os.path.expanduser(out)
+    if expanded.startswith("~"):
+        head = expanded
+        for sep in seps:
+            head = head.split(sep)[0]
+        refuse(
+            f"{head} is not a home folder on this machine; for a file whose name "
+            f"starts with ~, write {os.path.join(os.curdir, out)}",
+            suggest=False,
+        )
+    path = os.path.abspath(expanded)
+    if os.path.isdir(path):
+        refuse("that is a folder")
+    # Through a link, to the file it names: the link stays a link.
+    real = os.path.realpath(path)
+    if os.path.exists(real):
+        if not os.path.isfile(real):
+            refuse(f"cannot write {path}: it is not a regular file", suggest=False)
+        # By its mode too: root may write a file whose mode says read-only.
+        if not os.access(real, os.W_OK) or not os.stat(real).st_mode & stat.S_IWUSR:
+            refuse(f"cannot write {path}: it is read-only", suggest=False)
+    folder = os.path.dirname(real)
+    tmp = os.path.join(folder, f".{os.path.basename(real)}.{os.getpid()}-{os.urandom(4).hex()}")
+
+    def cannot(error: OSError) -> NoReturn:
+        # The path the system names, when not the file's: a parent that is a
+        # file or a link to nothing, or a folder it may not write (the folder,
+        # never the temporary name).
+        where = folder if error.filename == tmp else error.filename
+        if where and os.path.abspath(where) not in (path, real):
+            if os.path.islink(where) and not os.path.exists(where):
+                reason = f"{where} is a link to nothing"
+            elif os.path.isfile(where):
+                reason = f"{where} is a file"
+            else:
+                reason = f"{where}: {error.strerror}"
+        else:
+            reason = error.strerror or str(error)
+        refuse(f"cannot write {path}: {reason}", suggest=False)
+
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        f = open(tmp, "xb")  # noqa: SIM115  (closed below, after the write)
+    except OSError as error:
+        cannot(error)
+    # Written beside the file and moved over it, so a write that fails part way
+    # (a full disk) leaves the file as it was, or no file, never half of one.
+    try:
+        with f:
+            f.write(text.encode("utf-8"))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+    try:
+        if os.path.exists(real):
+            shutil.copymode(real, tmp)
+        # On Windows this fails while another program holds the file open.
+        os.replace(tmp, real)
+    except OSError as error:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        refuse(f"cannot write {path}: {error.strerror or error}", suggest=False)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+    return path
 
 
 def _example_entry(name: str) -> dict[str, Any]:

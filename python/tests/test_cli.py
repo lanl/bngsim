@@ -10,6 +10,8 @@ an error as a JSON object on standard error, and an exit code per outcome.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 import sys
 import textwrap
@@ -34,14 +36,21 @@ _ALGEBRAIC = """<?xml version="1.0" encoding="UTF-8"?>
 </math></algebraicRule></listOfRules></model></sbml>"""
 
 
-def _bngsim(*args: str, script: str | None = None) -> subprocess.CompletedProcess:
+def _bngsim(
+    *args: str,
+    script: str | None = None,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     """``python -m bngsim ARGS``, or ``script`` then ``main(ARGS)``."""
     if script is None:
         cmd = [sys.executable, "-m", "bngsim", *args]
     else:
         code = script + f"\nfrom bngsim._cli import main\nraise SystemExit(main({list(args)!r}))\n"
         cmd = [sys.executable, "-c", code]
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=300)
+    return subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", timeout=300, cwd=cwd, env=env
+    )
 
 
 def _json_out(run: subprocess.CompletedProcess) -> dict:
@@ -100,8 +109,220 @@ def test_doctor_text_names_every_missing_feature_with_its_fix():
 @pytest.mark.parametrize("command", ["guide", "skill"])
 def test_guide_and_skill_as_json_carry_the_guide(command):
     payload = _json_out(_bngsim(command, "--json"))
-    assert payload["text"] == bngsim.agent_guide(skill=command == "skill")
-    assert payload["version"] == bngsim.__version__
+    assert payload == {
+        "version": bngsim.__version__,
+        "format": "skill" if command == "skill" else "markdown",
+        "text": bngsim.agent_guide(skill=command == "skill"),
+        "out": None,
+    }
+
+
+@pytest.mark.parametrize("command", ["guide", "skill"])
+def test_out_writes_the_bytes_the_command_prints_and_makes_the_folder(command, tmp_path):
+    printed = subprocess.run(
+        [sys.executable, "-m", "bngsim", command], capture_output=True, check=True, timeout=300
+    ).stdout
+    target = tmp_path / "skills" / "bngsim" / "SKILL.md"
+    target.parent.parent.mkdir()
+    target.parent.with_name("other").write_text("not touched", encoding="utf-8")
+    run = _bngsim(command, "--out", str(target))
+    assert run.returncode == 0, run.stderr
+    assert run.stdout == f"{command} written to {target}\n"
+    assert target.read_bytes() == printed
+    assert printed == bngsim.agent_guide(skill=command == "skill").encode("utf-8")
+    # A second write replaces the file; --json says where, and the text stays
+    # in the file rather than coming back too.
+    target.write_text("old", encoding="utf-8")
+    payload = _json_out(_bngsim(command, "--out", str(target), "--json"))
+    assert payload == {
+        "version": bngsim.__version__,
+        "format": "skill" if command == "skill" else "markdown",
+        "text": None,
+        "out": str(target),
+    }
+    assert target.read_bytes() == printed
+    assert (tmp_path / "skills" / "other").read_text(encoding="utf-8") == "not touched"
+
+
+@pytest.mark.parametrize("command", ["guide", "skill"])
+def test_out_expands_a_leading_tilde_itself(command, tmp_path):
+    env = {**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    # First that the child's home is tmp_path, so a failure here writes nothing
+    # into the real home folder.
+    home = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.path.expanduser('~'))"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+        timeout=60,
+    ).stdout.strip()
+    assert Path(home) == tmp_path
+    # Passed as a program argument, as PowerShell passes it: no shell expands it.
+    run = _bngsim(command, "--out", "~/.claude/skills/bngsim/SKILL.md", cwd=tmp_path, env=env)
+    assert run.returncode == 0, run.stderr
+    written = tmp_path / ".claude" / "skills" / "bngsim" / "SKILL.md"
+    assert written.read_text(encoding="utf-8") == bngsim.agent_guide(skill=command == "skill")
+    assert not (tmp_path / "~").exists()
+
+
+@pytest.mark.parametrize(("command", "name"), [("guide", "agent_guide.md"), ("skill", "SKILL.md")])
+def test_out_naming_a_folder_is_a_usage_error_that_writes_nothing(command, name, tmp_path):
+    error = _json_error(
+        _bngsim(command, "--out", str(tmp_path), "--json"), 2, "usage.invalid_argument"
+    )
+    assert error["details"] == {"argument": "--out", "value": str(tmp_path)}
+    assert str(tmp_path / name) in error["message"]
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("out", "why"),
+    [
+        ("", "an empty path names no file"),
+        ("-", "this writes a file named '-'"),
+        # abspath would drop the separator and make a file "new".
+        ("new" + os.sep, "a path ending in a separator is a folder"),
+        ("a_file" + os.sep + "SKILL.md", "cannot write"),  # a parent that is a file
+        ("~nosuchuser" + os.sep + "SKILL.md", "~nosuchuser is not a home folder"),
+    ],
+)
+def test_out_a_file_cannot_be_written_to_is_a_usage_error_that_writes_nothing(out, why, tmp_path):
+    (tmp_path / "a_file").write_text("a file", encoding="utf-8")
+    # Where ~user names a folder whatever the user (Windows guesses one beside
+    # the home folder), expanduser is held to what it does on POSIX.
+    script = "import os.path\n_e = os.path.expanduser\n"
+    script += "os.path.expanduser = lambda p: p if p.startswith('~nosuchuser') else _e(p)\n"
+    run = _bngsim("skill", "--out", out, "--json", script=script, cwd=tmp_path)
+    error = _json_error(run, 2, "usage.invalid_argument")
+    assert error["details"] == {"argument": "--out", "value": out}
+    assert error["message"].startswith(f"--out {out or repr(out)}: {why}")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a_file"]
+    assert (tmp_path / "a_file").read_text(encoding="utf-8") == "a file"
+
+
+_FULL_DISK = textwrap.dedent(
+    """
+    import errno
+    import bngsim._cli as cli
+
+    class Full:
+        def __init__(self, f):
+            self.f = f
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            self.f.close()
+        def write(self, data):
+            self.f.write(data[:100])
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    cli.open = lambda *args, **kwargs: Full(open(*args, **kwargs))
+    """
+)
+
+
+def test_out_a_write_that_fails_part_way_exits_1_and_leaves_the_file_as_it_was(tmp_path):
+    # A full disk part way through: not a usage error, no half file, and the
+    # skill already there is kept, not lost with the failed upgrade.
+    target = tmp_path / "SKILL.md"
+    target.write_text("old", encoding="utf-8")
+    error = _json_error(
+        _bngsim("skill", "--out", str(target), "--json", script=_FULL_DISK), 1, "error"
+    )
+    assert error["type"] == "OSError"
+    assert "No space left" in error["message"]
+    assert [p.name for p in tmp_path.iterdir()] == ["SKILL.md"]
+    assert target.read_text(encoding="utf-8") == "old"
+    # With no file there before, there is none after.
+    target.unlink()
+    _json_error(_bngsim("skill", "--out", str(target), "--json", script=_FULL_DISK), 1, "error")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_out_a_read_only_file_is_a_usage_error_and_kept(tmp_path):
+    target = tmp_path / "SKILL.md"
+    target.write_text("old", encoding="utf-8")
+    target.chmod(stat.S_IREAD)
+    try:
+        error = _json_error(
+            _bngsim("skill", "--out", str(target), "--json"), 2, "usage.invalid_argument"
+        )
+        assert error["message"] == f"--out {target}: cannot write {target}: it is read-only"
+        assert target.read_text(encoding="utf-8") == "old"
+    finally:
+        target.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+
+def test_out_a_file_another_program_holds_is_a_usage_error_and_kept(tmp_path):
+    # Windows refuses to replace a file another program holds open.
+    script = textwrap.dedent(
+        """
+        import os
+
+        def held(src, dst):
+            raise PermissionError(13, "Access is denied", src, None, dst)
+
+        os.replace = held
+        """
+    )
+    target = tmp_path / "SKILL.md"
+    target.write_text("old", encoding="utf-8")
+    run = _bngsim("skill", "--out", str(target), "--json", script=script)
+    error = _json_error(run, 2, "usage.invalid_argument")
+    assert error["message"] == f"--out {target}: cannot write {target}: Access is denied"
+    assert [p.name for p in tmp_path.iterdir()] == ["SKILL.md"]
+    assert target.read_text(encoding="utf-8") == "old"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-specific: os.mkfifo, and a symlink needs privileges"
+)
+def test_out_a_target_that_is_not_a_regular_file_or_a_link_to_nothing_is_refused(tmp_path):
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    error = _json_error(
+        _bngsim("skill", "--out", str(fifo), "--json"), 2, "usage.invalid_argument"
+    )
+    assert error["message"] == f"--out {fifo}: cannot write {fifo}: it is not a regular file"
+    assert stat.S_ISFIFO(fifo.stat().st_mode)
+    dangling = tmp_path / "dangling"
+    dangling.symlink_to(tmp_path / "nowhere")
+    out = str(dangling / "SKILL.md")
+    error = _json_error(_bngsim("skill", "--out", out, "--json"), 2, "usage.invalid_argument")
+    assert error["message"] == f"--out {out}: cannot write {out}: {dangling} is a link to nothing"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["dangling", "fifo"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-specific: creating a symlink needs privileges, and file modes are POSIX's",
+)
+def test_out_writes_through_a_link_and_keeps_a_files_mode(tmp_path):
+    expected = bngsim.agent_guide(skill=True)
+    # A skill kept in a dotfiles folder, linked into ~/.claude/skills.
+    kept = tmp_path / "dotfiles" / "SKILL.md"
+    kept.parent.mkdir()
+    kept.write_text("old", encoding="utf-8")
+    kept.chmod(0o640)
+    link = tmp_path / "skills" / "bngsim" / "SKILL.md"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(kept)
+    _json_error(_bngsim("skill", "--out", str(link), "--json", script=_FULL_DISK), 1, "error")
+    assert link.is_symlink() and kept.read_text(encoding="utf-8") == "old"
+    assert sorted(p.name for p in kept.parent.iterdir()) == ["SKILL.md"]
+    run = _bngsim("skill", "--out", str(link))
+    assert run.returncode == 0, run.stderr
+    assert link.is_symlink() and link.resolve() == kept.resolve()
+    assert kept.read_text(encoding="utf-8") == expected
+    assert stat.S_IMODE(kept.stat().st_mode) == 0o640
+    # A new file has the mode the umask gives any new file, not a temporary
+    # file's 0600.
+    umask = os.umask(0)
+    os.umask(umask)
+    fresh = tmp_path / "fresh" / "SKILL.md"
+    assert _bngsim("skill", "--out", str(fresh)).returncode == 0
+    assert stat.S_IMODE(fresh.stat().st_mode) == 0o666 & ~umask
 
 
 def test_examples_lists_every_example_with_its_files():
