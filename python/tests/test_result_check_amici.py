@@ -1978,6 +1978,8 @@ def test_next_names_what_disagrees_where_a_decade_tighter_does_not_settle_it():
     assert "this model's trajectory and forward sensitivities at the run's" in both
     # A series not finite in the run has no finite margin: a sensitivity diff.
     assert "this model's forward sensitivities at" in said(margin=None, state_diff=False)
+    both = said(margin=None, state_diff=True)
+    assert "this model's trajectory and forward sensitivities at the run's" in both
 
 
 def test_the_files_second_reading_shows_no_warning_the_load_gave(tmp_path, monkeypatch):
