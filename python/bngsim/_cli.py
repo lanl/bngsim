@@ -435,7 +435,8 @@ def _solver_arguments(p: argparse.ArgumentParser, *, seed: bool = True) -> None:
 
 def _sensitivity_arguments(p: argparse.ArgumentParser) -> None:
     """Forward sensitivities (issue #1925): Simulator's keywords of the same
-    names, and the digest's ``max_parameters``."""
+    names. No option of the digest's ``max_parameters``: one named ``--max-...``
+    would make ``--max``, which abbreviates ``--max-columns``, ambiguous."""
     p.add_argument(
         "--sensitivity-params",
         type=_names,
@@ -454,13 +455,6 @@ def _sensitivity_arguments(p: argparse.ArgumentParser) -> None:
         help="compute forward sensitivities to these species' initial amounts "
         "(Simulator's sensitivity_ic; ode only); repeatable. A comma inside "
         "parentheses, as in R(l,d), is part of the name.",
-    )
-    p.add_argument(
-        "--max-parameters",
-        type=_count,
-        default=None,
-        help="parameters, and initial amounts, each digested column lists (default 5; "
-        "with --sensitivity-params or --sensitivity-ic)",
     )
 
 
@@ -1180,13 +1174,7 @@ def _validate_sensitivities(args: argparse.Namespace, method: str | None) -> boo
         if method in _STOCHASTIC_METHODS:
             _refuse(f"{flag} is an ODE run's; a {method} run takes none", flag)
         setattr(args, attr, names)
-    sensitive = bool(args.sensitivity_params or args.sensitivity_ic)
-    if args.max_parameters is not None and not sensitive:
-        _refuse(
-            "--max-parameters is for a run with --sensitivity-params or --sensitivity-ic",
-            "--max-parameters",
-        )
-    return sensitive
+    return bool(args.sensitivity_params or args.sensitivity_ic)
 
 
 def _validate_out(args: argparse.Namespace) -> None:
@@ -1560,12 +1548,9 @@ def _run_payload(
     sensitive = bool(getattr(args, "sensitivity_params", None)) or bool(
         getattr(args, "sensitivity_ic", None)
     )
-    digest_kw: dict[str, Any] = {"species": args.species, "max_columns": args.max_columns}
-    if sensitive:
-        digest_kw["sensitivities"] = True
-        if args.max_parameters is not None:
-            digest_kw["max_parameters"] = args.max_parameters
-    digest = result.digest(**digest_kw)
+    digest = result.digest(
+        species=args.species, max_columns=args.max_columns, sensitivities=sensitive
+    )
     out = _write_out(result, args)
     payload = {
         "model": os.path.abspath(args.model),

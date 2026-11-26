@@ -969,6 +969,12 @@ class Simulator:
         (issue #329); differentiate the parameters the function's expression
         reads instead. :attr:`Model.primary_param_names` omits them.
 
+        A name the model does not have raises :class:`ParameterError`
+        (``param.not_found``) here, with its close matches, not once the run
+        starts. A species is pointed at ``sensitivity_ic``. One name given as a
+        string, bytes or a dict raises :class:`ArgumentTypeError`; any other
+        iterable of names is taken in the order it iterates.
+
     sensitivity_ic : list[str], optional
         Species names to integrate forward initial-condition
         sensitivities for. The result carries a
@@ -979,6 +985,9 @@ class Simulator:
         a corresponding model parameter to differentiate against.
         Requires the codegen sensitivity RHS path; codegen is auto-enabled
         for any sensitivity workflow. Only valid for ``method="ode"``.
+        A name that is not a species raises :class:`ModelError`
+        (``species.not_found``) here, with its close matches; a parameter is
+        pointed at ``sensitivity_params``.
 
     reaction_stats : bool, optional
         ``method="ssa"`` only. Record, at every output time, each reaction's
@@ -1252,9 +1261,9 @@ class Simulator:
         # bngsim.examples.path() hands out a Path, which the network-free cores
         # refused with a raw pybind11 TypeError (issue #1924).
         xml_path = _xml_path_arg(xml_path)
-        # A string, a set, a dict or a NumPy array of names met a raw TypeError
-        # or ValueError, from the engine's binding at the run or from `x or []`
-        # here (issue #1925): each is a list of names from here on.
+        # A string or a dict met a raw TypeError from the engine's binding at the
+        # run, and a NumPy array of names a ValueError from `x or []` here
+        # (issue #1925): each is a list of names from here on.
         sensitivity_params = _sensitivity_names_arg("sensitivity_params", sensitivity_params)
         sensitivity_ic = _sensitivity_names_arg("sensitivity_ic", sensitivity_ic)
         # Normalize the user-facing method token before backend dispatch.
@@ -1852,7 +1861,9 @@ class Simulator:
         self._raise_if_compartment_size_params(self._sensitivity_params)
         self._raise_if_folded_at_load_params(self._sensitivity_params)
         self._raise_if_function_backed_params(self._sensitivity_params)
-        self._raise_if_unknown_sensitivity_names(model)
+        self._raise_if_unknown_sensitivity_names(
+            model, self._sensitivity_params, self._sensitivity_ic
+        )
 
         # Forward sensitivity REQUIRES an analytical codegen sensitivity RHS
         # (GH #214 follow-up): the interpreted path finite-differences the whole
@@ -2007,23 +2018,24 @@ class Simulator:
             return set()
         return internal & set(self._model.function_names)
 
-    def _raise_if_unknown_sensitivity_names(self, model: Any) -> None:
-        """Refuse, as the Simulator is made, a sensitivity name the model does
-        not have (issue #1925), which the engine found only once the run had
-        started and reported as a failed run (``run.failed``). It raises the
-        error class and code ``set_param`` and ``set_concentration`` raise for
-        the name, with its close matches. A species named as a parameter, a
-        parameter as a species, and an observable of one species are pointed at
-        the keyword that takes them, by the model's own spelling. Runs after the
-        refusals of names the model has but cannot differentiate, so theirs
-        come first."""
+    def _raise_if_unknown_sensitivity_names(
+        self, model: Any, params: Sequence[str], ics: Sequence[str] = ()
+    ) -> None:
+        """Refuse a sensitivity name the model does not have (issue #1925),
+        which the engine found only once the run, or the steady-state solve,
+        had started, and reported as a failed run (``run.failed``). It raises
+        the error class and code ``set_param`` and ``set_concentration`` raise
+        for the name, with its close matches. A species named as a parameter,
+        a parameter as a species, and an observable of one species are pointed
+        at the keyword that takes them, by the model's own spelling. Called
+        after the refusals of names the model has but cannot differentiate, so
+        theirs come first."""
         from bngsim._model import _kind_of, _sole_species
 
         for keyword, names, error, kind, listed in (
-            ("sensitivity_params", self._sensitivity_params, ParameterError, "parameter",
-             "param_names"),
-            ("sensitivity_ic", self._sensitivity_ic, ModelError, "species", "species_names"),
-        ):  # fmt: skip
+            ("sensitivity_params", params, ParameterError, "parameter", "param_names"),
+            ("sensitivity_ic", ics, ModelError, "species", "species_names"),
+        ):
             if not names:
                 continue  # nothing read from the model, whatever it is
             known = set(model._core.param_names if kind == "parameter" else model.species_names)
@@ -2031,7 +2043,22 @@ class Simulator:
             for name in names:
                 if name in known:
                     continue
+                details: dict[str, Any] = {"name": name, "close_matches": [], "is_a": None}
+                head = f"{keyword}: {kind.capitalize()} {name!r} not found in model."
+                found = model._not_found(name, kind)["details"]
+                if kind == "species" and found["close_matches"] and found["is_a"] is None:
+                    # A species the name matches loosely (`A` for `A()`) comes
+                    # first, before an observable of that name, as it does
+                    # for set_concentration.
+                    close = list(found["close_matches"])
+                    raise error(
+                        f"{head} Close matches: {_foreign_names.quote_list(close)}.",
+                        code=code,
+                        details={**details, "close_matches": close},
+                        remedies=[use_name(c) for c in close],
+                    )
                 is_a, actual = _kind_of(model, name, besides=kind)
+                details["is_a"] = is_a
                 pointer: tuple[str, str, str, str] | None = None
                 if kind == "parameter" and is_a == "species":
                     what = "a species" if actual == name else f"the species {actual!r}"
@@ -2043,7 +2070,6 @@ class Simulator:
                     if sole is not None:
                         what = f"an observable of the one species {sole!r}"
                         pointer = ("sensitivity_ic", sole, what, "its initial amount")
-                details: dict[str, Any] = {"name": name, "close_matches": [], "is_a": is_a}
                 if pointer is not None:
                     other, target, what, of_it = pointer
                     raise error(
@@ -2061,9 +2087,8 @@ class Simulator:
                         code=code,
                         details=details,
                     )
-                close = model._not_found(name, kind)["details"]["close_matches"]
-                details["close_matches"] = list(close)
-                head = f"{keyword}: {kind.capitalize()} {name!r} not found in model."
+                close = list(found["close_matches"])
+                details["close_matches"] = close
                 if close:
                     raise error(
                         f"{head} Close matches: {_foreign_names.quote_list(close)}.",
@@ -10155,7 +10180,10 @@ class Simulator:
         sensitivity_params : list[str], optional
             Parameter names for dY_ss/dp sensitivity. Requires code generation,
             exactly as :meth:`run` and :meth:`compute_all_sensitivities` do —
-            see the sensitivity note below.
+            see the sensitivity note below. A name the model does not have
+            raises :class:`ParameterError` (``param.not_found``) and one name
+            given as a string :class:`ArgumentTypeError`, as the constructor's
+            ``sensitivity_params`` does.
         mask : array-like of bool, or sequence of str, optional
             Which species the convergence test covers (issue #74). A boolean
             array of length ``n_species`` (``True`` = keep), or the species
@@ -10253,6 +10281,9 @@ class Simulator:
         # expensive runs, so a bad mask is an immediate error rather than a solve
         # that quietly tested the wrong species.
         mask_selector = _resolve_ss_mask(mask, self._model)
+        # A string here was read as one-letter names, and a name the model lacks
+        # failed the solve as run.failed (issue #1925), as in the constructor.
+        sensitivity_params = _sensitivity_names_arg("sensitivity_params", sensitivity_params)
 
         if sensitivity_params:
             # Issue #164/#170 — the same refusal the constructor applies, and
@@ -10271,6 +10302,7 @@ class Simulator:
             # rewrites rather than a coordinate, so the column is structurally
             # zero at steady state too.
             self._raise_if_function_backed_params(list(sensitivity_params))
+            self._raise_if_unknown_sensitivity_names(self._model, sensitivity_params)
             # Issue #704 — what a conserved total does to a column, before
             # anything is compiled for it.
             self._raise_if_conserved_total_sensitivity_unknown(list(sensitivity_params))
@@ -13402,12 +13434,13 @@ def _expression_names(tree: ast.Expression) -> tuple[frozenset[str], frozenset[s
 
 
 def _sensitivity_names_arg(keyword: str, names: object) -> list[str]:
-    """``sensitivity_params`` or ``sensitivity_ic`` as the list of names the
-    Simulator holds (issue #1925). ``None`` is no names. One name given as a
-    string, which Python reads as a sequence of one-letter names, a set, whose
-    order would set the columns' order, a dict and anything not iterable are
-    refused; any other iterable of strings (a tuple, a generator, a NumPy array
-    of names) is taken in its order."""
+    """``sensitivity_params`` or ``sensitivity_ic`` as a list of names (issue
+    #1925). ``None`` is no names. One name given as a string, which reached
+    the engine's binding as a raw ``TypeError`` (``steady_state`` read it as
+    one-letter names), bytes, a dict, and anything that does not iterate are
+    refused, and so is an entry that is not a string. Any other iterable of
+    strings (a tuple, a set as main took it, a generator, a NumPy array of
+    names) is taken in the order it iterates."""
     if names is None:
         return []
     if isinstance(names, str):
@@ -13416,13 +13449,18 @@ def _sensitivity_names_arg(keyword: str, names: object) -> list[str]:
             details={"argument": keyword, "value": names},
             remedies=[pass_argument(keyword, [names])],
         )
-    if isinstance(names, set | frozenset | dict) or not isinstance(names, Iterable):
+    if isinstance(names, bytes | dict) or not isinstance(names, Iterable):
         raise ArgumentTypeError(
-            f"{keyword} takes a list of names, in the order of the columns, not a "
-            f"{type(names).__name__}",
+            f"{keyword} takes a list of names, not a {type(names).__name__}",
             details={"argument": keyword, "value": repr(names)},
         )
-    out = list(names)
+    try:
+        out = list(names)
+    except TypeError as error:  # a 0-d NumPy array: Iterable, and does not iterate
+        raise ArgumentTypeError(
+            f"{keyword} takes a list of names, not {names!r}: {error}",
+            details={"argument": keyword, "value": repr(names)},
+        ) from error
     for name in out:
         if not isinstance(name, str):
             raise ArgumentTypeError(

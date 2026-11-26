@@ -107,17 +107,24 @@ def test_run_without_json_prints_the_sensitivity_digest_text():
     assert "by dln y/dln p" in run.stdout
 
 
-def test_sensitivity_ic_and_max_parameters_reach_the_call_and_the_digest():
+def test_sensitivity_ic_reaches_the_call_and_the_digest():
     d = _json(
         _bngsim(
             "run", CHAIN, *_WINDOW, "--sensitivity-params", "k1,k2", "--sensitivity-ic", "A",
-            "--max-parameters", "1", "--json",
+            "--json",
         )
     )  # fmt: skip
     r = _python_run(CHAIN, sensitivity_params=["k1", "k2"], sensitivity_ic=["A"])
-    assert d["digest"] == _plain(r.digest(sensitivities=True, max_parameters=1))
+    assert d["digest"] == _plain(r.digest(sensitivities=True))
     assert d["record"]["run"]["sensitivity_ic"] == ["A"]
-    assert d["digest"]["sensitivity"]["max_parameters"] == 1
+    ranked = d["digest"]["observables"]["columns"][0]["sensitivity"]["initial_amounts"]
+    assert [a["name"] for a in ranked] == ["A"]
+
+
+def test_max_still_abbreviates_max_columns():
+    # An option named --max-... beside --max-columns made --max ambiguous.
+    d = _json(_bngsim("run", CHAIN, *_WINDOW, "--max", "0", "--json"))
+    assert d["digest"] == _plain(_python_run(CHAIN).digest(max_columns=0))
 
 
 def test_a_run_without_the_options_digests_no_sensitivities():
@@ -188,8 +195,6 @@ def test_out_npz_holds_the_sensitivities(tmp_path):
          "--sensitivity-params", "an ODE run's; a ssa run takes none"),
         (["check", BIRTH_DEATH, "--method", "ssa", "--t-end", "1", "--sensitivity-ic", "X()"],
          "--sensitivity-ic", "an ODE run's; a ssa run takes none"),
-        (["run", CHAIN, "--t-end", "1", "--max-parameters", "3"], "--max-parameters",
-         "for a run with --sensitivity-params or --sensitivity-ic"),
         (["run", CHAIN, "--t-end", "1", "--sensitivity-params", "k1", "--out", "x.csv"], "--out",
          "no sensitivities"),
         (["run", CHAIN, "--t-end", "1", "--sensitivity-ic", "A", "--out", "x.tsv",
@@ -428,7 +433,8 @@ def test_simulator_refuses_a_species_the_model_lacks_when_it_is_made():
 
 @pytest.mark.parametrize("keyword", ["sensitivity_params", "sensitivity_ic"])
 def test_simulator_refuses_one_name_given_as_a_string(keyword):
-    # A string is a sequence of names to Python: "k1" was read as "k" and "1".
+    # A string reached the engine's binding, which refused it with a raw
+    # TypeError once the run had started.
     name = "k1" if keyword == "sensitivity_params" else "A"
     with pytest.raises(ArgumentTypeError) as e:
         Simulator(Model.load(CHAIN), **{keyword: name})
@@ -526,11 +532,17 @@ def test_the_command_points_at_the_model_s_own_spelling_and_quotes_it(tmp_path):
     _json(_bngsim("run", net, "--t-end", "1", remedy["argument"], remedy["value"], "--json"))
 
 
-@pytest.mark.parametrize("names", [{"k1"}, frozenset({"k1"}), {"k1": 1.0}, 3])
+@pytest.mark.parametrize("names", [{"k1": 1.0}, 3, b"k1", np.array("k1")])
 def test_simulator_refuses_names_that_are_not_a_list(names):
     with pytest.raises(ArgumentTypeError) as e:
         Simulator(Model.load(CHAIN), sensitivity_params=names)
     assert e.value.details["argument"] == "sensitivity_params"
+
+
+@pytest.mark.parametrize("names", [{"k1"}, frozenset({"k1"})])
+def test_simulator_takes_a_set_as_main_did(names):
+    r = Simulator(Model.load(CHAIN), sensitivity_params=names).run(t_span=(0, 1), n_points=2)
+    assert list(r.sensitivity_params) == ["k1"]
 
 
 def test_simulator_takes_names_from_any_ordered_iterable():
@@ -565,3 +577,55 @@ def test_the_command_names_its_option_where_the_message_names_the_keyword(tmp_pa
         "--sensitivity-params Both: 'Both' is an observable, not a parameter; "
         "Model.param_names lists the names --sensitivity-params takes."
     )
+
+
+_SHADOWED_NET = """\
+begin parameters
+    1 k 0.5
+end parameters
+begin species
+    1 A() 10
+    2 X() 0
+end species
+begin reactions
+    1 1 2 k #_R1
+end reactions
+begin groups
+    1 A 1,2
+end groups
+"""
+
+
+def test_a_loose_species_comes_before_an_observable_of_its_name(tmp_path):
+    # As for set_concentration: `A` is the species A() before it is the
+    # observable A, which counts two species.
+    net = tmp_path / "shadowed.net"
+    net.write_text(_SHADOWED_NET)
+    with pytest.raises(ModelError) as e:
+        Simulator(Model.load(str(net)), sensitivity_ic=["A"])
+    assert str(e.value) == "sensitivity_ic: Species 'A' not found in model. Close matches: 'A()'."
+    assert e.value.remedies == [{"kind": "use_name", "name": "A()"}]
+
+
+# ─── steady_state(sensitivity_params=...) ────────────────────────────────────
+
+
+def test_steady_state_refuses_a_parameter_the_model_lacks_at_the_call():
+    sim = Simulator(Model.load(DECAY))
+    with pytest.raises(ParameterError) as e:
+        sim.steady_state(sensitivity_params=["kk"])
+    assert e.value.code == "param.not_found"
+    assert e.value.details["close_matches"] == ["k"]
+
+
+def test_steady_state_refuses_one_name_given_as_a_string():
+    # It was read as one-letter names: "k" ran as ["k"].
+    with pytest.raises(ArgumentTypeError) as e:
+        Simulator(Model.load(DECAY)).steady_state(sensitivity_params="k")
+    assert "sensitivity_params=['k']" in str(e.value)
+
+
+def test_steady_state_takes_the_names_it_took_before():
+    ss = Simulator(Model.load(CHAIN)).steady_state(sensitivity_params=("k1",))
+    assert ss.converged
+    assert list(ss.sensitivity_params) == ["k1"]
