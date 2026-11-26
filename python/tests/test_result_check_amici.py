@@ -26,6 +26,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -373,9 +374,10 @@ def test_the_shared_file_check_refuses_a_changed_file(tmp_path):
     assert v["status"] == "skip" and v["note"] == _check.FILE_CHANGED, v
 
 
-def test_an_antimony_file_that_imports_another_is_read_from_its_own_directory(
-    tmp_path, monkeypatch, engine
-):
+def test_an_antimony_file_that_imports_another_is_read_from_its_own_directory(tmp_path):
+    # In a fresh process, from another directory: Antimony remembers the
+    # directories of the files a process has loaded, so in this one an import
+    # would resolve however the file was read.
     pytest.importorskip("antimony")
     (tmp_path / "sub.ant").write_text(
         "model decay()\n  J1: A -> ; k*A\n  A = 100\n  k = 0.5\nend\n", encoding="utf-8"
@@ -384,12 +386,20 @@ def test_an_antimony_file_that_imports_another_is_read_from_its_own_directory(
     main.write_text('import "sub.ant"\n', encoding="utf-8")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    monkeypatch.chdir(elsewhere)
-    r = Simulator(Model.load(str(main)), method="ode", sensitivity_params=["k"]).run(
-        t_span=(0, 10), n_points=11
+    script = (
+        "import sys\n"
+        "from bngsim import _check_amici\n"
+        "sbml, why = _check_amici._sbml_text(sys.argv[1], 'antimony', None)\n"
+        "print('read' if sbml and 'J1' in sbml else 'not read: ' + why)\n"
     )
-    v = _verdict(r)
-    assert v["status"] == "pass", v
+    out = subprocess.run(
+        [sys.executable, "-c", script, str(main)],
+        cwd=elsewhere,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert out.stdout.strip().splitlines()[-1:] == ["read"], (out.stdout, out.stderr)
 
 
 def test_a_model_with_an_event_or_a_switch_is_not_compared(tmp_path, engine):
@@ -979,6 +989,32 @@ def test_a_species_neither_engine_resolves_is_judged_on_the_runs_whole_scale(
     engine(_ClosedForm({"A": A0, "B": -99 * atol}))
     v = _verdict(_decay(path))
     assert v["status"] == "pass" and v["state_diff"] is False, v
+
+
+def test_a_series_amici_converges_keeps_its_reference_beside_one_that_goes_deeper(
+    tmp_path, engine
+):
+    # AMICI moves 1% on dB/dk between the run's tolerance and a tenth, so that
+    # series is judged against its run at a hundredth; dA/dk keeps AMICI at a
+    # tenth, which is exact, where the run at a hundredth is 5e-4 off. bngsim's
+    # dA/dk 2e-3 off in the run alone is then a diff (the tolerance's): against
+    # the run at a hundredth, AMICI's move there would have forgiven it.
+    fake = _ClosedForm({"A": A0, "B": 0.1})
+
+    def edit(x, sx):
+        sx = sx.copy()
+        n = len(fake.calls)
+        if n == 1:
+            sx[:, 1, :] *= 1 + 1e-2
+        elif n >= 3:
+            sx[:, 0, :] *= 1 + 5e-4
+        return x, sx
+
+    fake.edit = edit
+    engine(fake)
+    v = _verdict(_scaled(_decay(_two(tmp_path)), 0, 1 + 2e-3, row=0))
+    assert v["status"] == "diff" and v["n_judged_deeper"] == 1, v
+    assert v["worst_column"] == "dA/dk" and v["diff_not_converged"] is True
 
 
 def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, engine):

@@ -1202,7 +1202,7 @@ class _Level:
         drift_x = spread(d_next_x, d_loose_x, peak_x)
         move_x, _ = differences(x_am, x_ref)
         am_moved = np.where(relevant, moves(move_x, peak_x, atols), 0.0)
-        self.am_x_conv = np.isfinite(move_x) & (am_moved <= TOLERANCE_MOVE)
+        self.am_x_conv = am_moved <= TOLERANCE_MOVE
         drift_x = np.maximum(drift_x, np.where(np.isfinite(move_x), move_x, 0.0))
         self.ratio_x, _ = path_margins(
             d_x, peak_x, atols, rtol, drift_x, np.ones(peak_x.shape, dtype=bool), own=self.x_conv
