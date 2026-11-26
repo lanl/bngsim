@@ -1068,10 +1068,16 @@ def same_as_file(ctx: _Context, name: str, engine: str) -> dict[str, Any] | None
             )
         if hashlib.sha256(data).hexdigest() != sha256:
             return _verdict(name, "skip", note=FILE_CHANGED)
+    import warnings
+
     import bngsim
+    from bngsim._exceptions import ConversionWarning
 
     try:
-        fresh = bngsim.Model.load(path) if path else None
+        with warnings.catch_warnings():
+            # The run's own load warned of what the file's reading leaves out.
+            warnings.simplefilter("ignore", ConversionWarning)
+            fresh = bngsim.Model.load(path) if path else None
     except Exception as e:  # noqa: BLE001
         return _verdict(
             name, "skip", note=f"the model file could not be read again: {_first_line(e)}"
@@ -1128,14 +1134,9 @@ def _second_engine(ctx: _Context) -> dict[str, Any]:
     path = model.get("path")
     try:
         if fmt == "antimony":
-            import warnings
-
             from bngsim._sbml_loader import antimony_file_sbml
 
-            with warnings.catch_warnings():
-                # The load warned of what it left out already.
-                warnings.simplefilter("ignore")
-                sbml = antimony_file_sbml(str(path))
+            sbml = antimony_file_sbml(str(path), warn=False)
             rr = roadrunner.RoadRunner(sbml)
         else:
             rr = roadrunner.RoadRunner(path)

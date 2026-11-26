@@ -3945,15 +3945,22 @@ def _antimony_main_module_sbml(ant, what: str) -> str:
     return ant.getSBMLString(chosen)
 
 
-def antimony_file_sbml(path: str | Path) -> str:
+def antimony_file_sbml(path: str | Path, *, warn: bool = True) -> str:
     """The SBML an Antimony file loads as: Antimony's reading of the file by
     its path (an import resolves against its directory), under a "C"
     ``LC_NUMERIC`` (issue #1235), of the module the loader takes for main
     (issue #1508). :meth:`bngsim.Result.check`'s second engines read the file
-    again through this, so they read the model the load read."""
+    again through this, so they read the model the load read, with *warn*
+    False: the load warned of what it left out already."""
+    import warnings
+
+    from bngsim._exceptions import ConversionWarning
+
     ant = _import_antimony()
     ant.clearPreviousLoads()
-    with _antimony_numbers_in_c_locale():
+    with _antimony_numbers_in_c_locale(), warnings.catch_warnings():
+        if not warn:
+            warnings.simplefilter("ignore", ConversionWarning)
         ret = ant.loadFile(str(path))
         if ret == -1:
             err = ant.getLastError()

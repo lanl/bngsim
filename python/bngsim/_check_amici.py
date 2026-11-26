@@ -260,10 +260,7 @@ def _sbml_text(path: str, fmt: str, sha256: str | None) -> tuple[str | None, str
     from bngsim._sbml_loader import antimony_file_sbml
 
     try:
-        with warnings.catch_warnings():
-            # The load warned of what it left out already.
-            warnings.simplefilter("ignore")
-            return antimony_file_sbml(path), ""
+        return antimony_file_sbml(path, warn=False), ""
     except ImportError:
         return None, "Antimony is not installed, so the model cannot be read again as SBML"
     except Exception as e:  # noqa: BLE001 - a file the load read and this cannot is a skip
@@ -286,6 +283,9 @@ def _xml_text(data: bytes) -> str | None:
         if data.startswith(bom):
             codec = name
             break
+    if codec is None and data[:4] in (b"<\x00?\x00", b"\x00<\x00?"):
+        # UTF-16 with no mark (XML 1.0's Appendix F, as libSBML reads it).
+        codec = "utf-16-le" if data[0] == 0x3C else "utf-16-be"
     if codec is None:
         # With no mark, the declaration is ASCII in any encoding it can name.
         m = _XML_ENCODING.match(data[:200].decode("latin-1"))
@@ -513,9 +513,15 @@ def amici_version(amici: Any) -> tuple[str, str | None]:
 
 
 def _checkout_commit(where: Path) -> str | None:
-    """The commit checked out in the git repository holding *where*, read from
-    its files (no ``git`` run), or None."""
-    for d in (where, *where.parents):
+    """The commit checked out in AMICI's git checkout at *where* (an editable
+    install's source: the checkout itself, or its ``python/sdist``), read from
+    its files (no ``git`` run), or None. A repository *where* only sits in
+    (a source tree unpacked inside another checkout) is not AMICI's, and
+    uncommitted edits are not seen."""
+    roots = [where]
+    if where.name == "sdist" and where.parent.name == "python":
+        roots.append(where.parent.parent)
+    for d in roots:
         git = d / ".git"
         if git.is_file():  # a worktree or submodule: "gitdir: <path>"
             text = git.read_text(encoding="utf-8").strip()

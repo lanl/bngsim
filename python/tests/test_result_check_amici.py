@@ -497,10 +497,17 @@ def test_an_sbml_file_is_read_in_the_encoding_it_declares(tmp_path, engine):
         v = _verdict(_decay(path))
         assert v["status"] == "pass", v
     # UTF-16, with its mark: libSBML is handed the text as UTF-8, and told so.
-    utf16 = ('<?xml version="1.0" encoding="UTF-16"?>' + body).encode("utf-16-le")
-    path = _decay_bytes(tmp_path, codecs.BOM_UTF16_LE + utf16)
-    sbml, why = _check_amici._sbml_text(str(path), "sbml", None)
-    assert sbml is not None and _parameter(sbml, "k") == K0, why
+    declared = '<?xml version="1.0" encoding="UTF-16"?>' + body
+    for data in (
+        codecs.BOM_UTF16_LE + declared.encode("utf-16-le"),
+        codecs.BOM_UTF16_BE + declared.encode("utf-16-be"),
+        # And with no mark, as libSBML reads it too.
+        declared.encode("utf-16-le"),
+        declared.encode("utf-16-be"),
+    ):
+        path = _decay_bytes(tmp_path, data)
+        sbml, why = _check_amici._sbml_text(str(path), "sbml", None)
+        assert sbml is not None and _parameter(sbml, "k") == K0, why
     # Bytes that are not text in the encoding declared: a skip that says so.
     path = _decay_bytes(tmp_path, text.encode("utf-8").replace(b"<sbml", b"<!-- \xff -->\n<sbml"))
     sbml, why = _check_amici._sbml_text(str(path), "sbml", None)
@@ -1080,10 +1087,12 @@ def test_a_state_amici_still_moves_a_decade_tighter_is_not_settled(engine):
     assert v["status"] == "diff" and v["state_diff"] is True, v
     assert v["confirmed_tighter"] is None
     assert "Report it" not in rep["next"]
-    # AMICI's runs at a tenth and a hundredth agreeing, the gap is the reading's.
+    # AMICI's runs at a tenth and a hundredth agreeing, the gap is the reading's,
+    # in the states alone.
     amici_off(5e-2, 5e-2, 5e-2)
     v = _verdict(_decay())
     assert v["status"] == "diff" and v["confirmed_tighter"] is True, v
+    assert v["confirmed_in"] == ["states"]
 
 
 def test_a_species_bngsim_moves_a_decade_tighter_keeps_that_move_as_drift(
@@ -1958,6 +1967,75 @@ def test_next_names_what_holds_a_decade_tighter(monkeypatch, engine):
     assert "this model's forward sensitivities, and still do" in rep["next"], rep["next"]
 
 
+def test_next_names_what_disagrees_where_a_decade_tighter_does_not_settle_it():
+    def said(**verdict):
+        check = dict(name=NAME, status="diff", confirmed_tighter=None, **verdict)
+        return _check._next({"checks": [check]})
+
+    assert "this model's forward sensitivities at the run's" in said(margin=3.0, state_diff=False)
+    assert "this model's trajectory at the run's" in said(margin=0.5, state_diff=True)
+    both = said(margin=3.0, state_diff=True)
+    assert "this model's trajectory and forward sensitivities at the run's" in both
+    # A series not finite in the run has no finite margin: a sensitivity diff.
+    assert "this model's forward sensitivities at" in said(margin=None, state_diff=False)
+
+
+def test_the_files_second_reading_shows_no_warning_the_load_gave(tmp_path, monkeypatch):
+    pytest.importorskip("antimony")
+    from bngsim import _sbml_loader
+
+    path = tmp_path / "stray.ant"
+    path.write_text("y = 2;\nmodel m()\n  J1: A -> ; k*A\n  A = 100; k = 0.5\nend\n")
+    with pytest.warns(ConversionWarning):
+        _sbml_loader.antimony_file_sbml(path)
+        model = Model.load(str(path))
+    r = Simulator(model, method="ode", sensitivity_params=["k"]).run(t_span=(0, 5), n_points=6)
+    ctx = _check._Context(r, r.record, None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConversionWarning)
+        assert _sbml_loader.antimony_file_sbml(path, warn=False)
+        assert _check_amici._sbml_text(str(path), "antimony", None)[0]
+        assert _check.same_as_file(ctx, "second_engine", "libRoadRunner") is None
+    # second_engine asks the same of its reading.
+    asked = []
+    real = _sbml_loader.antimony_file_sbml
+
+    def spy(p, **kw):
+        asked.append(kw)
+        return real(p, **kw)
+
+    monkeypatch.setattr(_sbml_loader, "antimony_file_sbml", spy)
+    pytest.importorskip("roadrunner")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConversionWarning)  # the reruns' own loads
+        r.check(["second_engine"])
+    # (The reruns' loads read it through the same helper, and warn.)
+    assert [kw for kw in asked if kw] == [{"warn": False}]
+
+
+def test_the_sbml_texts_failures_are_named(tmp_path, monkeypatch):
+    path = tmp_path / "none.xml"
+    path.write_text('<?xml version="1.0" encoding="UTF-8"?>\n<a/>\n')
+    assert _check_amici._sbml_text(str(path), "sbml", None) == (
+        None,
+        "libSBML read no model from the file",
+    )
+    bad = tmp_path / "bad.ant"
+    bad.write_text("model m()\n  J1: A -> ; k*\nend\n")
+    sbml, why = _check_amici._sbml_text(str(bad), "antimony", None)
+    assert sbml is None and why.startswith("Antimony could not read the model again: "), why
+    from bngsim import _sbml_loader
+
+    def missing():
+        raise ImportError("No module named 'antimony'")
+
+    monkeypatch.setattr(_sbml_loader, "_import_antimony", missing)
+    assert _check_amici._sbml_text(str(bad), "antimony", None) == (
+        None,
+        "Antimony is not installed, so the model cannot be read again as SBML",
+    )
+
+
 def test_a_state_diff_with_no_series_judged_is_a_diff(engine):
     # AMICI moves 10% and then 5% on dA/dk (no reference at either), and its
     # state is 5% off at every tolerance: no series is judged, the states are.
@@ -2107,12 +2185,24 @@ def test_an_editable_installs_commit_comes_from_its_checkout(monkeypatch, tmp_pa
     (meta / "HEAD").write_text("ref: refs/heads/main\n")
     (meta / "commondir").write_text("../..\n")
     (wt / ".git").write_text(f"gitdir: {meta}\n")
-    record = json.dumps(
-        {"url": (wt / "python" / "sdist").as_uri(), "dir_info": {"editable": True}}
-    )
+    url = (wt / "python" / "sdist").as_uri()
+    record = json.dumps({"url": url, "dir_info": {"editable": True}})
     assert _check_amici.amici_version(amici) == ("1.0.1", other)
     # No checkout: no commit.
     record = json.dumps({"url": (tmp_path / "nowhere").as_uri(), "dir_info": {"editable": True}})
+    assert _check_amici.amici_version(amici) == ("1.0.1", None)
+    # A source tree inside another repository is not AMICI's checkout.
+    inner = repo / "vendor" / "amici" / "python" / "sdist"
+    inner.mkdir(parents=True)
+    record = json.dumps({"url": inner.as_uri(), "dir_info": {"editable": True}})
+    assert _check_amici.amici_version(amici) == ("1.0.1", None)
+    # An install from a local directory, not editable, was built from what the
+    # directory held then, which its HEAD now need not be.
+    record = json.dumps({"url": src.as_uri(), "dir_info": {}})
+    assert _check_amici.amici_version(amici) == ("1.0.1", None)
+    # A .git file that names no gitdir.
+    (wt / ".git").write_text("something else\n")
+    record = json.dumps({"url": url, "dir_info": {"editable": True}})
     assert _check_amici.amici_version(amici) == ("1.0.1", None)
 
 
