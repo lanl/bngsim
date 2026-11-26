@@ -13461,8 +13461,9 @@ def _sensitivity_names_arg(keyword: str, names: Any) -> list[str]:
     if names is None:
         return []
     # An array's truth value is ambiguous (a NumPy array of several names, a
-    # pandas Index); an empty one iterates to no names below.
-    if isinstance(names, str) or not hasattr(names, "__array__"):
+    # pandas Index); an empty one iterates to no names below. A 0-d value (a
+    # NumPy scalar such as np.False_) has one, as `x or []` read it.
+    if getattr(names, "ndim", 0) == 0:
         try:
             empty = not names
         except (TypeError, ValueError):

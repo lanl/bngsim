@@ -683,7 +683,9 @@ def test_a_numpy_string_is_refused_in_plain_words():
     ]
 
 
-@pytest.mark.parametrize("names", [None, "", False, (), [], np.array([])])
+@pytest.mark.parametrize(
+    "names", [None, "", False, (), [], np.array([]), np.False_, np.str_(""), np.array(0)]
+)
 def test_a_false_value_is_no_names_as_on_main(names):
     sim = Simulator(Model.load(CHAIN), sensitivity_params=names)
     assert sim.run(t_span=(0, 1), n_points=2).sensitivities.shape[-1] == 0
