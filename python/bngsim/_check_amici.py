@@ -110,14 +110,14 @@ every series keeping its own move a decade tighter as drift, converged or not.
 Either engine's one move can understate its error, and a model read two ways
 differs as much at any tolerance. So a failing series is the tolerance's where
 a decade tighter it passes, or its gap shrinks to :data:`SHRINK` of what it was
-or less; it is the reading's (``confirmed_tighter``) where it fails there too,
-its gap does not shrink so, and both engines converge it there (bngsim's move
-and AMICI's within :data:`bngsim._check.TOLERANCE_MOVE` of its peak);
-otherwise, as for a series still moving a decade tighter, it is not determined
-(``confirmed_tighter`` None). The verdict is ``diff`` in each case;
-``diff_not_converged`` (the tolerance's) and an undetermined one say to tighten
-the tolerance, the first plainly, the second before reporting it. Where the
-tighter runs cannot be made, it says so.
+or less, AMICI converging it there; it is the reading's (``confirmed_tighter``)
+where it fails there too, its gap does not shrink so, and both engines converge
+it there (bngsim's move and AMICI's within :data:`bngsim._check.TOLERANCE_MOVE`
+of its peak); otherwise, as for a series still moving a decade tighter in
+either engine, it is not determined (``confirmed_tighter`` None). The verdict
+is ``diff`` in each case; ``diff_not_converged`` (the tolerance's) and an
+undetermined one say to tighten the tolerance, the first plainly, the second
+before reporting it. Where the tighter runs cannot be made, it says so.
 
 The states AMICI integrates are compared
 too, species by species, on every path's rule
@@ -1353,22 +1353,23 @@ def _judge(
                 judged=lv.use,
                 withhold=False,
             )
-            # Per series that fails at the run's tolerance:
-            # - the tolerance's where a decade tighter it passes (with its own
-            #   move there as drift), or its gap shrinks to SHRINK or less;
+            # Per series that fails at the run's tolerance, where AMICI is a
+            # reference a decade tighter (lv1.use):
+            # - the tolerance's where it passes there (with its own move there
+            #   as drift), or its gap shrinks to SHRINK or less;
             # - the reading's where it fails there too, its gap does not
             #   shrink so, and both engines converge it there (bngsim's move
             #   and AMICI's at most TOLERANCE_MOVE of its peak): one move
             #   alone can understate an engine's error, and a gap that holds
             #   as both converge does not;
-            # - undetermined otherwise (still moving a decade tighter).
+            # - undetermined otherwise: still moving a decade tighter, in
+            #   either engine.
             with np.errstate(invalid="ignore"):
                 shrinks = np.isfinite(lv1.d) & (lv1.d <= SHRINK * lv.d)
                 shrinks_x = np.isfinite(lv1.d_x) & (lv1.d_x <= SHRINK * lv.d_x)
-            conv1 = lv1.resolved & lv1.converged & ~lv1.no_reference
-            reading = lv.failing & lv1.failing & ~shrinks & conv1
+            reading = lv.failing & lv1.failing & ~shrinks & lv1.resolved & lv1.converged
             reading_x = lv.failing_x & lv1.failing_x & ~shrinks_x & lv1.x_conv
-            tolerance = lv.failing & (~lv1.failing | shrinks)
+            tolerance = lv.failing & lv1.use & (~lv1.failing | shrinks)
             tolerance_x = lv.failing_x & (~lv1.failing_x | shrinks_x)
             if reading.any() or reading_x.any():
                 confirmed = True
@@ -1376,8 +1377,8 @@ def _judge(
                 confirmed = False
             else:
                 unconfirmed = (
-                    "a disagreement neither goes nor holds clearly a decade tighter, where a "
-                    "series it is in is still not converged"
+                    "a disagreement neither goes nor holds clearly a decade tighter: a series "
+                    "it is in still moves there, in bngsim or in AMICI"
                 )
     tolerance_only = lv.diff and confirmed is False
 
@@ -1476,10 +1477,9 @@ def _judge(
 
     score = np.where(use, lv.ratio, 0.0).reshape(-1)
     entry = _check_sensitivity._columns_entry(cols, np.where(use, lv.ratio, -1.0).reshape(-1))
-    gone = set(not_judged)
-    entry["columns"] = [
-        c for c in entry["columns"] if c["name"] not in gone and (c["value"] or 0.0) >= 0.0
-    ]
+    # A column no series of which was judged is left out.
+    judged_columns = {cols.names[j] for j in range(n_cols) if use[:, j].any()}
+    entry["columns"] = [c for c in entry["columns"] if c["name"] in judged_columns]
     extra: dict[str, Any] = {
         "margin": _num(margin),
         **entry,

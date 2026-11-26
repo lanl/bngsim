@@ -268,6 +268,13 @@ def test_all_adds_it_for_a_sensitivity_run_and_the_default_does_not():
 
 def test_without_amici_it_skips_and_says_why(monkeypatch):
     monkeypatch.setitem(sys.modules, "amici", None)
+
+    def not_reached(*a, **kw):
+        raise AssertionError("the model file was read again with no AMICI to read it")
+
+    # Without AMICI the model file is not read again.
+    monkeypatch.setattr(_check, "same_as_file", not_reached)
+    monkeypatch.setattr(_check_amici, "_sbml_text", not_reached)
     rep = _decay().check(["sensitivity", NAME])
     v = _by_name(rep)[NAME]
     assert v["status"] == "skip"
@@ -775,22 +782,42 @@ def test_a_budget_spent_before_the_tighter_run_says_so(monkeypatch, engine):
     assert "raised RuntimeError: the solver gave up" in v["note"]
 
 
-def _off_by_tolerance(monkeypatch, offsets, row=None):
-    """Every bngsim solve's dA/dk (or one series of it) off by *offsets*:
-    ``(at the run's rtol, at a tenth, at a hundredth)``, the looser run as the
-    run."""
+def _off_by_tolerance(monkeypatch, offsets, row=None, *, states=False):
+    """Every bngsim solve's dA/dk (or one series of it; or with *states* one
+    species' state) off by *offsets*: ``(at the run's rtol, at a tenth, at a
+    hundredth)``, the looser run as the run. *offsets* may be a dict of a row
+    to its offsets."""
     real = Simulator.run
     base = _decay().record["run"]["rtol"]
+    by_row = offsets if isinstance(offsets, dict) else {row: offsets}
 
     def run(self, *a, **kw):
         out = real(self, *a, **kw)
         if not len(out._sensitivity_params):
             return out
         rtol = kw.get("rtol") or base
-        off = offsets[0] if rtol > base / 5 else (offsets[1] if rtol > base / 50 else offsets[2])
-        return _scaled(out, 0, 1 + off, row=row)
+        level = 0 if rtol > base / 5 else (1 if rtol > base / 50 else 2)
+        for i, offs in by_row.items():
+            if states:
+                out = copy.copy(out)
+                x = np.asarray(out._species, dtype=float).copy()
+                x[:, i] *= 1 + offs[level]
+                out._species = x
+            else:
+                out = _scaled(out, 0, 1 + offs[level], row=i)
+        return out
 
     monkeypatch.setattr(Simulator, "run", run)
+
+
+def _two(tmp_path, a=A0, b=0.1):
+    """Two species, A and B, each decaying at k."""
+    return _write_sbml(
+        tmp_path / "two.xml",
+        species=[("A", a, False), ("B", b, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
+    )
 
 
 def test_a_gap_that_holds_where_bngsim_converges_is_the_readings(monkeypatch, engine):
@@ -812,6 +839,52 @@ def test_a_gap_that_neither_goes_nor_holds_converged_is_not_settled(monkeypatch,
     assert "did not settle whose it is" in rep["next"]
 
 
+def test_a_gap_that_shrinks_to_half_a_decade_tighter_is_the_tolerances(monkeypatch, engine):
+    # dA/dk off by 4%, 1.5% and 1.45%: it fails a decade tighter too, where
+    # bngsim converges, but its gap is under half what it was.
+    _off_by_tolerance(monkeypatch, (4e-2, 1.5e-2, 1.45e-2))
+    v = _verdict(_decay())
+    assert v["status"] == "diff" and v["confirmed_tighter"] is False, v
+    assert v["diff_not_converged"] is True
+
+
+def test_one_series_the_tolerances_and_one_not_settled_is_not_settled(
+    tmp_path, monkeypatch, engine
+):
+    # dA/dk off in the run alone (the tolerance's); dB/dk off by 4%, 3% and
+    # 2.8% (not settled): the diff is not the tolerance's alone.
+    engine(_ClosedForm({"A": A0, "B": 0.1}))
+    _off_by_tolerance(monkeypatch, {0: (5e-3, 0.0, 0.0), 1: (4e-2, 3e-2, 2.8e-2)})
+    v = _verdict(_decay(_two(tmp_path)))
+    assert v["status"] == "diff" and v["confirmed_tighter"] is None, v
+    assert v["diff_not_converged"] is False
+
+
+def test_a_series_amici_does_not_converge_a_decade_tighter_is_not_settled(monkeypatch, engine):
+    # bngsim's dA/dk twice the truth in every solve; AMICI exact at the run's
+    # tolerance and at a tenth of it, and 0.5% off at a hundredth, so no
+    # reference a decade tighter: the diff is not the tolerance's.
+    fake = _ClosedForm({"A": A0})
+    fake.edit = lambda x, sx: (x, sx * (1 + (5e-3 if len(fake.calls) == 3 else 0.0)))
+    engine(fake)
+    _loader_moves_k_twice(monkeypatch)
+    rep = _decay().check([NAME])
+    (v,) = rep["checks"]
+    assert v["status"] == "diff" and v["confirmed_tighter"] is None, v
+    assert v["diff_not_converged"] is False
+    assert "still moves there, in bngsim or in AMICI" in v["note"]
+
+
+def test_a_state_still_moving_a_decade_tighter_is_not_settled(tmp_path, monkeypatch, engine):
+    # A's state off by 10%, 9.5% and 9.3%: past ten times its move at both
+    # levels, its gap not halved, and bngsim still moving it a decade tighter.
+    engine(_ClosedForm({"A": A0, "B": 0.1}))
+    _off_by_tolerance(monkeypatch, (0.1, 0.095, 0.093), row=0, states=True)
+    v = _verdict(_decay(_two(tmp_path)))
+    assert v["status"] == "diff" and v["state_diff"] is True, v
+    assert v["confirmed_tighter"] is None
+
+
 def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, engine):
     # dB/dk off by +2e-3 of its peak at the run's tolerance, -2e-3 a decade
     # tighter and +2e-3 two: an error that does not shrink, which the
@@ -828,6 +901,31 @@ def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, e
     assert by["sensitivity"]["status"] == "pass" and by["sensitivity"]["n_floor_held"] == 1
     v = by[NAME]
     assert v["status"] == "pass" and v["floor_held"] == ["dB/dk"], v
+
+    def amici_moves_b(*offs):
+        """AMICI's dB/dk off by *offs* at the run's tolerance, a tenth and a
+        hundredth of it."""
+        fake = _ClosedForm({"A": 1000.0, "B": 1.0})
+
+        def edit(x, sx):
+            sx = sx.copy()
+            sx[:, 1, :] *= 1 + offs[min(len(fake.calls), 3) - 1]
+            return x, sx
+
+        fake.edit = edit
+        return engine(fake)
+
+    # Judged against AMICI at a hundredth, it keeps its move there too; with
+    # no reference at either, it is not judged, and not named as judged.
+    amici_moves_b(1e-2, 0.0, 0.0)
+    v = _verdict(_decay(path))
+    assert v["status"] == "pass" and v["floor_held"] == ["dB/dk"], v
+    assert v["n_judged_deeper"] == 1 and v["no_reference"] == []
+    amici_moves_b(1e-2, 5e-3, 0.0)
+    v = _verdict(_decay(path))
+    assert v["status"] == "pass" and v["floor_held"] == [], v
+    assert v["n_judged_deeper"] == 0 and v["no_reference"] == ["dB/dk"]
+    assert [c["name"] for c in v["columns"]] == ["k"]
 
 
 def test_a_diff_that_cannot_be_compared_tighter_says_so(engine):
@@ -1397,6 +1495,22 @@ def test_a_compartment_column_is_named_as_one(tmp_path, engine):
     )
     v = _verdict(r)
     assert v["not_judged"] == {"C": "a compartment's size, which AMICI holds as no free parameter"}
+    # A name of bngsim's own (here a rate law in amount per time it names) is
+    # no parameter of the file.
+    path = _write_sbml(
+        tmp_path / "law.xml",
+        species=[("A", A0, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {})],
+        size=2.0,
+    )
+    assert "_rateLaw_J1" in Model.load(str(path)).param_names
+    r = Simulator(
+        Model.load(str(path)), method="ode", sensitivity_params=["k", "_rateLaw_J1"]
+    ).run(t_span=(0, 5), n_points=6)
+    v = _verdict(r)
+    own = "not a parameter of the file (a name of bngsim's own)"
+    assert v["not_judged"] == {"_rateLaw_J1": own}
 
 
 def test_ids_are_matched_without_guessing():
