@@ -630,11 +630,21 @@ class _Context:
             raise _Out
         return left
 
-    def rerun(self, **changes: Any) -> Result:
+    def _budget_bound(self, changes: dict[str, Any]) -> bool:
+        """Set the rerun's timeout to the budget left (or the run's own, where
+        that is shorter); whether the budget is the limit it runs to."""
         left = self._left()
-        if left is not None:
-            own = self.run.get("timeout")
-            changes["timeout"] = left if own is None else min(left, float(own))
+        if left is None:
+            return False
+        own = self.run.get("timeout")
+        if own is not None and float(own) < left:
+            changes["timeout"] = float(own)
+            return False
+        changes["timeout"] = left
+        return True
+
+    def rerun(self, **changes: Any) -> Result:
+        bound = self._budget_bound(changes)
         try:
             with warnings.catch_warnings():
                 # A rerun's steps where t + h == t are the check's to judge, not
@@ -643,7 +653,9 @@ class _Context:
                 warnings.simplefilter("ignore", RoundoffStepWarning)
                 return self.result.rerun(**changes)
         except Exception as e:
-            if self.deadline is not None and _timed_out(e):
+            # Past the run's own timeout, a rerun raises as the run would have:
+            # the budget did not run out (issue #1967's review).
+            if bound and _timed_out(e):
                 raise _Out from e
             raise
 
@@ -651,14 +663,11 @@ class _Context:
         """:func:`bngsim._rerun.perturbed`, within the budget as :meth:`rerun`."""
         from bngsim import _rerun
 
-        left = self._left()
-        if left is not None:
-            own = self.run.get("timeout")
-            changes["timeout"] = left if own is None else min(left, float(own))
+        bound = self._budget_bound(changes)
         try:
             return _rerun.perturbed(self.result, **changes)
         except Exception as e:
-            if self.deadline is not None and _timed_out(e):
+            if bound and _timed_out(e):
                 raise _Out from e
             raise
 

@@ -969,6 +969,26 @@ def test_a_budget_spent_before_the_tighter_run_says_so(monkeypatch, engine):
     assert "raised RuntimeError: the solver gave up" in v["note"]
 
 
+def test_a_run_at_a_hundredth_that_raised_is_not_tried_again(monkeypatch, engine):
+    # The tolerance check tries it first and it raises; the diff here stands,
+    # unconfirmed, with that reason, and the run is not made a second time.
+    tried = []
+    real = _check._Context.rerun
+
+    def rerun(self, **changes):
+        if changes.get("rtol", 1.0) < self.rtol / 50:
+            tried.append(changes["rtol"])
+            raise RuntimeError("the solver gave up")
+        return real(self, **changes)
+
+    _loader_moves_k_twice(monkeypatch)
+    monkeypatch.setattr(_check._Context, "rerun", rerun)
+    v = _verdict(_decay(), "tolerance")
+    assert v["status"] == "diff" and v["confirmed_tighter"] is None, v
+    assert "raised RuntimeError: the solver gave up" in v["note"]
+    assert len(tried) == 1, tried
+
+
 def _off_by_tolerance(monkeypatch, offsets, row=None, *, states=False):
     """Every bngsim solve's dA/dk (or one series of it; or with *states* one
     species' state) off by *offsets*: ``(at the run's rtol, at a tenth, at a

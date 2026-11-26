@@ -378,58 +378,75 @@ def _on_column(cols: _Columns, d: NDArray[np.float64]) -> NDArray[np.float64]:
 
 
 def _tier1(
-    ctx: _Context, cols: _Columns
+    ctx: _Context, cols: _Columns, *, hundredfold: bool = False
 ) -> tuple[NDArray[np.float64], NDArray[np.bool_], NDArray[np.float64], NDArray[np.bool_]]:
     """Each series' move, the larger of its moves to the tenfold and the
     hundredfold tighter runs (a series a floor holds read on its column's
     largest peak); which series the run resolves; each series' largest
     difference at the tenfold one; and which a floor holds (:func:`_floor_held`).
-    Made once. Where the hundredfold run raises, or the budget runs out before
-    it, the tenfold move is the move (``ctx.tight100_error`` says why it
-    raised, and ``ctx.sens_100_out`` marks the budget, which makes the
-    ``"sensitivity"`` verdict a timeout); but where a series it would tell from
-    a floor is past the bound, a budget that runs out raises
-    :class:`bngsim._check._Out`, as no move of it can be judged."""
-    if ctx.sens_drift is None:
-        assert ctx.tight is not None
-        move10, keep, d10 = _moves(cols, _block(ctx.tight))
+    Made once (and again for *hundredfold* where it was made without that run).
+
+    With *hundredfold* (the ``"sensitivity"`` check, which judges by it) the
+    run at a hundredth is made where it was not; the other tiers read it where
+    the tolerance check made it, and make it only where a series a floor may
+    hold needs it. Where it raises, the tenfold move is the move (and
+    ``ctx.tight100_error`` says why). Where the budget runs out before it,
+    ``ctx.sens_100_out`` marks it for the ``"sensitivity"`` check, which is then
+    a timeout; for another tier, where a series a floor may hold needs it,
+    :class:`bngsim._check._Out` is raised, as no move of that series can be
+    judged."""
+    if ctx.sens_drift is not None and not (
+        hundredfold
+        and ctx.sens_moves[1] is None
+        and not ctx.tight100_error
+        and not ctx.sens_100_out
+    ):
+        cached: tuple[
+            NDArray[np.float64], NDArray[np.bool_], NDArray[np.float64], NDArray[np.bool_]
+        ] = ctx.sens_drift
+        return cached
+    assert ctx.tight is not None
+    move10, keep, d10 = _moves(cols, _block(ctx.tight))
+    live = ~cols.refused.reshape(-1)
+    # Past the bound at rtol/10, by about a floor: a series a floor may hold.
+    maybe_floor = (
+        live
+        & keep
+        & np.isfinite(move10)
+        & (move10 > TOLERANCE_MOVE)
+        & (d10 <= TRACE_ATOLS * cols.atol.reshape(-1))
+    )
+    tight100: Result | None = ctx.tight100
+    if hundredfold or maybe_floor.any():
         try:
             tight100 = _hundredfold(ctx)
         except _Out:
-            live = ~cols.refused.reshape(-1)
-            could_be_held = (
-                live
-                & keep
-                & np.isfinite(move10)
-                & (move10 > TOLERANCE_MOVE)
-                & (d10 <= TRACE_ATOLS * cols.atol.reshape(-1))
-            )
-            if could_be_held.any():
+            if not hundredfold:
                 raise
             ctx.sens_100_out = True
             tight100 = None
-        move100: NDArray[np.float64] | None = None
-        d100: NDArray[np.float64] | None = None
-        if tight100 is not None:
-            try:
-                move100, _, d100 = _moves(cols, _block(tight100))
-            except ValueError:
-                move100 = d100 = None
-        # An error about the same at rtol and at rtol/10 moves little between
-        # them, and is seen at rtol/100 (issue #1967).
-        move = move10 if move100 is None else np.maximum(move10, move100)
-        d_far = d10 if d100 is None else np.maximum(d10, d100)
-        live = ~cols.refused.reshape(-1)
-        held = _floor_held(ctx, cols, move, d10, d_far, live & keep)
-        if held.any():
-            # Read on its column's largest peak, as a series the run does not
-            # resolve is: the arithmetic, not the tolerance, holds it.
-            move = np.where(held, _on_column(cols, d_far), move)
-            move10 = np.where(held, _on_column(cols, d10), move10)
-            if move100 is not None and d100 is not None:
-                move100 = np.where(held, _on_column(cols, d100), move100)
-        ctx.sens_drift = (move, keep, d10, held)
-        ctx.sens_moves = (move10, move100)
+    move100: NDArray[np.float64] | None = None
+    d100: NDArray[np.float64] | None = None
+    if tight100 is not None:
+        try:
+            move100, _, d100 = _moves(cols, _block(tight100))
+        except ValueError:
+            ctx.tight100_error = "its sensitivities do not line up with the run's"
+            move100 = d100 = None
+    # An error about the same at rtol and at rtol/10 moves little between
+    # them, and is seen at rtol/100 (issue #1967).
+    move = move10 if move100 is None else np.maximum(move10, move100)
+    d_far = d10 if d100 is None else np.maximum(d10, d100)
+    held = _floor_held(ctx, cols, move10, d10, d_far, live & keep, tight100)
+    if held.any():
+        # Read on its column's largest peak, as a series the run does not
+        # resolve is: the arithmetic, not the tolerance, holds it.
+        move = np.where(held, _on_column(cols, d_far), move)
+        move10 = np.where(held, _on_column(cols, d10), move10)
+        if move100 is not None and d100 is not None:
+            move100 = np.where(held, _on_column(cols, d100), move100)
+    ctx.sens_drift = (move, keep, d10, held)
+    ctx.sens_moves = (move10, move100)
     out: tuple[NDArray[np.float64], NDArray[np.bool_], NDArray[np.float64], NDArray[np.bool_]] = (
         ctx.sens_drift
     )
@@ -453,7 +470,7 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
         )
     cols = _context(ctx)
     try:
-        move, keep, _, held = _tier1(ctx, cols)
+        move, keep, _, held = _tier1(ctx, cols, hundredfold=True)
         if ctx.sens_100_out:
             raise _Out
     except _Out:
@@ -473,7 +490,7 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
     move10, move100 = ctx.sens_moves
     value_10 = float(move10.max()) if move10.size else 0.0
     value_100 = None if move100 is None else (float(move100.max()) if move100.size else 0.0)
-    if value_100 is None:  # the run at rtol/100 raised
+    if value_100 is None:  # the run at rtol/100 raised, or did not line up
         note = (
             f"the sensitivities move by {value:.2e} of a series' scale at rtol/10 and "
             f"atol/10 (bound {TOLERANCE_MOVE:g}), over {n_series} series of "
@@ -524,13 +541,16 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
 def _floor_held(
     ctx: _Context,
     cols: _Columns,
-    move: NDArray[np.float64],
+    move10: NDArray[np.float64],
     d10: NDArray[np.float64],
     d_far: NDArray[np.float64],
     candidates: NDArray[np.bool_],
+    tight100: Result | None,
 ) -> NDArray[np.bool_]:
-    """The series past the bound that a floor holds, not the tolerance. Both
-    of two signs are needed:
+    """The series past the bound at rtol/10 that a floor holds, not the
+    tolerance. A floor's error shows at every tolerance alike, so a series past
+    the bound only at rtol/100 is not a floor's: its error is about the same at
+    rtol and rtol/10 (issue #1967). Both of two signs are needed:
 
     - The move is about the size of a floor: its larger difference, to the
       tenfold or the hundredfold tighter run, is within :data:`TRACE_ATOLS` of
@@ -552,15 +572,15 @@ def _floor_held(
     floor it set (issue #177's) is therefore not told from the tolerance, and
     its move is judged on the series' own peak. Where the hundredfold run
     raised, no floor is told apart, and the move stands."""
-    out = np.zeros(move.shape, dtype=bool)
-    over = candidates & np.isfinite(move) & (move > TOLERANCE_MOVE)
+    out = np.zeros(move10.shape, dtype=bool)
+    over = candidates & np.isfinite(move10) & (move10 > TOLERANCE_MOVE)
     if over.any():
         over &= d_far <= TRACE_ATOLS * cols.atol.reshape(-1)
-    if not over.any() or ctx.tight100 is None:
+    if not over.any() or tight100 is None:
         return out
     assert ctx.tight is not None
     try:
-        d, _ = differences(cols.flat(_block(ctx.tight100)), cols.flat(_block(ctx.tight)))
+        d, _ = differences(cols.flat(_block(tight100)), cols.flat(_block(ctx.tight)))
     except ValueError:
         return out
     return over & np.isfinite(d) & (d >= FLOOR_SHARE * d10)
