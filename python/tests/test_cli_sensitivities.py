@@ -535,8 +535,8 @@ def test_the_command_points_at_the_model_s_own_spelling_and_quotes_it(tmp_path):
 @pytest.mark.parametrize(
     "names, says",
     [
-        ({"k1": 1.0}, "not a dict"),
         (3, "not a int"),
+        (True, "not a bool"),
         (b"k1", "not a bytes"),
         (np.array("k1"), "not the 0-d array"),
     ],
@@ -549,8 +549,17 @@ def test_simulator_refuses_names_that_are_not_a_list(names, says):
     assert says in str(e.value)
 
 
-@pytest.mark.parametrize("names", [{"k1"}, frozenset({"k1"})])
-def test_simulator_takes_a_set_as_main_did(names):
+class _OldSequence:
+    """A sequence by ``__getitem__`` alone, which ``iter()`` walks."""
+
+    def __getitem__(self, i: int) -> str:
+        if i:
+            raise IndexError(i)
+        return "k1"
+
+
+@pytest.mark.parametrize("names", [{"k1"}, frozenset({"k1"}), {"k1": 1.0}, _OldSequence()])
+def test_simulator_takes_what_main_took(names):
     r = Simulator(Model.load(CHAIN), sensitivity_params=names).run(t_span=(0, 1), n_points=2)
     assert list(r.sensitivity_params) == ["k1"]
 
@@ -672,3 +681,41 @@ def test_a_numpy_string_is_refused_in_plain_words():
     assert e.value.remedies == [
         {"kind": "pass_argument", "argument": "sensitivity_params", "value": ["k1"]}
     ]
+
+
+@pytest.mark.parametrize("names", [None, "", False, (), [], np.array([])])
+def test_a_false_value_is_no_names_as_on_main(names):
+    sim = Simulator(Model.load(CHAIN), sensitivity_params=names)
+    assert sim.run(t_span=(0, 1), n_points=2).sensitivities.shape[-1] == 0
+
+
+def test_steady_state_takes_a_dict_s_keys_as_main_did():
+    ss = Simulator(Model.load(CHAIN)).steady_state(sensitivity_params={"k1": 1.0})
+    assert list(ss.sensitivity_params) == ["k1"]
+
+
+_TIGHTER_RAISES = """
+import bngsim
+S = bngsim.Simulator
+run = S.run
+def tighter_raises(self, *a, **kw):
+    if kw.get("rtol") is not None and kw["rtol"] < 1e-8:
+        raise bngsim.SimulationError("CVODE failed with flag=-4 at the tighter tolerance")
+    return run(self, *a, **kw)
+S.run = tighter_raises
+"""
+
+
+def test_check_reports_a_tighter_run_that_raises_and_exits_6():
+    # The run is right; the tenfold tighter rerun both checks need raises.
+    # "sensitivity" reads it as an exception, "sensitivity_fd" as no base to
+    # build a difference quotient on.
+    d = _json(
+        _bngsim(
+            "check", DECAY, *_WINDOW, "--sensitivity-params", "k", "--checks",
+            "sensitivity,sensitivity_fd", "--json", script=_TIGHTER_RAISES,
+        ),
+        _cli.EXIT_CHECK_FAILED,
+    )  # fmt: skip
+    by_name = {c["name"]: c["status"] for c in d["check"]["checks"]}
+    assert by_name == {"sensitivity": "exception", "sensitivity_fd": "no_base"}, d["check"]

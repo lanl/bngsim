@@ -972,8 +972,8 @@ class Simulator:
         A name the model does not have raises :class:`ParameterError`
         (``param.not_found``) here, with its close matches, not once the run
         starts. A species is pointed at ``sensitivity_ic``. One name given as a
-        string, bytes or a dict raises :class:`ArgumentTypeError`; any other
-        iterable of names is taken in the order it iterates.
+        string raises :class:`ArgumentTypeError`, as do bytes and a value that
+        does not iterate; anything else that iterates is taken in its order.
 
     sensitivity_ic : list[str], optional
         Species names to integrate forward initial-condition
@@ -1261,9 +1261,9 @@ class Simulator:
         # bngsim.examples.path() hands out a Path, which the network-free cores
         # refused with a raw pybind11 TypeError (issue #1924).
         xml_path = _xml_path_arg(xml_path)
-        # A string or a dict met a raw TypeError from the engine's binding at the
-        # run, and a NumPy array of names a ValueError from `x or []` here
-        # (issue #1925): each is a list of names from here on.
+        # A string met a raw TypeError from the engine's binding at the run, and
+        # a NumPy array of names a ValueError from `x or []` here (issue
+        # #1925): each is a list of names from here on.
         sensitivity_params = _sensitivity_names_arg("sensitivity_params", sensitivity_params)
         sensitivity_ic = _sensitivity_names_arg("sensitivity_ic", sensitivity_ic)
         # Normalize the user-facing method token before backend dispatch.
@@ -13448,16 +13448,27 @@ def _expression_names(tree: ast.Expression) -> tuple[frozenset[str], frozenset[s
     return frozenset(loads), frozenset(binds)
 
 
-def _sensitivity_names_arg(keyword: str, names: object) -> list[str]:
+def _sensitivity_names_arg(keyword: str, names: Any) -> list[str]:
     """``sensitivity_params`` or ``sensitivity_ic`` as a list of names (issue
-    #1925). ``None`` is no names. One name given as a string, which reached
-    the engine's binding as a raw ``TypeError`` (``steady_state`` read it as
-    one-letter names), bytes, a dict, and anything that does not iterate are
-    refused, and so is an entry that is not a string. Any other iterable of
-    strings (a tuple, a set as main took it, a generator, a NumPy array of
-    names) is taken in the order it iterates."""
+    #1925), refusing only what no call took on main. ``None``, and any value
+    that is false (``""``, ``()``), is no names, as ``names or []`` read it.
+    One name given as a string reached the engine's binding as a raw
+    ``TypeError`` (``steady_state`` read it as one-letter names), and bytes,
+    a 0-d NumPy array and anything that does not iterate failed too: each is
+    refused, and so is an entry that is not a string. Anything else that
+    iterates (a tuple, a set, a dict's keys, a generator, a NumPy array of
+    names, a class with ``__getitem__``) is taken in the order it iterates."""
     if names is None:
         return []
+    # An array's truth value is ambiguous (a NumPy array of several names, a
+    # pandas Index); an empty one iterates to no names below.
+    if isinstance(names, str) or not hasattr(names, "__array__"):
+        try:
+            empty = not names
+        except (TypeError, ValueError):
+            empty = False
+        if empty:
+            return []
     if isinstance(names, str):
         name = str(names)  # a NumPy string prints as np.str_('k')
         raise ArgumentTypeError(
@@ -13465,17 +13476,21 @@ def _sensitivity_names_arg(keyword: str, names: object) -> list[str]:
             details={"argument": keyword, "value": name},
             remedies=[pass_argument(keyword, [name])],
         )
-    if isinstance(names, bytes | dict) or not isinstance(names, Iterable):
-        raise ArgumentTypeError(
-            f"{keyword} takes a list of names, not a {type(names).__name__}",
-            details={"argument": keyword, "value": repr(names)},
-        )
-    if getattr(names, "shape", None) == ():  # a 0-d NumPy array: Iterable, does not iterate
+    if getattr(names, "shape", None) == ():  # a 0-d NumPy array, which does not iterate
         raise ArgumentTypeError(
             f"{keyword} takes a list of names, not the 0-d array {names!r}",
             details={"argument": keyword, "value": repr(names)},
         )
-    out = list(names)
+    try:
+        it = None if isinstance(names, bytes) else iter(names)
+    except TypeError:
+        it = None
+    if it is None:
+        raise ArgumentTypeError(
+            f"{keyword} takes a list of names, not a {type(names).__name__}",
+            details={"argument": keyword, "value": repr(names)},
+        )
+    out = list(it)
     for name in out:
         if not isinstance(name, str):
             raise ArgumentTypeError(
