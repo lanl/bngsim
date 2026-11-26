@@ -273,12 +273,15 @@ def _skip(ctx: _Context, name: str) -> dict[str, Any] | None:
 
 
 def _moves(
-    cols: _Columns, x: NDArray[np.float64]
+    cols: _Columns, x: NDArray[np.float64], between: NDArray[np.float64] | None = None
 ) -> tuple[NDArray[np.float64], NDArray[np.bool_], NDArray[np.float64]]:
     """Each series' move from the run's in *x* (as :func:`bngsim._check.moves`
     on its own peak and floor, or for a series the run does not resolve, its
     move past :data:`TRACE_ATOLS` floors on its column's largest peak), which
-    series the run resolves, and each series' largest difference."""
+    series the run resolves, and each series' largest difference. With
+    *between*, each series' peak between the run's points, a resolved series'
+    move is read on the larger of that and its peak at the points (issue
+    #1926)."""
     n_sp, n_cols = cols.atol.shape
     d, peak = differences(cols.flat(x), cols.flat(cols.S))
     atol = cols.atol.reshape(-1)
@@ -290,7 +293,8 @@ def _moves(
         trace = np.where(
             scale > 0, over / np.where(scale > 0, scale, 1.0), np.where(over > 0, np.inf, 0.0)
         )
-    move = np.where(keep, moves(d, peak, atol), np.where(np.isinf(d), np.inf, trace))
+    own = peak if between is None else np.maximum(peak, between)
+    move = np.where(keep, moves(d, own, atol), np.where(np.isinf(d), np.inf, trace))
     # A value the run gives as not finite is a finding, wherever the rerun
     # agrees with it, unless the run refuses the row by design.
     nonfinite = (
@@ -435,6 +439,23 @@ def _tier1(
         except ValueError:
             ctx.tight100_error = "its sensitivities do not line up with the run's"
             move100 = d100 = None
+    # A series whose points all fall on or near its zeros has a peak there
+    # about its integration error, and moves past the bound on it however right
+    # the run is (issue #1926): it is judged on its peak between the points
+    # too, on the grid check's run at GRID_FACTOR times the points.
+    past = (live & keep) & (
+        (move10 > TOLERANCE_MOVE) | (move100 is not None and (move100 > TOLERANCE_MOVE))
+    )
+    n_between = 0
+    if past.any():
+        between = ctx.peak_between(lambda r: cols.flat(_block(r)))
+        if between is not None and between.shape == move10.shape:
+            move10, _, _ = _moves(cols, _block(ctx.tight), between)
+            if move100 is not None and tight100 is not None:
+                move100, _, _ = _moves(cols, _block(tight100), between)
+            later = move10 if move100 is None else np.maximum(move10, move100)
+            n_between = int((past & (later <= TOLERANCE_MOVE)).sum())
+    ctx.sens_between = n_between
     # An error about the same at rtol and at rtol/10 moves little between
     # them, and is seen at rtol/100 (issue #1967).
     move = move10 if move100 is None else np.maximum(move10, move100)
@@ -523,6 +544,11 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
     n_refused = int((~live).sum())
     if n_refused:
         note += f"; {n_refused} series not finite in the run by design, not judged"
+    if ctx.sens_between:
+        note += (
+            f"; {ctx.sens_between} series past the bound on their peak at the run's points, "
+            "within it on their peak between them (the grid check's run)"
+        )
     named = _named(cols, trace | held)
     extra: dict[str, Any] = {
         "bound": TOLERANCE_MOVE,
@@ -533,6 +559,7 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
         "n_not_resolved": n_trace + n_held,
         "not_resolved": named[:MAX_NAMED],
         "n_floor_held": n_held,
+        "n_between": ctx.sens_between,
         "n_refused": n_refused,
     }
     return _verdict(
