@@ -202,6 +202,9 @@ end
         # much at every tolerance, 2e-3 of its peak or 18 of that floor. A
         # floor holds it, and on its column's scale it is noise.
         (1e12, 1, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "pass", ["dB/dk"]),
+        # And one that moves past the bound to rtol/100 on its own scale too:
+        # read on its column, both moves are noise there.
+        (1e12, 1, {-8: 3e-3, -9: -2e-3, -10: 1e-3}, "pass", ["dB/dk"]),
         # At A = 1e11 the floor is ten times smaller and the same error about
         # 180 floors: past the 100 a floor's move is within.
         (1e11, 1, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "diff", []),
@@ -218,6 +221,17 @@ end
         # And one that barely moves at rtol/10 and then drops, as #1962's
         # series do: its second move is larger than its first.
         (1000.0, 1, {-8: 5e-3, -9: 3e-3, -10: 2e-4}, "diff", []),
+        # One the same at rtol and rtol/10, gone at rtol/100: its move at
+        # rtol/10 is under the bound, its move to rtol/100 ten times it (#1967).
+        (1000.0, 1, {-8: 5e-3, -9: 4.5e-3, -10: 0.0}, "diff", []),
+        # The floor's size is read on the larger move: at A = 1e12 an error 9
+        # floors between rtol and rtol/10 and 138 to rtol/100 is no floor's.
+        (1e12, 1, {-8: 1e-2, -9: 8e-3, -10: -2e-2}, "diff", []),
+        # Nor is one past the bound only at rtol/100, though within 100 floors
+        # (#1967); and three runs cannot tell that from a floor's noise whose
+        # sign agrees at rtol and rtol/10, which is taken for the error too.
+        (1e12, 1, {-8: 5e-3, -9: 4.95e-3, -10: 0.0}, "diff", []),
+        (1e12, 1, {-8: 2e-3, -9: 2e-3, -10: -2e-3}, "diff", []),
     ],
 )
 def test_a_series_a_floor_holds_is_named_and_judged_on_its_column(
@@ -245,6 +259,8 @@ def test_a_series_a_floor_holds_is_named_and_judged_on_its_column(
     assert v["status"] == status, v
     assert v["n_floor_held"] == len(held)
     assert all(h in v["not_resolved"] for h in held)
+    if held:
+        assert v["value_10"] <= _check.TOLERANCE_MOVE and v["value_100"] <= _check.TOLERANCE_MOVE
     if status == "pass":
         # The quotient reads a floor-held series' move as its drift too.
         assert by["sensitivity_fd"]["status"] == "pass", by["sensitivity_fd"]
@@ -271,6 +287,187 @@ def test_a_series_converging_slowly_is_not_read_as_held_by_a_floor(rtol):
     # 9.9e-8 it is 1.5 to 3 times it, and a different step sequence moves it).
     if rtol >= 1e-7:
         assert v["status"] == "diff", v
+
+
+@pytest.mark.parametrize("rtol", [5.151e-9, 1.314e-8])
+def test_a_series_whose_error_is_flat_over_the_first_decade_is_found_at_the_second(rtol):
+    # Issue #1967: at these rtols BIOMD0000000810's IL2 and T_H1 gamma_C
+    # series are 0.8% to 0.9% off against a run at rtol 1e-12, but move only
+    # 5e-4 to 8e-4 of their peaks at rtol/10: their error is about the same
+    # there. To rtol/100 they move 7e-3 to 9e-3, seven to nine times the bound.
+    path = Path(__file__).resolve().parents[2] / "tests" / "data" / "BIOMD0000000810.xml"
+    params = ["gamma_C", "delta_Treg", "myu_TcS", "k6", "tck"]
+    r = Simulator(Model.load(path), method="ode", sensitivity_params=params).run(
+        t_span=(0, 500), n_points=21, rtol=rtol
+    )
+    # The two moves themselves swing with the step sequence (a 1e-6 change of
+    # rtol moves value_10 fivefold); the verdict holds, and the synthetic case
+    # in the floor test pins the mechanism.
+    v = _by_name(r.check(["sensitivity"]))["sensitivity"]
+    assert v["status"] == "diff", v
+
+
+def test_a_budget_that_runs_out_before_rtol_100_is_a_timeout(monkeypatch):
+    # Without the run at rtol/100 an error flat over the first decade is not
+    # seen: the check does not pass what it could not judge.
+    real = _check._Context.rerun
+
+    def rerun(self, **changes):
+        if changes.get("rtol", 1.0) < self.rtol / 50:
+            raise _check._Out
+        return real(self, **changes)
+
+    monkeypatch.setattr(_check._Context, "rerun", rerun)
+    rep = _decay().check(["sensitivity"])
+    v = rep["checks"][0]
+    assert v["status"] == "timeout" and "rtol/100" in v["note"] and rep["ok"] is False, v
+
+
+def test_a_run_at_rtol_100_that_raises_leaves_the_tenfold_verdict(monkeypatch):
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        if changes.get("rtol", 1.0) < 5e-10:
+            from bngsim._exceptions import SimulationError
+
+            raise SimulationError("did not converge", code="sim.failed")
+        return real(self, **changes)
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    v = _by_name(_decay().check(["sensitivity"]))["sensitivity"]
+    assert v["status"] == "pass" and v["value_100"] is None, v
+    assert "rtol/100" in v["note"] and "SimulationError" in v["note"], v
+
+
+def test_a_run_at_rtol_100_that_raises_is_tried_once_in_a_check(monkeypatch):
+    # The tolerance check tries it first; the sensitivity check reads why it
+    # raised and does not try again.
+    tried = []
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        if changes.get("rtol", 1.0) < 5e-10:
+            tried.append(changes["rtol"])
+            from bngsim._exceptions import SimulationError
+
+            raise SimulationError("did not converge", code="sim.failed")
+        return real(self, **changes)
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    v = _by_name(_decay().check())["sensitivity"]
+    assert len(tried) == 1, tried
+    assert v["status"] == "pass" and v["value_100"] is None and "did not converge" in v["note"]
+
+
+def test_a_rerun_past_the_run_s_own_timeout_is_no_budget_running_out(monkeypatch):
+    # The run's own timeout is shorter than the budget: a rerun that runs past
+    # it raises as the run would have, and the move at rtol/10 is judged. Only
+    # where the budget is the shorter is it a timeout.
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        if changes.get("rtol", 1.0) < 5e-10:
+            from bngsim._exceptions import SimulationError
+
+            raise SimulationError("timed out", code="sim.timeout")
+        return real(self, **changes)
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    r = _decay(timeout=60.0)
+    v = r.check(["sensitivity"], budget=600)["checks"][0]
+    assert v["status"] == "pass" and v["value_100"] is None and "timed out" in v["note"], v
+    v = r.check(["sensitivity"], budget=30)["checks"][0]
+    assert v["status"] == "timeout", v
+
+
+def test_the_quotient_alone_makes_no_run_at_rtol_100(monkeypatch):
+    # Only the sensitivity check judges by it; the quotient reads it where the
+    # tolerance check made it, so a budget it would use up costs the quotient
+    # nothing.
+    real = _check._Context.rerun
+    tried = []
+
+    def rerun(self, **changes):
+        if changes.get("rtol", 1.0) < self.rtol / 50 and changes.get("rtol") > 1e-13:
+            tried.append(changes["rtol"])
+            raise _check._Out
+        return real(self, **changes)
+
+    monkeypatch.setattr(_check._Context, "rerun", rerun)
+    v = _by_name(_decay().check(["sensitivity_fd"], budget=600))["sensitivity_fd"]
+    assert v["status"] == "pass" and tried == [], (v, tried)
+
+
+def _offsets(monkeypatch, offsets: dict[int, float], row: int = 1) -> None:
+    """Each sensitivity run's series *row* off by its rtol's share in
+    *offsets*, on the ramp the floor test uses."""
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if len(out._sensitivity_params):
+            out = copy.copy(out)
+            s = np.asarray(out._sensitivities, dtype=float).copy()
+            off = offsets.get(round(math.log10(kw.get("rtol", 1e-8))), 0.0)
+            s[:, row, 0] += off * np.abs(s[:, row, 0]).max() * np.asarray(out.time) / 10.0
+            out._sensitivities = s
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run)
+
+
+def _two(a0: float = 1000.0) -> Result:
+    sim = Simulator(
+        Model.from_antimony_string(TWO.format(a0=a0)), method="ode", sensitivity_params=["k"]
+    )
+    return sim.run(t_span=(0, 10), n_points=11, rtol=1e-8)
+
+
+def test_the_quotient_s_verdict_is_the_same_alone_and_beside_the_tolerance_check(monkeypatch):
+    # The quotient judges convergence by the move to rtol/10, whether or not
+    # another check made the run at rtol/100.
+    _offsets(monkeypatch, {-8: 2e-3, -9: 2e-3, -10: -2e-3})
+    r = _two()
+    alone = _by_name(r.check(["sensitivity_fd"]))["sensitivity_fd"]
+    for others in (["tolerance"], ["sensitivity"], ["tolerance", "sensitivity"]):
+        beside = _by_name(r.check([*others, "sensitivity_fd"]))["sensitivity_fd"]
+        for key in ("status", "value", "n_not_converged"):
+            assert alone[key] == beside[key], (others, key, alone, beside)
+
+
+def test_the_moves_made_once_without_rtol_100_are_made_again_for_the_sensitivity_check(
+    monkeypatch,
+):
+    # The quotient called first makes the moves without the run at rtol/100;
+    # the sensitivity check then needs it, and its verdict is a fresh call's.
+    _offsets(monkeypatch, {-8: 5e-3, -9: 4.5e-3, -10: 0.0})
+    r = _two()
+    ctx = _check._Context(r, r.record, None)
+    _check_sensitivity.check_sensitivity_fd(ctx)
+    assert ctx.sens_moves[1] is None
+    late = _check_sensitivity.check_sensitivity(ctx)
+    fresh = _check_sensitivity.check_sensitivity(_check._Context(r, r.record, None))
+    assert late["status"] == fresh["status"] == "diff"
+    for key in ("value", "value_10", "value_100"):
+        assert late[key] == fresh[key], (key, late, fresh)
+
+
+def test_a_quotient_run_past_the_run_s_own_timeout_leaves_that_column_unjudged(monkeypatch):
+    from bngsim import _rerun
+    from bngsim._exceptions import SimulationError
+
+    real = _rerun.perturbed
+
+    def perturbed(result, **changes):
+        if "k" in (changes.get("parameters") or {}):
+            raise SimulationError("timed out", code="sim.timeout")
+        return real(result, **changes)
+
+    monkeypatch.setattr(_rerun, "perturbed", perturbed)
+    v = _by_name(_decay(timeout=60.0).check(["sensitivity_fd"], budget=600))["sensitivity_fd"]
+    assert v["status"] != "exception", v
+    assert "k" in v["not_judged"] and "timeout" in v["not_judged"]["k"], v
+    assert v["timed_out"] == [], v
 
 
 def test_the_floor_is_the_atol_the_solver_held_each_series_to():
@@ -806,7 +1003,8 @@ def test_a_column_s_roundoff_is_a_floor_under_its_small_entries():
 
 
 def test_a_budget_that_runs_out_telling_a_floor_from_the_tolerance_is_a_timeout(monkeypatch):
-    # A move far past its floor needs no run at rtol/100: the tolerance's.
+    # A move far past its floor is the tolerance's: no floor is told apart,
+    # and the run at rtol/100 is made once, for the move to it (#1967).
     rtols: list[float] = []
     counted = Result.rerun
 
@@ -818,7 +1016,7 @@ def test_a_budget_that_runs_out_telling_a_floor_from_the_tolerance_is_a_timeout(
         m.setattr(Result, "rerun", count)
         v = _scaled(_decay(), 0, 1.01).check(["sensitivity"], budget=600)["checks"][0]
     assert v["status"] == "diff", v
-    assert rtols == [pytest.approx(1e-9)], rtols
+    assert rtols == [pytest.approx(1e-9), pytest.approx(1e-10)], rtols
     # dB/dk past the bound at rtol/10 by a few of its floor (the case the floor
     # test holds): the rtol/100 run that would tell a floor from the tolerance
     # runs out of budget, so the move is not reported as a diff it may not be.

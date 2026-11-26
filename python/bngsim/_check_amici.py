@@ -1412,15 +1412,15 @@ def _judge(
         why, deeper = deeper_answer()
         tight100 = ctx.tight100
         if tight100 is None and deeper is not None:
+            # Made once in a check() call: where it raised before, it is not
+            # tried again (the diff stands, unconfirmed).
             try:
-                tight100 = ctx.tight100 = ctx.rerun(**ctx._tighter(100.0))
+                tight100 = _check_sensitivity._hundredfold(ctx)
             except _Out:
                 why = "the budget ran out before bngsim's run at 1/100 of the tolerance"
-            except Exception as e:  # noqa: BLE001 - the diff stands, unconfirmed
-                why = (
-                    f"bngsim's run at 1/100 of the tolerance raised {type(e).__name__}: "
-                    f"{_first_line(e)}"
-                )
+            else:
+                if tight100 is None:
+                    why = f"bngsim's run at 1/100 of the tolerance raised {ctx.tight100_error}"
         if deeper is None or tight100 is None:
             unconfirmed = why
         else:
