@@ -14,8 +14,8 @@ of its own, so what it prints is what the call returns.
 | command | what it does | Python call behind it |
 |---|---|---|
 | `bngsim doctor` | what this install can do, what is missing, and the fix for each; with the Python, the platform, and the C compiler codegen would use and whether it builds a test library | `bngsim.capabilities()` |
-| `bngsim guide` | prints the agent guide of this version | `bngsim.agent_guide()` |
-| `bngsim skill` | prints the guide as a `SKILL.md` file | `bngsim.agent_guide(skill=True)` |
+| `bngsim guide [--out FILE]` | prints the agent guide of this version, or writes it to `FILE` | `bngsim.agent_guide()` |
+| `bngsim skill [--out FILE]` | prints the guide as a `SKILL.md` file, or writes it to `FILE` (see [The skill](#the-skill)) | `bngsim.agent_guide(skill=True)` |
 | `bngsim examples [NAME]` | lists the example models that ship with BNGsim, with their formats and files | `bngsim.examples` |
 | `bngsim inspect MODEL [--limit N\|all]` | what the model is, and which methods it admits and why not. Runs nothing. | `bngsim.Model.load(MODEL).describe()` |
 | `bngsim run MODEL --t-end T [...]` | one run from the model's initial state: its record and a digest of its values, the arrays to `--out` | `bngsim.Simulator(bngsim.Model.load(MODEL), ...).run(...)`, `Result.record`, `Result.digest()` |
@@ -35,6 +35,36 @@ report.
 
 `bngsim inspect` on a `.bngl` file runs BNG2.pl to generate the network, as
 `Model.load` does, and describes that network.
+
+## The skill
+
+`bngsim skill` prints the agent guide as a `SKILL.md` file, for agent tools
+that load skills. Claude Code reads a skill from `~/.claude/skills/NAME/SKILL.md`,
+in every project, or from `.claude/skills/NAME/SKILL.md` in one project, which
+you can commit to share it:
+
+```bash
+bngsim skill --out ~/.claude/skills/bngsim/SKILL.md
+```
+
+`--out FILE` writes the file itself, as the UTF-8 bytes the command prints,
+making its folder and replacing any such file (through a link, the file the
+link names), and prints the path it wrote. A
+leading `~` is your home folder even where the shell does not expand it, as in
+PowerShell. Use `--out` rather than a redirect: PowerShell before 7.4 reads the
+output of `>` in the console's code page, and Windows PowerShell 5.1 writes it
+again as UTF-16. A `FILE` it cannot write is a usage error (exit 2): a folder or a path ending in a separator, an empty path,
+`-` (leave out `--out` to print), a `~` that names no home folder, a read-only
+file, something that is not a regular file, or a file the system will not let it
+make, such as one another program holds open on Windows. A failure while writing, such as
+a full disk, exits 1 and leaves the file as it was. `bngsim guide --out FILE` writes the guide the
+same way. The guide is the installed version's, so write the skill again after an
+upgrade.
+
+With `--json`, both commands print `{"version", "format", "text", "out"}`:
+`format` is `"markdown"` for the guide and `"skill"` for the skill, `text` is
+the text, or `null` with `--out`, and `out` is the absolute path `--out` wrote,
+or `null`.
 
 ## Running a model
 
