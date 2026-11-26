@@ -27,8 +27,8 @@ methods, sensitivities, steady states, JAX and `run_diffrax`, the converters
 (`sbml_to_net`, `sbml_to_bngl`), compiled against interpreted expressions, and
 the SBML constructs your model relies on.
 
-That list describes the development version. An open issue affects every
-release. An issue is closed when its fix is merged, so a closed one may still
+That list describes the development version. An open issue is not fixed in
+any release, the newest included. An issue is closed when its fix is merged, so a closed one may still
 affect the release you have: the
 [changelog](https://github.com/lanl/bngsim/blob/HEAD/CHANGELOG.md) says, release
 by release, what was fixed and for whom.
@@ -70,8 +70,9 @@ the construct, rather than simulate a different system. The main cases:
 [bngsim-benchmarks](https://github.com/lanl/bngsim-benchmarks/tree/main/published)
 compares BNGsim with other simulators on published models. A `DIFF` there
 means that BNGsim and a reference disagree. By itself it does not say which
-one is wrong. What is known about each disagreement, and each BNGsim failure,
-in the snapshots measured on BNGsim 0.17.2 (published 2026-11-25). Where a
+one is wrong. The table says what is known about each disagreement, and each
+BNGsim failure, in the snapshots measured on BNGsim 0.17.2 (published
+2026-11-25). Where a
 reference is said to be wrong, the evidence is the developer parity suite's
 analysis of the same model, on the engine versions it names:
 

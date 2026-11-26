@@ -65,7 +65,8 @@ every platform. A feature an install lacks is `False`, with the reason in
 ## The command line
 
 With `--json`, each command except `bngsim convert` and `bngsim cache`, which
-keep their tools' own output, prints one JSON object on standard output. Its
+keep their tools' own output, prints one JSON object on standard output.
+Except for `bngsim inspect`, whose output is the `Model.describe()` form, its
 top-level keys have no version of their own. A key may be added in any
 release. One is removed or renamed only with an entry in the changelog. The
 `record`, `digest`, `check` and steady-state forms inside carry their own
