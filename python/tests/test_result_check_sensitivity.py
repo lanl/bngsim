@@ -16,6 +16,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+from pathlib import Path
 
 import bngsim
 import numpy as np
@@ -188,25 +189,39 @@ model two
   J1: A -> ; k*A
   J2: B -> ; k*B
   k = 0.5
-  A = 1000; B = 1
+  A = {a0}; B = 1
 end
 """
 
 
 @pytest.mark.parametrize(
-    ("row", "offsets", "status", "held"),
+    ("a0", "row", "offsets", "status", "held"),
     [
-        # dB/dk errs by as much at every tolerance: a floor holds it, and on
-        # its column's scale (dA/dk's, a thousand times larger) it is noise.
-        (1, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "pass", ["dB/dk"]),
-        # The same floor under the column's largest series: on its own scale.
-        (0, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "diff", ["dA/dk"]),
+        # At A = 1e12 every entry of the k column carries the column's
+        # roundoff, eps times dA/dk's peak (1.6e-4, #177): dB/dk errs by as
+        # much at every tolerance, 2e-3 of its peak or 18 of that floor. A
+        # floor holds it, and on its column's scale it is noise.
+        (1e12, 1, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "pass", ["dB/dk"]),
+        # At A = 1e11 the floor is ten times smaller and the same error about
+        # 180 floors: past the 100 a floor's move is within.
+        (1e11, 1, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "diff", []),
+        # The same error under the column's largest series is 1e5 of its
+        # floor: no floor's, whatever it does with the tolerance.
+        (1e12, 0, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "diff", []),
+        # And at A = 1000, where dB/dk's floor is its atol, 1e5 of it too.
+        (1000.0, 1, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "diff", []),
         # An error that shrinks tenfold with the tolerance is the tolerance's.
-        (1, {-8: 2e-3, -9: 2e-4, -10: 2e-5}, "diff", []),
+        (1e12, 1, {-8: 2e-3, -9: 2e-4, -10: 2e-5}, "diff", []),
+        # One that shrinks slowly, the same way, its second move more than
+        # half its first, is the tolerance's too (#1962).
+        (1000.0, 1, {-8: 1e-2, -9: 6e-3, -10: 3.6e-3}, "diff", []),
+        # And one that barely moves at rtol/10 and then drops, as #1962's
+        # series do: its second move is larger than its first.
+        (1000.0, 1, {-8: 5e-3, -9: 3e-3, -10: 2e-4}, "diff", []),
     ],
 )
 def test_a_series_a_floor_holds_is_named_and_judged_on_its_column(
-    monkeypatch, row, offsets, status, held
+    monkeypatch, a0, row, offsets, status, held
 ):
     real = Simulator.run
 
@@ -221,7 +236,9 @@ def test_a_series_a_floor_holds_is_named_and_judged_on_its_column(
         return out
 
     monkeypatch.setattr(Simulator, "run", run)
-    sim = Simulator(Model.from_antimony_string(TWO), method="ode", sensitivity_params=["k"])
+    sim = Simulator(
+        Model.from_antimony_string(TWO.format(a0=a0)), method="ode", sensitivity_params=["k"]
+    )
     r = sim.run(t_span=(0, 10), n_points=11, rtol=1e-8)
     by = _by_name(r.check(["sensitivity", "sensitivity_fd"]))
     v = by["sensitivity"]
@@ -231,6 +248,29 @@ def test_a_series_a_floor_holds_is_named_and_judged_on_its_column(
     if status == "pass":
         # The quotient reads a floor-held series' move as its drift too.
         assert by["sensitivity_fd"]["status"] == "pass", by["sensitivity_fd"]
+
+
+@pytest.mark.parametrize("rtol", [2e-8, 8e-8, 9.9e-8, 1e-7, 2e-7, 2.759e-7])
+def test_a_series_converging_slowly_is_not_read_as_held_by_a_floor(rtol):
+    # Issue #1962: at these rtols BIOMD0000000810's gamma_C series err by 0.4%
+    # to 3.5% of their peaks against a run at rtol 1e-12, and their error
+    # often barely moves at rtol/10 and drops at rtol/100. The tier read their
+    # second move, as large as the first or larger, as a floor's and passed
+    # every one of these runs. T_H1's moves are 1e8 to 1e9 of its floor, and
+    # IL2's, whose peak is 1.9e5 floors, at least 190: never a floor's.
+    path = Path(__file__).resolve().parents[2] / "tests" / "data" / "BIOMD0000000810.xml"
+    params = ["gamma_C", "delta_Treg", "myu_TcS", "k6", "tck"]
+    r = Simulator(Model.load(path), method="ode", sensitivity_params=params).run(
+        t_span=(0, 500), n_points=21, rtol=rtol
+    )
+    ctx = _check._Context(r, r.record, None)
+    v = _check_sensitivity.check_sensitivity(ctx)
+    held = set(_check_sensitivity._named(_check_sensitivity._context(ctx), ctx.sens_drift[3]))
+    assert not held & {"dType_I_T_helper_Cell_T_H1/dgamma_C", "dCytokine_IL2/dgamma_C"}, held
+    # The verdict too, where the move is well past the bound (at 2e-8 to
+    # 9.9e-8 it is 1.5 to 3 times it, and a different step sequence moves it).
+    if rtol >= 1e-7:
+        assert v["status"] == "diff", v
 
 
 def test_the_floor_is_the_atol_the_solver_held_each_series_to():
@@ -766,9 +806,34 @@ def test_a_column_s_roundoff_is_a_floor_under_its_small_entries():
 
 
 def test_a_budget_that_runs_out_telling_a_floor_from_the_tolerance_is_a_timeout(monkeypatch):
-    # The run's dA/dk is past the bound at rtol/10; the rtol/100 run that would
-    # tell a floor from the tolerance runs out of budget, so the move is not
-    # reported as a diff it may not be.
+    # A move far past its floor needs no run at rtol/100: the tolerance's.
+    rtols: list[float] = []
+    counted = Result.rerun
+
+    def count(self, **changes):
+        rtols.append(changes.get("rtol"))
+        return counted(self, **changes)
+
+    with monkeypatch.context() as m:
+        m.setattr(Result, "rerun", count)
+        v = _scaled(_decay(), 0, 1.01).check(["sensitivity"], budget=600)["checks"][0]
+    assert v["status"] == "diff", v
+    assert rtols == [pytest.approx(1e-9)], rtols
+    # dB/dk past the bound at rtol/10 by a few of its floor (the case the floor
+    # test holds): the rtol/100 run that would tell a floor from the tolerance
+    # runs out of budget, so the move is not reported as a diff it may not be.
+    real_run = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real_run(self, *a, **kw)
+        if len(out._sensitivity_params):
+            out = copy.copy(out)
+            s = np.asarray(out._sensitivities, dtype=float).copy()
+            off = 2e-3 * (-1) ** round(math.log10(kw.get("rtol", 1e-8)))
+            s[:, 1, 0] += off * np.abs(s[:, 1, 0]).max() * np.asarray(out.time) / 10.0
+            out._sensitivities = s
+        return out
+
     real = Result.rerun
 
     def rerun(self, **changes):
@@ -778,8 +843,12 @@ def test_a_budget_that_runs_out_telling_a_floor_from_the_tolerance_is_a_timeout(
             raise SimulationError("timed out", code="sim.timeout")
         return real(self, **changes)
 
+    monkeypatch.setattr(Simulator, "run", run)
     monkeypatch.setattr(Result, "rerun", rerun)
-    rep = _scaled(_decay(), 0, 1.01).check(["sensitivity"], budget=600)
+    sim = Simulator(
+        Model.from_antimony_string(TWO.format(a0=1e12)), method="ode", sensitivity_params=["k"]
+    )
+    rep = sim.run(t_span=(0, 10), n_points=11, rtol=1e-8).check(["sensitivity"], budget=600)
     v = rep["checks"][0]
     assert v["status"] == "timeout" and "floor" in v["note"] and rep["ok"] is False
 

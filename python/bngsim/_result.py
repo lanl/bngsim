@@ -3520,12 +3520,15 @@ class Result:
               the verdict's ``not_resolved``, and judged on its column's
               largest peak. A series past the bound whose move from
               ``rtol/10`` to ``rtol/100`` is at least half its move at
-              ``rtol/10`` is taken to be held by a floor and not the
-              tolerance: it is named (``n_floor_held``), not failed, its move
-              is read on its column's largest peak, and the quotient check
-              allows it ten times that move. An error in such a series that does not
-              shrink with the tolerance, and is small beside its column's
-              peak, passes both checks; the name is the only sign of it.
+              ``rtol/10``, and whose move is within 100 of its floor (those
+              tolerances, or its column's roundoff, ``eps`` times the
+              column's largest entry, where that is larger), is taken to be
+              held by a floor and not the tolerance: it is named
+              (``n_floor_held``), not failed, its move is read on its
+              column's largest peak, and the quotient check allows it ten
+              times that move. An error of a few of its floors in such a
+              series, whatever its cause, passes both checks; the name is
+              the only sign of it.
             - ``"sensitivity_fd"``: the forward sensitivities against central
               difference quotients, each parameter (through ``set_param``, so
               an initial amount it sets follows) and initial amount moved by
