@@ -322,7 +322,7 @@ def test_replicates_give_the_mean_its_spread_and_one_draws_z():
     assert col["run_last"] == r.observables["A"][-1]
     # The run is one draw, as each rerun is: its distance from the mean of ten
     # is spread by sd·sqrt(1 + 1/10), not by the mean's standard error, over
-    # which a correct run's root-mean-square distance is sqrt(11) of them.
+    # which a correct run's root-mean-square distance is about sqrt(11) of them.
     assert col["z"] == pytest.approx((col["run_last"] - col["mean_last"]) / (sd * math.sqrt(1.1)))
     assert c["value"] == pytest.approx(abs(col["z"])) and c["worst_column"] == "A"
     exact = examples.exact("birth_death", np.array([10.0]))["A"][0]
