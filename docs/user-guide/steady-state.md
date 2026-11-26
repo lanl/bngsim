@@ -1,5 +1,5 @@
 ---
-summary: "Find a steady state, choose a method, read what converged means, find every steady state, sweep doses, and compute steady-state sensitivities."
+summary: "Find a steady state, choose a method, read what converged means, search for the other steady states, sweep doses, and compute steady-state sensitivities."
 ---
 
 # Steady states
@@ -373,11 +373,13 @@ ss.eigenvalues                # the spectrum the verdict was read from
 This check says whether the returned root is stable. It does not say how many
 other roots exist. For that, use `steady_states()`.
 
-## Every steady state: `steady_states()`
+## Search for other steady states: `steady_states()`
 
-`sim.steady_states()` looks for all the roots of one parameter set. It runs
+`sim.steady_states()` searches for the roots of one parameter set. It runs
 Newton from many starting states, with no integration first, and groups the
-roots it reaches. Every root is kept and labeled.
+roots it reaches. Every root it reaches is kept and labeled. This is a search,
+not a proof: a root with a small basin, or a saddle Newton never lands on, can
+be missed.
 
 ```python
 roots = sim.steady_states(n_starts=200, seed=0)
@@ -423,9 +425,6 @@ newton_burst=False)` runs the same Newton solves from starting states you
 give. With `params=` as well, the two pair up row by row. `certify=False`
 skips the stability check, and `certify="start"` takes no step and checks
 each starting state as it is.
-
-This is a search, not a proof. A root with a small basin, or a saddle Newton
-never lands on, can be missed.
 
 ## Stop a time course at steady state
 
@@ -473,7 +472,7 @@ Each entry clones the model, sets its parameters, resets the clone to its
 initial conditions and solves. It takes the same solver options as
 `steady_state()`, but not `sensitivity_params`. It also takes `states=`,
 `n_workers=`, `newton_burst=` and `certify=` (see
-[Every steady state](#every-steady-state-steady_states)).
+[Search for other steady states](#search-for-other-steady-states-steady_states)).
 
 **Each entry starts from the initial conditions,** not from the model's
 current state. The reset is what makes a dose over an initial-condition

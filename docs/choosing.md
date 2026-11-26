@@ -37,8 +37,8 @@ July and August 2026 (libRoadRunner 2.9.2, AMICI 1.0.1, COPASI 4.46, BioNetGen
   tells you whether a steady state was reached (`ss.converged`). With
   `method="newton"`, BNGsim simulates first and then refines the result with
   KINSOL's Newton solver. Simulating first avoids convergence to an unstable
-  steady state. `sim.steady_states()` finds all steady states, stable and
-  unstable.
+  steady state. `sim.steady_states()` searches for the other steady states,
+  stable and unstable, by running Newton from many starts. It can miss one.
 - **SSA vs. PSA.** Use PSA (`method="psa"`) when you care about means, not
   variances. It is much faster for models with large populations. Use SSA
   (`method="ssa"`) when fluctuations matter.
