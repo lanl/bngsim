@@ -600,6 +600,31 @@ def test_a_diff_that_goes_at_a_tighter_tolerance_is_the_tolerances(engine):
     assert "not converged at the run's tolerance" in rep["next"]
 
 
+def test_a_series_still_moving_a_decade_tighter_is_the_tolerances(monkeypatch, engine):
+    # bngsim's dA/dk off by 5e-3 at the run's tolerance, 3e-3 at a tenth of it
+    # and 1e-3 at a hundredth: not converged at either, and nearer AMICI as
+    # it tightens. The gap a decade tighter is within ten times what the
+    # series still moves there, so the diff is the tolerance's, not the
+    # reading's; a column twice the truth is not (the shared-defect test).
+    real = Simulator.run
+    base = _decay().record["run"]["rtol"]
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if not len(out._sensitivity_params):
+            return out
+        rtol = kw.get("rtol") or base
+        off = 5e-3 if rtol > base / 5 else (3e-3 if rtol > base / 50 else 1e-3)
+        return _scaled(out, 0, 1 + off)
+
+    monkeypatch.setattr(Simulator, "run", run)
+    rep = _decay().check([NAME])
+    (v,) = rep["checks"]
+    assert v["status"] == "diff" and v["confirmed_tighter"] is False, v
+    assert v["diff_not_converged"] is True
+    assert "not converged at the run's tolerance" in rep["next"]
+
+
 def test_a_diff_that_cannot_be_compared_tighter_says_so(engine):
     fake = engine(_ClosedForm({"A": A0}))
     real = fake.simulate

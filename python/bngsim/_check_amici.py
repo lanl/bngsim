@@ -108,7 +108,10 @@ move can understate its error (on BIOMD0000000810 to t = 50 at rtol 1e-8,
 AMICI's two runs agree with each other and are 1e-3 of some series' peak from
 the solution, which both engines reach at rtol 1e-10), and a model read two
 ways differs as much at any tolerance. So a diff that holds there is the
-reading's (``confirmed_tighter``), and one that does not is the tolerance's:
+reading's (``confirmed_tighter``), judged with every series keeping its own
+move a decade tighter as drift, converged or not, so that tolerance error a
+series still has there is not read as a misreading; one that does not hold is
+the tolerance's:
 the verdict is still ``diff``, with ``diff_not_converged``, which ``next``
 reads as the tolerance's. Where the tighter runs cannot be made, it says so.
 The states AMICI integrates are compared
@@ -1051,7 +1054,9 @@ class _Level:
     a decade tighter, whose move is the run's drift; *S_loose*, *x_loose*:
     bngsim's at twice the tolerance, or None; *ref* and *am*: AMICI a decade
     tighter (the reference) and at this tolerance; *floors*, *atols*, *rtol*:
-    the tolerances at this level; *judged*: the series compared."""
+    the tolerances at this level; *judged*: the series compared;
+    *withhold*: give a series not converged no drift of its own (False to
+    ask whether a gap is more than the series' own move can explain)."""
 
     def __init__(
         self,
@@ -1068,6 +1073,7 @@ class _Level:
         atols: NDArray[np.float64],
         rtol: float,
         judged: NDArray[np.bool_],
+        withhold: bool = True,
     ) -> None:
         n_sp, n_cols = floors.shape
         x_ref, S_ref = ref
@@ -1102,7 +1108,8 @@ class _Level:
         drift = np.where(np.isfinite(d_next), d_next, 0.0)
         if S_loose is not None:
             drift = shaped(spread(flat(drift), flat(_series_gap(S_loose, S)), flat(peak)))
-        drift = np.where(self.converged, drift, 0.0)
+        if withhold:
+            drift = np.where(self.converged, drift, 0.0)
         # AMICI's own move between its two runs, which measures how far a
         # correct engine strays at this tolerance. It is not capped: where both
         # engines err by percent (BIOMD0000000810's gamma_C column at rtol
@@ -1233,7 +1240,13 @@ def _judge(
                 atols=np.asarray(ctx.atols, dtype=float) / 10.0,
                 rtol=rtol / 10.0,
                 judged=lv.use,
+                withhold=False,
             )
+            # Held where the gap there is more than ten times what the series
+            # itself still moves at that tolerance: a series bngsim does not
+            # converge even a decade tighter keeps that move as its drift, so
+            # its tolerance error is not read as a misreading, and a column
+            # twice the truth still is one.
             confirmed = bool(
                 (lv.failing & lv1.failing).any() or (lv.failing_x & lv1.failing_x).any()
             )
