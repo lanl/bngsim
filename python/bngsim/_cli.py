@@ -952,32 +952,63 @@ def _guide(args: argparse.Namespace) -> tuple[Any, str]:
 
     skill = args.command == "skill"
     text = bngsim.agent_guide(skill=skill)
-    payload = {"version": bngsim.__version__, "format": "skill" if skill else "markdown"}
+    payload: dict[str, Any] = {
+        "version": bngsim.__version__,
+        "format": "skill" if skill else "markdown",
+        "text": text,
+        "out": None,
+    }
     if args.out is None:
-        payload["text"] = text
         return payload, text
     path = _write_text(args.out, text, "SKILL.md" if skill else "agent_guide.md")
-    payload["out"] = path
+    # The text is in the file: the payload says where, and does not carry it too.
+    payload.update(text=None, out=path)
     return payload, f"{'skill' if skill else 'guide'} written to {path}\n"
 
 
 def _write_text(out: str, text: str, name: str) -> str:
     """``text`` written to the file ``out``, as the UTF-8 bytes the command
     prints, its folder made first; the file's absolute path. ``~`` is expanded
-    here, not by the shell: PowerShell leaves it to the program. Not through a
-    shell redirect, which in Windows PowerShell 5.1 decodes the output in the
-    console's code page and writes it again as UTF-16."""
-    path = os.path.abspath(os.path.expanduser(out))
-    if os.path.isdir(path):
-        _refuse(
-            f"--out {out!r} is a folder; give the file's path, such as "
-            f"{os.path.join(out, name)!r}",
-            "--out",
-            value=out,
+    here, not by the shell: PowerShell passes it to the program as it is. Not
+    through a shell redirect: PowerShell before 7.4 reads a program's output in
+    the console's code page, and Windows PowerShell 5.1 writes it again as
+    UTF-16.
+
+    A path that names no file this can write is a usage error naming ``--out``:
+    a folder (or a path ending in a separator, which ``abspath`` would drop), an
+    empty string, ``-``, a ``~`` that names no home folder, and a file the
+    system will not let it make."""
+    seps = "".join(s for s in (os.sep, os.altsep) if s)
+    example = os.path.join(out.rstrip(seps) or out, name)
+
+    def refuse(why: str, *, suggest: bool = True) -> NoReturn:
+        hint = f"; give the file's path, such as {example}" if suggest else ""
+        _refuse(f"--out {out or repr(out)}: {why}{hint}", "--out", value=out)
+
+    if out == "":
+        refuse("an empty path names no file", suggest=False)
+    if out == "-":
+        refuse(
+            "this writes a file named '-'; leave out --out to print to standard output",
+            suggest=False,
         )
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(text.encode("utf-8"))
+    if out.endswith(tuple(seps)):
+        refuse("a path ending in a separator is a folder")
+    expanded = os.path.expanduser(out)
+    if expanded.startswith("~"):
+        head = expanded
+        for sep in seps:
+            head = head.split(sep)[0]
+        refuse(f"{head} is not a home folder on this machine", suggest=False)
+    path = os.path.abspath(expanded)
+    if os.path.isdir(path):
+        refuse("that is a folder")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(text.encode("utf-8"))
+    except OSError as error:
+        refuse(f"cannot write {path}: {error.strerror or error}", suggest=False)
     return path
 
 

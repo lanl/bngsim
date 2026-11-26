@@ -35,14 +35,21 @@ _ALGEBRAIC = """<?xml version="1.0" encoding="UTF-8"?>
 </math></algebraicRule></listOfRules></model></sbml>"""
 
 
-def _bngsim(*args: str, script: str | None = None) -> subprocess.CompletedProcess:
+def _bngsim(
+    *args: str,
+    script: str | None = None,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     """``python -m bngsim ARGS``, or ``script`` then ``main(ARGS)``."""
     if script is None:
         cmd = [sys.executable, "-m", "bngsim", *args]
     else:
         code = script + f"\nfrom bngsim._cli import main\nraise SystemExit(main({list(args)!r}))\n"
         cmd = [sys.executable, "-c", code]
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=300)
+    return subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", timeout=300, cwd=cwd, env=env
+    )
 
 
 def _json_out(run: subprocess.CompletedProcess) -> dict:
@@ -101,14 +108,18 @@ def test_doctor_text_names_every_missing_feature_with_its_fix():
 @pytest.mark.parametrize("command", ["guide", "skill"])
 def test_guide_and_skill_as_json_carry_the_guide(command):
     payload = _json_out(_bngsim(command, "--json"))
-    assert payload["text"] == bngsim.agent_guide(skill=command == "skill")
-    assert payload["version"] == bngsim.__version__
+    assert payload == {
+        "version": bngsim.__version__,
+        "format": "skill" if command == "skill" else "markdown",
+        "text": bngsim.agent_guide(skill=command == "skill"),
+        "out": None,
+    }
 
 
 @pytest.mark.parametrize("command", ["guide", "skill"])
 def test_out_writes_the_bytes_the_command_prints_and_makes_the_folder(command, tmp_path):
     printed = subprocess.run(
-        [sys.executable, "-m", "bngsim", command], capture_output=True, check=True
+        [sys.executable, "-m", "bngsim", command], capture_output=True, check=True, timeout=300
     ).stdout
     target = tmp_path / "skills" / "bngsim" / "SKILL.md"
     target.parent.parent.mkdir()
@@ -125,36 +136,67 @@ def test_out_writes_the_bytes_the_command_prints_and_makes_the_folder(command, t
     assert payload == {
         "version": bngsim.__version__,
         "format": "skill" if command == "skill" else "markdown",
+        "text": None,
         "out": str(target),
     }
     assert target.read_bytes() == printed
     assert (tmp_path / "skills" / "other").read_text(encoding="utf-8") == "not touched"
 
 
-def test_out_expands_a_leading_tilde_itself(tmp_path):
-    # Passed as a program argument, as PowerShell passes it: no shell expands it.
+@pytest.mark.parametrize("command", ["guide", "skill"])
+def test_out_expands_a_leading_tilde_itself(command, tmp_path):
     env = {**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
-    run = subprocess.run(
-        [sys.executable, "-m", "bngsim", "skill", "--out", "~/.claude/skills/bngsim/SKILL.md"],
+    # First that the child's home is tmp_path, so a failure here writes nothing
+    # into the real home folder.
+    home = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.path.expanduser('~'))"],
         capture_output=True,
         text=True,
-        encoding="utf-8",
         env=env,
-        cwd=tmp_path,
-    )
+        check=True,
+        timeout=60,
+    ).stdout.strip()
+    assert Path(home) == tmp_path
+    # Passed as a program argument, as PowerShell passes it: no shell expands it.
+    run = _bngsim(command, "--out", "~/.claude/skills/bngsim/SKILL.md", cwd=tmp_path, env=env)
     assert run.returncode == 0, run.stderr
     written = tmp_path / ".claude" / "skills" / "bngsim" / "SKILL.md"
-    assert written.read_text(encoding="utf-8") == bngsim.agent_guide(skill=True)
+    assert written.read_text(encoding="utf-8") == bngsim.agent_guide(skill=command == "skill")
     assert not (tmp_path / "~").exists()
 
 
-def test_out_naming_a_folder_is_a_usage_error_that_writes_nothing(tmp_path):
+@pytest.mark.parametrize(("command", "name"), [("guide", "agent_guide.md"), ("skill", "SKILL.md")])
+def test_out_naming_a_folder_is_a_usage_error_that_writes_nothing(command, name, tmp_path):
     error = _json_error(
-        _bngsim("skill", "--out", str(tmp_path), "--json"), 2, "usage.invalid_argument"
+        _bngsim(command, "--out", str(tmp_path), "--json"), 2, "usage.invalid_argument"
     )
     assert error["details"] == {"argument": "--out", "value": str(tmp_path)}
-    assert str(tmp_path / "SKILL.md") in error["message"]
+    assert str(tmp_path / name) in error["message"]
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "out",
+    [
+        "",
+        "-",
+        "new" + os.sep,  # abspath would drop the separator and make a file "new"
+        "a_file" + os.sep + "SKILL.md",  # a parent that is a file
+        "~nosuchuser" + os.sep + "SKILL.md",  # a ~ that names no home folder
+    ],
+)
+def test_out_a_file_cannot_be_written_to_is_a_usage_error_that_writes_nothing(out, tmp_path):
+    (tmp_path / "a_file").write_text("a file", encoding="utf-8")
+    # Where ~user names a folder whatever the user (Windows guesses one beside
+    # the home folder), expanduser is held to what it does on POSIX.
+    script = "import os.path\n_e = os.path.expanduser\n"
+    script += "os.path.expanduser = lambda p: p if p.startswith('~nosuchuser') else _e(p)\n"
+    run = _bngsim("skill", "--out", out, "--json", script=script, cwd=tmp_path)
+    error = _json_error(run, 2, "usage.invalid_argument")
+    assert error["details"] == {"argument": "--out", "value": out}
+    assert error["message"].startswith(f"--out {out or repr(out)}: ")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a_file"]
+    assert (tmp_path / "a_file").read_text(encoding="utf-8") == "a file"
 
 
 def test_examples_lists_every_example_with_its_files():

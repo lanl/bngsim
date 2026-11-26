@@ -47,14 +47,21 @@ you can commit to share it:
 bngsim skill --out ~/.claude/skills/bngsim/SKILL.md
 ```
 
-`--out FILE` writes the file itself, as UTF-8, making its folder and replacing
-any such file, and prints the path it wrote; with `--json`,
-`{"version", "format", "out"}` instead of the text. A leading `~` is your home
-folder even where the shell does not expand it, as in PowerShell. Use `--out`
-rather than a redirect: Windows PowerShell 5.1 reads the output of `>` in the
-console's code page and writes it again as UTF-16. `FILE` that names a folder is a
-usage error (exit 2). `bngsim guide --out FILE` writes the guide the same way.
-The guide is the installed version's, so write the skill again after an upgrade.
+`--out FILE` writes the file itself, as the UTF-8 bytes the command prints,
+making its folder and replacing any such file, and prints the path it wrote. A
+leading `~` is your home folder even where the shell does not expand it, as in
+PowerShell. Use `--out` rather than a redirect: PowerShell before 7.4 reads the
+output of `>` in the console's code page, and Windows PowerShell 5.1 writes it
+again as UTF-16. A `FILE` it cannot write is a usage error (exit 2): a folder or a path ending in a separator, an empty path,
+`-` (leave out `--out` to print), a `~` that names no home folder, or a file the
+system will not let it make. `bngsim guide --out FILE` writes the guide the same
+way. The guide is the installed version's, so write the skill again after an
+upgrade.
+
+With `--json`, both commands print `{"version", "format", "text", "out"}`:
+`format` is `"markdown"` for the guide and `"skill"` for the skill, `text` is
+the text, or `null` with `--out`, and `out` is the absolute path `--out` wrote,
+or `null`.
 
 ## Running a model
 
