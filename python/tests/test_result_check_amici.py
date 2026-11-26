@@ -361,6 +361,37 @@ def test_a_pinned_derived_parameter_and_a_file_changed_mid_check_are_skipped(
     assert v["status"] == "skip" and v["note"] == _check.FILE_CHANGED, v
 
 
+def test_the_shared_file_check_refuses_a_changed_file(tmp_path):
+    # second_engine's and this check's, before either reads the file again.
+    path = tmp_path / "decay.xml"
+    path.write_bytes(Path(examples.path("decay", format="sbml")).read_bytes())
+    r = _decay(path)
+    ctx = _check._Context(r, r.record, None)
+    assert _check.same_as_file(ctx, "second_engine", "libRoadRunner") is None
+    path.write_text(path.read_text() + "\n", encoding="utf-8")
+    v = _check.same_as_file(ctx, "second_engine", "libRoadRunner")
+    assert v["status"] == "skip" and v["note"] == _check.FILE_CHANGED, v
+
+
+def test_an_antimony_file_that_imports_another_is_read_from_its_own_directory(
+    tmp_path, monkeypatch, engine
+):
+    pytest.importorskip("antimony")
+    (tmp_path / "sub.ant").write_text(
+        "model decay()\n  J1: A -> ; k*A\n  A = 100\n  k = 0.5\nend\n", encoding="utf-8"
+    )
+    main = tmp_path / "main.ant"
+    main.write_text('import "sub.ant"\n', encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    r = Simulator(Model.load(str(main)), method="ode", sensitivity_params=["k"]).run(
+        t_span=(0, 10), n_points=11
+    )
+    v = _verdict(r)
+    assert v["status"] == "pass", v
+
+
 def test_a_model_with_an_event_or_a_switch_is_not_compared(tmp_path, engine):
     base = dict(species=[("A", A0, False)], params={"k": K0, "ton": 5.0})
     cases = {
@@ -644,6 +675,25 @@ def test_a_series_amici_moves_by_more_than_a_thousandth_of_has_no_reference(monk
         assert rep["ok"] is False
 
 
+def test_amici_failing_at_a_hundredth_is_named_as_that(engine):
+    fake = engine(_ClosedForm({"A": A0}))
+    fake.loose_error = 0.1
+    real = fake.simulate
+
+    def simulate(ids, t0, times, **kw):
+        if len(fake.calls) == 2:
+            fake.calls.append(dict(kw, ids=list(ids), t0=t0))
+            return "status -1 (AMICI_TOO_MUCH_WORK)", np.empty((0, 0)), np.empty((0, 0, 0))
+        return real(ids, t0, times, **kw)
+
+    fake.simulate = simulate
+    v = _verdict(_decay())
+    assert v["status"] == "skip" and v["no_reference"] == ["dA/dk"], v
+    assert "could not run at a hundredth (AMICI could not run it" in v["note"]
+    assert "AMICI_TOO_MUCH_WORK" in v["note"]
+    assert "at a tenth of the tolerance and at a hundredth" not in v["note"]
+
+
 def test_a_diff_that_goes_at_a_tighter_tolerance_is_the_tolerances(engine):
     # AMICI's runs at the run's tolerance and at a tenth of it agree with each
     # other and are both 0.1% off; at a hundredth, it is exact. bngsim is
@@ -885,6 +935,52 @@ def test_a_state_still_moving_a_decade_tighter_is_not_settled(tmp_path, monkeypa
     assert v["confirmed_tighter"] is None
 
 
+def test_a_state_amici_still_moves_a_decade_tighter_is_not_settled(engine):
+    # bngsim right; AMICI's A off by 5%, 5% and 5.4% at the run's tolerance, a
+    # tenth and a hundredth: the gap holds, but AMICI moves 0.4% between its
+    # two tighter runs, so it is not the reading's.
+    def amici_off(*offs):
+        fake = _ClosedForm({"A": A0})
+        fake.edit = lambda x, sx: (x * (1 + offs[min(len(fake.calls), 3) - 1]), sx)
+        engine(fake)
+
+    amici_off(5e-2, 5e-2, 5.4e-2)
+    rep = _decay().check([NAME])
+    (v,) = rep["checks"]
+    assert v["status"] == "diff" and v["state_diff"] is True, v
+    assert v["confirmed_tighter"] is None
+    assert "Report it" not in rep["next"]
+    # AMICI's runs at a tenth and a hundredth agreeing, the gap is the reading's.
+    amici_off(5e-2, 5e-2, 5e-2)
+    v = _verdict(_decay())
+    assert v["status"] == "diff" and v["confirmed_tighter"] is True, v
+
+
+def test_a_species_bngsim_moves_a_decade_tighter_keeps_that_move_as_drift(
+    tmp_path, monkeypatch, engine
+):
+    # B, a thousand times A, off by 4e-3 of its peak at the run's tolerance and
+    # by 1e-3 at a tenth and a hundredth: not converged at the run's tolerance,
+    # and within ten times its own move of AMICI.
+    engine(_ClosedForm({"A": 0.1, "B": 100.0}))
+    _off_by_tolerance(monkeypatch, (4e-3, 1e-3, 1e-3), row=1, states=True)
+    v = _verdict(_decay(_two(tmp_path, a=0.1, b=100.0)))
+    assert v["status"] == "pass" and v["state_diff"] is False, v
+
+
+def test_a_species_neither_engine_resolves_is_judged_on_the_runs_whole_scale(
+    tmp_path, monkeypatch, engine
+):
+    # C within 100 of its atol of zero in both engines, 99 of it above zero in
+    # bngsim and below in AMICI: noise beside A, not a finding.
+    r = _decay(_two(tmp_path, b=1e-12))
+    atol = float(_check._Context(r, r.record, None).atols[1])
+    path = _two(tmp_path, b=99 * atol)
+    engine(_ClosedForm({"A": A0, "B": -99 * atol}))
+    v = _verdict(_decay(path))
+    assert v["status"] == "pass" and v["state_diff"] is False, v
+
+
 def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, engine):
     # dB/dk off by +2e-3 of its peak at the run's tolerance, -2e-3 a decade
     # tighter and +2e-3 two: an error that does not shrink, which the
@@ -901,6 +997,8 @@ def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, e
     assert by["sensitivity"]["status"] == "pass" and by["sensitivity"]["n_floor_held"] == 1
     v = by[NAME]
     assert v["status"] == "pass" and v["floor_held"] == ["dB/dk"], v
+    assert v["not_converged"] == [] and v["n_not_converged"] == 0
+    assert "no drift of their own" not in v["note"]
 
     def amici_moves_b(*offs):
         """AMICI's dB/dk off by *offs* at the run's tolerance, a tenth and a
@@ -1415,6 +1513,21 @@ def test_a_budget_spent_on_bngsims_reruns_builds_nothing(monkeypatch, engine):
     built = []
     monkeypatch.setattr(_check_amici, "build_engine", lambda amici, sbml: built.append(sbml))
     v = _verdict(_decay())
+    assert v["status"] == "timeout" and built == [], v
+    # The tolerance tier's run at a hundredth, for a series past its bound, is
+    # one of them: the budget it spends leaves no build either.
+    monkeypatch.undo()
+    monkeypatch.setattr(_check_amici, "_import_amici", lambda: SimpleNamespace())
+    monkeypatch.setattr(_check_amici, "build_engine", lambda amici, sbml: built.append(sbml))
+    real_rerun = _check._Context.rerun
+
+    def rerun(self, **changes):
+        if changes.get("rtol", 1.0) < self.rtol / 50:
+            raise _check._Out
+        return real_rerun(self, **changes)
+
+    monkeypatch.setattr(_check._Context, "rerun", rerun)
+    v = _verdict(_scaled(_decay(), 0, 1.01))
     assert v["status"] == "timeout" and built == [], v
 
 

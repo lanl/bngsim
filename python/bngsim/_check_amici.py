@@ -1201,6 +1201,8 @@ class _Level:
         d_loose_x = None if x_loose is None else differences(x_loose, x)[0]
         drift_x = spread(d_next_x, d_loose_x, peak_x)
         move_x, _ = differences(x_am, x_ref)
+        am_moved = np.where(relevant, moves(move_x, peak_x, atols), 0.0)
+        self.am_x_conv = np.isfinite(move_x) & (am_moved <= TOLERANCE_MOVE)
         drift_x = np.maximum(drift_x, np.where(np.isfinite(move_x), move_x, 0.0))
         self.ratio_x, _ = path_margins(
             d_x, peak_x, atols, rtol, drift_x, np.ones(peak_x.shape, dtype=bool), own=self.x_conv
@@ -1209,20 +1211,6 @@ class _Level:
         self.state_margin = float(self.ratio_x.max()) if self.ratio_x.size else 0.0
         self.failing = self.use & (self.ratio > 1.0)
         self.failing_x = self.ratio_x > 1.0
-        self.diff = self.margin > 1.0 or self.state_margin > 1.0
-
-    def take(self, other: _Level) -> None:
-        """The series *other* judges (those this level had no reference
-        for, against a deeper AMICI run), judged as *other* judges them."""
-        take = other.use
-        for name in ("ratio", "rel", "d", "peak", "resolved", "converged", "am_move"):
-            setattr(self, name, np.where(take, getattr(other, name), getattr(self, name)))
-        self.no_reference = other.no_reference
-        self.floor_held = self.floor_held | other.floor_held
-        self.use = self.use | take
-        self.failing = self.use & (self.ratio > 1.0)
-        self.margin = float(self.ratio.max()) if self.ratio.size else 0.0
-        self.value = float(self.rel.max()) if self.rel.size else 0.0
         self.diff = self.margin > 1.0 or self.state_margin > 1.0
 
 
@@ -1259,21 +1247,28 @@ def _judge(
     # judged with their move as drift, as that tier and the quotient's allow.
     _, _, _, held_flat = _check_sensitivity._tier1(ctx, cols)
     held = np.asarray(held_flat, dtype=bool).reshape(n_sp, n_cols)
-    lv = _Level(
-        S=S,
-        S_next=S_tight,
-        S_loose=None if ctx.loose is None else block_of(ctx.loose),
-        x=ctx.x,
-        x_next=ctx._view(ctx.tight),
-        x_loose=None if ctx.loose is None else ctx._view(ctx.loose),
-        ref=reference,
-        am=at_tol,
-        floors=cols.atol,
-        atols=ctx.atols,
-        rtol=rtol,
-        judged=judged,
-        held=held,
-    )
+    S_loose = None if ctx.loose is None else block_of(ctx.loose)
+    x_loose = None if ctx.loose is None else ctx._view(ctx.loose)
+    x_tight = ctx._view(ctx.tight)
+
+    def level(ref: _Answer, am: _Answer) -> _Level:
+        return _Level(
+            S=S,
+            S_next=S_tight,
+            S_loose=S_loose,
+            x=ctx.x,
+            x_next=x_tight,
+            x_loose=x_loose,
+            ref=ref,
+            am=am,
+            floors=cols.atol,
+            atols=ctx.atols,
+            rtol=rtol,
+            judged=judged,
+            held=held,
+        )
+
+    lv = level(reference, at_tol)
     # AMICI at a hundredth of the tolerance, made once where needed.
     deeper_run: dict[str, Any] = {}
 
@@ -1287,28 +1282,20 @@ def _judge(
     # against its run at a hundredth instead, with its move from a tenth as
     # drift, where it converges there: not judging it would pass a column
     # twice the truth unseen. One it does not converge there either is not
-    # judged, and is named.
+    # judged, and is named. The states keep their reference.
     n_deeper = 0
+    deeper_failed = ""
     if lv.no_reference.any():
         why_b, deeper_b = deeper_answer()
-        if deeper_b is not None:
-            lv_b = _Level(
-                S=S,
-                S_next=S_tight,
-                S_loose=None if ctx.loose is None else block_of(ctx.loose),
-                x=ctx.x,
-                x_next=ctx._view(ctx.tight),
-                x_loose=None if ctx.loose is None else ctx._view(ctx.loose),
-                ref=deeper_b,
-                am=reference,
-                floors=cols.atol,
-                atols=ctx.atols,
-                rtol=rtol,
-                judged=lv.no_reference,
-                held=held,
+        if deeper_b is None:
+            deeper_failed = why_b
+        else:
+            moving = lv.no_reference
+            lv = level(
+                (reference[0], np.where(moving[None], deeper_b[1], reference[1])),
+                (at_tol[0], np.where(moving[None], reference[1], at_tol[1])),
             )
-            lv.take(lv_b)
-            n_deeper = int(lv_b.use.sum())
+            n_deeper = int((lv.use & moving).sum())
     status = "diff" if lv.diff else "pass"
     n_judged = int(lv.use.any(axis=0).sum())
     if not lv.use.any() and not lv.diff:
@@ -1364,13 +1351,19 @@ def _judge(
             #   as both converge does not;
             # - undetermined otherwise: still moving a decade tighter, in
             #   either engine.
+            # Two rules hold without a test of their own:
+            # - a series failing at the run's tolerance is past 100 of its
+            #   floors from AMICI, and one neither engine resolves a decade
+            #   tighter is within 20 of them there, so it shrinks;
+            # - a species keeps its drift at both levels, so one that fails at
+            #   both holds at least 9/11 of its gap (each level's gap is past
+            #   ten times the move between them), and needs no shrink test.
             with np.errstate(invalid="ignore"):
                 shrinks = np.isfinite(lv1.d) & (lv1.d <= SHRINK * lv.d)
-                shrinks_x = np.isfinite(lv1.d_x) & (lv1.d_x <= SHRINK * lv.d_x)
-            reading = lv.failing & lv1.failing & ~shrinks & lv1.resolved & lv1.converged
-            reading_x = lv.failing_x & lv1.failing_x & ~shrinks_x & lv1.x_conv
+            reading = lv.failing & lv1.failing & ~shrinks & lv1.converged
+            reading_x = lv.failing_x & lv1.failing_x & lv1.x_conv & lv1.am_x_conv
             tolerance = lv.failing & lv1.use & (~lv1.failing | shrinks)
-            tolerance_x = lv.failing_x & (~lv1.failing_x | shrinks_x)
+            tolerance_x = lv.failing_x & ~lv1.failing_x
             if reading.any() or reading_x.any():
                 confirmed = True
             elif (tolerance == lv.failing).all() and (tolerance_x == lv.failing_x).all():
@@ -1387,7 +1380,8 @@ def _judge(
     state_worst = ctx._worst(lv.ratio_x)
     use = lv.use
     trace = use & ~lv.resolved
-    n_out = int((use & ~lv.converged).sum())
+    unconverged = use & ~lv.converged & ~lv.floor_held
+    n_out = int(unconverged.sum())
     n_nonfinite = int((use & np.isinf(lv.d)).sum())
 
     if n_nonfinite:
@@ -1414,7 +1408,7 @@ def _judge(
         )
     elif lv.diff:
         note += f"; a decade tighter does not settle it ({unconfirmed})"
-    not_converged = _check_sensitivity._named(cols, use & ~lv.converged)
+    not_converged = _check_sensitivity._named(cols, unconverged)
     if n_out:
         note += (
             f"; {n_out} series not converged at the run's tolerance, judged with no drift of "
@@ -1427,10 +1421,15 @@ def _judge(
         )
     no_reference = _check_sensitivity._named(cols, lv.no_reference)
     if no_reference:
+        where = (
+            f"between its runs at the run's tolerance and a tenth of it, and could not run "
+            f"at a hundredth ({deeper_failed})"
+            if deeper_failed
+            else "between its runs, at a tenth of the tolerance and at a hundredth"
+        )
         note += (
-            f"; AMICI moves past {TOLERANCE_MOVE:g} of their peak between its runs on "
-            f"{len(no_reference)} series, at a tenth of the tolerance and at a hundredth: no "
-            f"reference, not judged "
+            f"; AMICI moves past {TOLERANCE_MOVE:g} of their peak {where} on "
+            f"{len(no_reference)} series: no reference, not judged "
             f"({', '.join(no_reference[:3])}{', ...' if len(no_reference) > 3 else ''})"
         )
     floor_held = _check_sensitivity._named(cols, lv.floor_held)

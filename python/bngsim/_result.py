@@ -3559,17 +3559,21 @@ class Result:
               against the tighter run series by series as a path is, on the
               larger of the two engines' peaks, with the series' move at the
               tighter tolerance as its drift (none where the series is not
-              converged) or AMICI's own move between its two runs, the larger
-              (a series AMICI moves past 1e-3 of its peak on has no
-              reference and is not judged: ``no_reference``), and the
-              states are compared alike; an initial amount is not judged
-              (``not_judged``), as AMICI gives sensitivities to parameters
-              only. A diff is judged again a decade tighter (bngsim at
+              converged; its move where the tolerance tier takes it to be
+              held by a floor: ``floor_held``) or AMICI's own move between
+              its two runs, the larger. A series AMICI moves past 1e-3 of
+              its peak on is judged against AMICI at a hundredth of the
+              tolerance instead (``n_judged_deeper``), and where AMICI moves
+              past that there too it has no reference and is not judged
+              (``no_reference``). The states are compared alike; an initial
+              amount is not judged (``not_judged``), as AMICI gives
+              sensitivities to parameters only. A diff is judged again a decade tighter (bngsim at
               ``rtol/10`` against AMICI at ``rtol/100``):
               ``confirmed_tighter`` is True where it holds as large with
               both engines converged there (the reading's), False where it
-              goes or halves (the tolerance's: ``diff_not_converged``), and
-              None where that does not settle it. AMICI's build is cached in
+              goes or halves with AMICI a reference there (the tolerance's:
+              ``diff_not_converged``), and None where that does not settle
+              it. AMICI's build is cached in
               ``~/.cache/bngsim/amici`` (or ``$BNGSIM_AMICI_CACHE_DIR``).
             - ``"replicates"``: a stochastic run made again at ``replicates``
               other seeds; for each observable at the last time, the mean
@@ -3625,7 +3629,7 @@ class Result:
             ``n_judged``, ``not_judged``, ``n_not_converged`` and
             ``diff_not_converged`` too, ``not_converged``,
             ``no_reference`` and ``floor_held`` (series names),
-            ``confirmed_tighter``, and ``state_margin`` and
+            ``n_judged_deeper``, ``confirmed_tighter``, and ``state_margin`` and
             ``state_diff`` (the states against AMICI's),
             ``species_not_compared`` (with the reason) and ``engine``
             (AMICI's ``version``, its ``commit`` where the install records
