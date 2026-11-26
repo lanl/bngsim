@@ -449,9 +449,9 @@ def _next(out: Report, roundoff: bool = False) -> str:
     if diffs and diffs[0]["name"] == "sensitivity_second_engine":
         if diffs[0].get("diff_not_converged"):
             return (
-                "The sensitivities that disagree with AMICI's are not converged at the run's "
-                "tolerance: rerun at a tighter rtol and atol (result.rerun(rtol=..., atol=...)) "
-                "and check that run's sensitivities."
+                "What disagrees with AMICI is not converged at the run's tolerance, and agrees "
+                "better at a tenth of it: rerun at a tighter rtol and atol "
+                "(result.rerun(rtol=..., atol=...)) and check that run."
             )
         what = "trajectory" if diffs[0].get("state_diff") else "forward sensitivities"
         return (

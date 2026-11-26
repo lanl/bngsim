@@ -89,26 +89,30 @@ AMICI runs twice, at the run's tolerance and at a tenth of it (its build is
 cached, so the second costs a run). The tighter run is the reference, and the
 move between the two is added to every series' and species' drift: it is how
 far a correct engine strays at the run's tolerance, which bngsim's own move can
-understate (BIOMD0000000810 at rtol 1e-7: both engines a few 1e-5 of a
-series' peak from the solution, apart by 2e-4, and in agreement once
-converged). A disagreement in series and species not converged at the run's
-tolerance alone is the tolerance's: the verdict is still ``diff``, with
-``diff_not_converged``, which ``next`` reads as the tolerance's, not the
-reading's. (One in a converged series is one bngsim's own run at a tenth of the
-tolerance shows too: had that run halved the gap, the series' drift would be
-half the gap or more.) The states AMICI
-integrates are compared too, species by species, on every path's rule
-(:func:`bngsim._check.path_margins`, as :meth:`bngsim._check._Context.compare_x`
-uses it): sensitivities about two different
-trajectories say nothing, and a disagreement there is reported as one about
-the trajectory (``state_diff``). AMICI runs at the run's ``rtol``, at the
-smallest of the compared species' atols for the states, and for the
-sensitivities at the smallest of the judged series' absolute tolerances, each
-on AMICI's scale (an amount's times its compartment's size), and never looser
-than the run's smallest (AMICI's are scalars, over the states it does not
-compare too), so it is held at least as tight as bngsim on every species and
-series. A run with no species
-converged at its own tolerance is ``no_base`` before AMICI builds anything.
+understate (BIOMD0000000810 at rtol 1e-7: bngsim 1.2e-4 and AMICI 7e-5 of a
+series' peak from the solution, 2e-4 apart, and in agreement once converged).
+It is not capped: on that model's gamma_C column both engines err by percent at
+the run's tolerance, which a cap would read as a misreading. So the series
+AMICI moves past :data:`bngsim._check.TOLERANCE_MOVE` of their peak on, whose
+allowance is that wide, are named (``amici_not_converged``). A disagreement is
+the tolerance's where it is in series and species not converged at the run's
+tolerance (``not_converged``) and bngsim's own run at a tenth of the tolerance
+is at most :data:`SHRINK` as far from AMICI's reference: the verdict is still
+``diff``, with ``diff_not_converged``, which ``next`` reads as the tolerance's,
+not the reading's. A series doubled in every solve differs as much at any
+tolerance, and reads as the reading's. The states AMICI integrates are compared
+too, species by species, on every path's rule
+(:func:`bngsim._check.path_margins`, as
+:meth:`bngsim._check._Context.compare_x` uses it): sensitivities about two
+different trajectories say nothing, and a disagreement there is reported as one
+about the trajectory (``state_diff``). Each AMICI run takes its ``rtol`` (the
+run's, or a tenth of it) and, scaled alike, the smallest of the compared
+species' atols for the states, and for the sensitivities the smallest of the
+judged series' absolute tolerances, each on AMICI's scale (an amount's times
+its compartment's size), and never looser than the run's smallest (AMICI's are
+scalars, over the states it does not compare too), so it is held at least as
+tight as bngsim on every species and series. A run with no species converged at
+its own tolerance is ``no_base`` before AMICI builds anything.
 
 The report names AMICI's version and, from the install's PEP 610 record, its
 commit, and says when that is not the commit the parity suite pins
@@ -170,6 +174,12 @@ PINNED_COMMIT = "7fb8c571ac9e4d5aafb85d5da08982ea7c5a19dc"
 #: runs out of 100,000 at t = 983 of 1000, and takes 0.2 s with this many. A
 #: model AMICI cannot integrate pays the whole budget before it gives up.
 MAX_STEPS = 1_000_000
+
+#: A disagreement in a series not converged at the run's tolerance is the
+#: tolerance's where bngsim's own run at a tenth of the tolerance is at most
+#: this share as far from AMICI's reference: tolerance error shrinks about
+#: tenfold, and a model read two ways differs as much at any tolerance.
+SHRINK = 0.5
 
 #: bngsim's prefix for a reaction's local parameter.
 LOCAL_PREFIX = "_lp_"
@@ -1006,7 +1016,13 @@ def _judge(
         else:
             drift = spread(drift.reshape(-1), d_loose, peak.reshape(-1)).reshape(n_sp, n_cols)
     drift = np.where(converged & np.isfinite(drift), drift, 0.0)
+    # AMICI's move is a measure of the tolerance error a correct engine makes
+    # here, and is not capped: where both engines err by percent at the run's
+    # tolerance (BIOMD0000000810's gamma_C column at rtol 1e-7) a cap would
+    # read that error as a misreading. A series it moves past TOLERANCE_MOVE
+    # of its peak on is named, so a wide allowance is seen.
     am_move = series_gap(S_at, S_cmp)
+    am_loose = judged & resolved & (am_move > TOLERANCE_MOVE * peak)
     drift = np.maximum(drift, np.where(np.isfinite(am_move), am_move, 0.0))
     own = judged & resolved
 
@@ -1036,17 +1052,28 @@ def _judge(
     state_diff = state_margin > 1.0
     state_worst = ctx._worst(ratio_x)
 
-    # A disagreement in series and species not converged at the run's
-    # tolerance alone is the tolerance's. One in a converged series is not:
-    # its drift is its move at the tighter tolerance or more, so had the
-    # tighter run halved its gap to AMICI, the drift would be half the gap or
-    # more, and ten times that would allow it.
+    # A disagreement is the tolerance's where it is in a series (or species)
+    # not converged at the run's tolerance and bngsim's own run at a tenth of
+    # the tolerance is at most SHRINK as far from AMICI's reference: tolerance
+    # error shrinks with the tolerance, a model read two ways does not. (A
+    # converged series that fails never shrinks so: its drift is its move at
+    # the tighter tolerance or more, so had that run halved its gap to AMICI
+    # the drift would be half the gap, and ten times that would allow it.)
     failing = judged & (ratio > 1.0)
     failing_x = ratio_x > 1.0
+    assert ctx.tight is not None
+    try:
+        tight_gap = series_gap(_check_sensitivity._block(ctx.tight), S_cmp)
+    except ValueError:
+        tight_gap = np.full(d.shape, np.inf)
+    tight_gap_x, _ = differences(ctx._view(ctx.tight), x_cmp)
+    with np.errstate(invalid="ignore"):
+        shrinks = np.isfinite(tight_gap) & (tight_gap <= SHRINK * d)
+        shrinks_x = np.isfinite(tight_gap_x) & (tight_gap_x <= SHRINK * d_x)
     tolerance_only = bool(
         (failing.any() or failing_x.any())
-        and not (failing & converged).any()
-        and not (failing_x & x_conv).any()
+        and not (failing & ~(~converged & shrinks)).any()
+        and not (failing_x & ~(~x_conv & shrinks_x)).any()
     )
     status = "diff" if margin > 1.0 or state_diff else "pass"
     n_judged = int(judged.any(axis=0).sum())
@@ -1071,10 +1098,19 @@ def _judge(
             "; each disagreement is in a series or species not converged at the run's "
             "tolerance: the tolerance's, not the reading's"
         )
+    not_converged = _check_sensitivity._named(cols, judged & ~converged)
     if n_out:
         note += (
             f"; {n_out} series not converged at the run's tolerance, judged with no drift of "
-            "their own"
+            f"their own ({', '.join(not_converged[:3])}{', ...' if n_out > 3 else ''})"
+        )
+    n_am_loose = int(am_loose.sum())
+    if n_am_loose:
+        note += (
+            f"; AMICI itself moves past {TOLERANCE_MOVE:g} of their peak between its two runs "
+            f"on {n_am_loose} series, whose allowance takes ten times that move "
+            f"({', '.join(_check_sensitivity._named(cols, am_loose)[:3])}"
+            f"{', ...' if n_am_loose > 3 else ''})"
         )
     if trace.any():
         note += (
@@ -1119,6 +1155,9 @@ def _judge(
         "state_diff": state_diff,
         "species_not_compared": dict(list(species_not_compared.items())[:MAX_NAMED]),
         "n_not_converged": n_out,
+        "not_converged": not_converged[:MAX_NAMED],
+        "n_amici_not_converged": n_am_loose,
+        "amici_not_converged": _check_sensitivity._named(cols, am_loose)[:MAX_NAMED],
         "diff_not_converged": status == "diff" and tolerance_only,
         "n_not_resolved": int(trace.sum()),
         "not_resolved": _check_sensitivity._named(cols, trace)[:MAX_NAMED],

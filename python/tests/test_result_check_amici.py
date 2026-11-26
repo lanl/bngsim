@@ -200,6 +200,7 @@ class _ClosedForm:
         #: AMICI's own error there, which its tighter run does not have.
         self.loose_error = 0.0
         self.loose_state_error = 0.0
+        self.nan_in_reference = False
 
     @property
     def asked(self) -> dict:
@@ -225,6 +226,9 @@ class _ClosedForm:
         if len(self.calls) == 1:
             sx = sx * (1 + self.loose_error)
             x = x * (1 + self.loose_state_error)
+        elif self.nan_in_reference:
+            sx = sx.copy()
+            sx[2, 0, 0] = np.nan
         return "", x, sx
 
 
@@ -516,13 +520,115 @@ def test_a_disagreement_the_tighter_run_does_not_show_is_the_tolerances(engine):
 
 
 def test_the_reference_is_amicis_tighter_run(engine):
-    # AMICI at the run's tolerance errs by a thousandth of dA/dk, past what a
-    # path may differ by there; its run at a tenth of it is the one judged
-    # against, and a correct run passes.
+    # AMICI at the run's tolerance off by 5% of dA/dk, and of A: its run at a
+    # tenth of the tolerance is the one judged against, and a correct run
+    # passes. The series AMICI moves past a thousandth of their peak on are
+    # named, as their allowance is that wide.
     fake = engine(_ClosedForm({"A": A0}))
-    fake.loose_error = 1e-3
+    fake.loose_error = 0.05
+    fake.loose_state_error = 0.05
     v = _verdict(_decay())
     assert v["status"] == "pass", v
+    assert v["amici_not_converged"] == ["dA/dk"] and v["n_amici_not_converged"] == 1
+    assert "AMICI itself moves past 0.001 of their peak" in v["note"]
+    assert "(dA/dk)" in v["note"]
+    # Ten times AMICI's move: a reading off by twice the truth is still one.
+    fake = engine(_ClosedForm({"A": A0}))
+    fake.loose_error = 0.05
+    assert _verdict(_scaled(_decay(), 0, 2.0))["status"] == "diff"
+
+
+def test_a_value_amicis_reference_run_gives_as_not_finite_is_a_skip(engine):
+    fake = engine(_ClosedForm({"A": A0}))
+    fake.nan_in_reference = True
+    v = _verdict(_decay())
+    assert v["status"] == "skip" and "not finite" in v["note"], v
+
+
+def test_a_species_not_converged_is_judged_on_the_runs_whole_scale(tmp_path, monkeypatch, engine):
+    # B is a thousandth of A. Its tighter run moves by 1% of it, so the run
+    # does not converge B; AMICI's B, 0.5% off, is judged on the run's whole
+    # scale, A's, as every path judges such a species, and is no finding.
+    path = _write_sbml(
+        tmp_path / "two.xml",
+        species=[("A", A0, False), ("B", 0.1, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
+    )
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("rtol", 1.0) < self.record["run"]["rtol"]:
+            out = copy.copy(out)
+            x = np.asarray(out._species, dtype=float).copy()
+            x[:, 1] *= 1.01
+            out._species = x
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+
+    def off(x, sx):
+        x = x.copy()
+        x[:, 1] *= 1.005
+        return x, sx
+
+    engine(_ClosedForm({"A": A0, "B": 0.1}, edit=off))
+    rep = _decay(path).check([NAME])
+    (v,) = rep["checks"]
+    assert v["status"] == "pass" and v["state_diff"] is False, v
+
+
+def test_a_species_wrong_in_every_solve_is_the_readings_though_not_converged(
+    tmp_path, monkeypatch, engine
+):
+    # B is a thousandth of A, and the run does not converge it (its tighter
+    # run moves by 1%). B 20% off in every solve, the tighter run's too, is
+    # the reading's.
+    path = _write_sbml(
+        tmp_path / "two.xml",
+        species=[("A", A0, False), ("B", 0.1, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
+    )
+    real_rerun = Result.rerun
+
+    def rerun(self, **changes):
+        out = real_rerun(self, **changes)
+        if changes.get("rtol", 1.0) < self.record["run"]["rtol"]:
+            out = copy.copy(out)
+            x = np.asarray(out._species, dtype=float).copy()
+            x[:, 1] *= 1.01
+            out._species = x
+        return out
+
+    def b_off(r, factor):
+        out = copy.copy(r)
+        x = np.asarray(out._species, dtype=float).copy()
+        x[:, 1] *= factor
+        out._species = x
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    engine(_ClosedForm({"A": A0, "B": 0.1}))
+    real_run = Simulator.run
+    monkeypatch.setattr(
+        Simulator, "run", lambda self, *a, **kw: b_off(real_run(self, *a, **kw), 1.2)
+    )
+    v = _verdict(_decay(path))
+    assert v["status"] == "diff" and v["state_diff"] is True, v
+    assert v["diff_not_converged"] is False
+
+
+def test_a_series_wrong_in_every_solve_is_the_readings_though_not_converged(monkeypatch, engine):
+    # dA/dk twice the truth in every solve, at a tolerance where the series
+    # is not converged either: bngsim's tighter run is as far from AMICI, so
+    # the diff is not the tolerance's.
+    _loader_moves_k_twice(monkeypatch)
+    rep = _decay(rtol=1e-3).check([NAME])
+    (v,) = rep["checks"]
+    assert v["status"] == "diff" and v["diff_not_converged"] is False, v
+    assert "Report it" in rep["next"]
 
 
 def test_amicis_own_move_widens_the_states_allowance_too(monkeypatch, engine):
@@ -1128,7 +1234,13 @@ def test_the_build_cache_is_the_suites_own():
 
 @pytest.fixture(scope="module")
 def _amici():
-    return pytest.importorskip("amici.sim.sundials", exc_type=ImportError)
+    # Any ImportError, not only a missing package: an install that does not
+    # import is no install. (importorskip's exc_type= needs pytest 8.2.)
+    try:
+        import amici.sim.sundials as ss
+    except ImportError as e:
+        pytest.skip(f"could not import 'amici.sim.sundials': {e}")
+    return ss
 
 
 def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, monkeypatch, capfd):
