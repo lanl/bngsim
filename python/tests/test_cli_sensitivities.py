@@ -545,7 +545,8 @@ def test_simulator_takes_a_numpy_array_of_names():
     sim = Simulator(Model.load(CHAIN), sensitivity_params=np.array(["k1", "k2"]))
     r = sim.run(t_span=(0, 1), n_points=2)
     assert list(r.sensitivity_params) == ["k1", "k2"]
-    assert all(type(name) is str for name in r.sensitivity_params)
+    # Held as plain names, as a list of str would be.
+    assert [type(name) for name in sim._sensitivity_params] == [str, str]
 
 
 def test_an_empty_iterable_is_no_names_for_any_method():

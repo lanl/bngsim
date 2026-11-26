@@ -2017,8 +2017,6 @@ class Simulator:
         the keyword that takes them, by the model's own spelling. Runs after the
         refusals of names the model has but cannot differentiate, so theirs
         come first."""
-        if not (self._sensitivity_params or self._sensitivity_ic):
-            return  # no names: nothing read from the model, whatever it is
         from bngsim._model import _kind_of, _sole_species
 
         for keyword, names, error, kind, listed in (
@@ -2027,7 +2025,7 @@ class Simulator:
             ("sensitivity_ic", self._sensitivity_ic, ModelError, "species", "species_names"),
         ):  # fmt: skip
             if not names:
-                continue
+                continue  # nothing read from the model, whatever it is
             known = set(model._core.param_names if kind == "parameter" else model.species_names)
             code = "param.not_found" if kind == "parameter" else "species.not_found"
             for name in names:
