@@ -932,3 +932,28 @@ def test_a_denser_run_that_raises_is_made_once_and_named(monkeypatch):
 def test_the_grid_check_reads_a_column_judged_beside_its_points_on_that_scale():
     rep = _osc().check(["tolerance", "grid"])
     assert all(c["status"] == "pass" for c in rep["checks"]), rep["checks"]
+
+
+def test_only_the_columns_past_the_bound_are_judged_beside_their_points():
+    # x is sampled at its peaks and moves 2e-5 there: its move stays the one
+    # on its peak at the run's points; only y, past the bound, is rejudged.
+    r = _osc()
+    ctx = _check._Context(r, r.record, None)
+    assert ctx._ensure_drift() is None
+    d, peak = _check.differences(ctx._view(ctx.tight), ctx.x)
+    plain = _check.moves(d, peak, ctx.atols)
+    i = r.species_names.index("x")
+    assert ctx.moved[i] == plain[i]
+    assert ctx.rescaled is not None and list(ctx.rescaled) == [False, True]
+
+
+def test_a_path_on_a_column_judged_beside_its_points_has_that_scale_s_allowance():
+    # A difference of 3e-5 of y's amplitude: 0.54 of the allowance of y's
+    # scale beside its points, 1.2 of the one its peak at the points (its
+    # integration error) would give it.
+    r = _osc()
+    ctx = _check._Context(r, r.record, None)
+    assert ctx._ensure_drift() is None
+    x = np.asarray(ctx.x, dtype=float).copy()
+    x[:, r.species_names.index("y")] += 3e-5
+    assert ctx.compare_x("grid", x, {})["status"] == "pass"

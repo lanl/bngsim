@@ -1126,3 +1126,25 @@ def test_a_budget_out_before_the_denser_run_makes_the_sensitivity_check_a_timeou
     monkeypatch.setattr(_check._Context, "fine_run", out)
     v = _by_name(r.check(["sensitivity"]))["sensitivity"]
     assert v["status"] == "timeout" and "8x the points" in v["note"], v
+
+
+def test_the_quotient_reads_a_series_judged_beside_its_points_on_that_scale():
+    ant = """
+    model osc
+      J1: -> x; w*y
+      J2: -> y; -w*x
+      w = 3.141592653589793
+      x = 1; y = 0
+    end
+    """
+    r = Simulator(Model.from_antimony_string(ant), sensitivity_params=["w"]).run(
+        t_span=(0, 10), n_points=11
+    )
+    ctx = _check._Context(r, r.record, None)
+    v = _check_sensitivity.check_sensitivity(ctx)
+    assert v["status"] == "pass" and v["n_between"] >= 1
+    cols = _check_sensitivity._context(ctx)
+    peak = np.abs(cols.flat(cols.S)).max(axis=0)
+    k = cols.names.index("w") + cols.species.index("x") * len(cols.names)
+    # dx/dw is about 1e-6 at the points and about 10 beside them.
+    assert ctx.sens_scale is not None and ctx.sens_scale[k] > 1e3 * peak[k]
