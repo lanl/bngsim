@@ -227,9 +227,11 @@ end
         # The floor's size is read on the larger move: at A = 1e12 an error 9
         # floors between rtol and rtol/10 and 138 to rtol/100 is no floor's.
         (1e12, 1, {-8: 1e-2, -9: 8e-3, -10: -2e-2}, "diff", []),
-        # Nor is one past the bound only at rtol/100, though within 100 floors:
-        # a floor's error shows at rtol/10 as well (#1967).
+        # Nor is one past the bound only at rtol/100, though within 100 floors
+        # (#1967); and three runs cannot tell that from a floor's noise whose
+        # sign agrees at rtol and rtol/10, which is taken for the error too.
         (1e12, 1, {-8: 5e-3, -9: 4.95e-3, -10: 0.0}, "diff", []),
+        (1e12, 1, {-8: 2e-3, -9: 2e-3, -10: -2e-3}, "diff", []),
     ],
 )
 def test_a_series_a_floor_holds_is_named_and_judged_on_its_column(
@@ -394,6 +396,78 @@ def test_the_quotient_alone_makes_no_run_at_rtol_100(monkeypatch):
     monkeypatch.setattr(_check._Context, "rerun", rerun)
     v = _by_name(_decay().check(["sensitivity_fd"], budget=600))["sensitivity_fd"]
     assert v["status"] == "pass" and tried == [], (v, tried)
+
+
+def _offsets(monkeypatch, offsets: dict[int, float], row: int = 1) -> None:
+    """Each sensitivity run's series *row* off by its rtol's share in
+    *offsets*, on the ramp the floor test uses."""
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if len(out._sensitivity_params):
+            out = copy.copy(out)
+            s = np.asarray(out._sensitivities, dtype=float).copy()
+            off = offsets.get(round(math.log10(kw.get("rtol", 1e-8))), 0.0)
+            s[:, row, 0] += off * np.abs(s[:, row, 0]).max() * np.asarray(out.time) / 10.0
+            out._sensitivities = s
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run)
+
+
+def _two(a0: float = 1000.0) -> Result:
+    sim = Simulator(
+        Model.from_antimony_string(TWO.format(a0=a0)), method="ode", sensitivity_params=["k"]
+    )
+    return sim.run(t_span=(0, 10), n_points=11, rtol=1e-8)
+
+
+def test_the_quotient_s_verdict_is_the_same_alone_and_beside_the_tolerance_check(monkeypatch):
+    # The quotient judges convergence by the move to rtol/10, whether or not
+    # another check made the run at rtol/100.
+    _offsets(monkeypatch, {-8: 2e-3, -9: 2e-3, -10: -2e-3})
+    r = _two()
+    alone = _by_name(r.check(["sensitivity_fd"]))["sensitivity_fd"]
+    for others in (["tolerance"], ["sensitivity"], ["tolerance", "sensitivity"]):
+        beside = _by_name(r.check([*others, "sensitivity_fd"]))["sensitivity_fd"]
+        for key in ("status", "value", "n_not_converged"):
+            assert alone[key] == beside[key], (others, key, alone, beside)
+
+
+def test_the_moves_made_once_without_rtol_100_are_made_again_for_the_sensitivity_check(
+    monkeypatch,
+):
+    # The quotient called first makes the moves without the run at rtol/100;
+    # the sensitivity check then needs it, and its verdict is a fresh call's.
+    _offsets(monkeypatch, {-8: 5e-3, -9: 4.5e-3, -10: 0.0})
+    r = _two()
+    ctx = _check._Context(r, r.record, None)
+    _check_sensitivity.check_sensitivity_fd(ctx)
+    assert ctx.sens_moves[1] is None
+    late = _check_sensitivity.check_sensitivity(ctx)
+    fresh = _check_sensitivity.check_sensitivity(_check._Context(r, r.record, None))
+    assert late["status"] == fresh["status"] == "diff"
+    for key in ("value", "value_10", "value_100"):
+        assert late[key] == fresh[key], (key, late, fresh)
+
+
+def test_a_quotient_run_past_the_run_s_own_timeout_leaves_that_column_unjudged(monkeypatch):
+    from bngsim import _rerun
+    from bngsim._exceptions import SimulationError
+
+    real = _rerun.perturbed
+
+    def perturbed(result, **changes):
+        if "k" in (changes.get("parameters") or {}):
+            raise SimulationError("timed out", code="sim.timeout")
+        return real(result, **changes)
+
+    monkeypatch.setattr(_rerun, "perturbed", perturbed)
+    v = _by_name(_decay(timeout=60.0).check(["sensitivity_fd"], budget=600))["sensitivity_fd"]
+    assert v["status"] != "exception", v
+    assert "k" in v["not_judged"] and "timeout" in v["not_judged"]["k"], v
+    assert v["timed_out"] == [], v
 
 
 def test_the_floor_is_the_atol_the_solver_held_each_series_to():

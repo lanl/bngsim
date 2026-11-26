@@ -100,6 +100,7 @@ from bngsim._check import (
     _first_line,
     _num,
     _Out,
+    _timed_out,
     _verdict,
     allowance,
     differences,
@@ -387,14 +388,13 @@ def _tier1(
     Made once (and again for *hundredfold* where it was made without that run).
 
     With *hundredfold* (the ``"sensitivity"`` check, which judges by it) the
-    run at a hundredth is made where it was not; the other tiers read it where
-    the tolerance check made it, and make it only where a series a floor may
-    hold needs it. Where it raises, the tenfold move is the move (and
-    ``ctx.tight100_error`` says why). Where the budget runs out before it,
-    ``ctx.sens_100_out`` marks it for the ``"sensitivity"`` check, which is then
-    a timeout; for another tier, where a series a floor may hold needs it,
-    :class:`bngsim._check._Out` is raised, as no move of that series can be
-    judged."""
+    run at a hundredth is made where it was not; the other tiers read it only
+    where a series a floor may hold needs it, made or not. Where it raises,
+    the tenfold move is the move (and ``ctx.tight100_error`` says why). Where
+    the budget runs out before it, ``ctx.sens_100_out`` marks it for the
+    ``"sensitivity"`` check, which is then a timeout; for another tier, where
+    a series a floor may hold needs it, :class:`bngsim._check._Out` is raised,
+    as no move of that series can be judged."""
     if ctx.sens_drift is not None and not (
         hundredfold
         and ctx.sens_moves[1] is None
@@ -416,7 +416,10 @@ def _tier1(
         & (move10 > TOLERANCE_MOVE)
         & (d10 <= TRACE_ATOLS * cols.atol.reshape(-1))
     )
-    tight100: Result | None = ctx.tight100
+    # The other tiers read it only for such a series, whether or not the
+    # tolerance check made it, so their verdicts do not depend on which other
+    # checks a call asked for.
+    tight100: Result | None = None
     if hundredfold or maybe_floor.any():
         try:
             tight100 = _hundredfold(ctx)
@@ -548,9 +551,11 @@ def _floor_held(
     tight100: Result | None,
 ) -> NDArray[np.bool_]:
     """The series past the bound at rtol/10 that a floor holds, not the
-    tolerance. A floor's error shows at every tolerance alike, so a series past
-    the bound only at rtol/100 is not a floor's: its error is about the same at
-    rtol and rtol/10 (issue #1967). Both of two signs are needed:
+    tolerance. A series past the bound only at rtol/100 is judged on its own
+    peak: its error is about the same at rtol and at rtol/10 (issue #1967).
+    Three runs cannot tell that from a floor's noise whose sign happens to agree
+    at the two, and the check takes it for the error; a floor's noise that
+    differs at the two is still held. Both of two signs are needed:
 
     - The move is about the size of a floor: its larger difference, to the
       tenfold or the hundredfold tighter run, is within :data:`TRACE_ATOLS` of
@@ -630,8 +635,11 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
     # A series not converged at the run's tolerance gets no drift, which would
     # forgive its own error (the tolerance check reports it).
     # (A series a floor holds has its move read on its column's peak already.)
-    move, _, d_tight, _ = _tier1(ctx, cols)
-    converged = (move <= TOLERANCE_MOVE).reshape(n_sp, n_cols)
+    # Convergence is the tenfold move's, as in the AMICI tier, so the verdict
+    # does not depend on whether the sensitivity check made the run at rtol/100.
+    _, _, d_tight, _ = _tier1(ctx, cols)
+    move10, _ = ctx.sens_moves
+    converged = (move10 <= TOLERANCE_MOVE).reshape(n_sp, n_cols)
     peak = (
         np.where(np.isfinite(cols.S), np.abs(cols.S), 0.0).max(axis=0)
         if cols.S.size
@@ -713,6 +721,13 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
             not_judged[label] = (
                 "a derived parameter, whose column is a partial derivative no set_param moves"
             )
+            continue
+        except Exception as e:
+            # Past the run's own timeout, shorter than the budget: this column
+            # is not judged, and the others still are.
+            if not _timed_out(e):
+                raise
+            not_judged[label] = f"its quotient's runs passed the run's timeout ({_first_line(e)})"
             continue
         # The steps as realized, on each side.
         a1, b1, a2, b2 = at[0] - v, v - at[1], at[2] - v, v - at[3]
