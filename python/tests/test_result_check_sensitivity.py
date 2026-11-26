@@ -221,6 +221,10 @@ end
         # One the same at rtol and rtol/10, gone at rtol/100: its move at
         # rtol/10 is under the bound, its move to rtol/100 ten times it (#1967).
         (1000.0, 1, {-8: 5e-3, -9: 4.5e-3, -10: 0.0}, "diff", []),
+        # The floor's size is read on the larger move: at A = 1e12 an error
+        # under one floor between rtol and rtol/10 and 138 floors to rtol/100
+        # is no floor's (#1967).
+        (1e12, 1, {-8: 1e-2, -9: 9.9e-3, -10: -2e-2}, "diff", []),
     ],
 )
 def test_a_series_a_floor_holds_is_named_and_judged_on_its_column(
