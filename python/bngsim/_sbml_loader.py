@@ -3958,7 +3958,10 @@ def antimony_file_sbml(path: str | Path, *, warn: bool = True) -> str:
 
     ant = _import_antimony()
     ant.clearPreviousLoads()
-    with _antimony_numbers_in_c_locale(), warnings.catch_warnings():
+    # Only a re-read enters catch_warnings(): entering it resets every
+    # module's once-per-location record, which the load leaves alone.
+    quiet = contextlib.nullcontext() if warn else warnings.catch_warnings()
+    with _antimony_numbers_in_c_locale(), quiet:
         if not warn:
             warnings.simplefilter("ignore", ConversionWarning)
         ret = ant.loadFile(str(path))

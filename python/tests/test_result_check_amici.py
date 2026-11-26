@@ -2015,6 +2015,31 @@ def test_the_files_second_reading_shows_no_warning_the_load_gave(tmp_path, monke
     assert [kw for kw in asked if kw] == [{"warn": False}]
 
 
+def test_loading_an_antimony_file_leaves_the_warning_registry_alone(tmp_path):
+    # A warning shown once from a line is not shown again there after a load:
+    # the load's reading enters no catch_warnings() (the re-read's does).
+    pytest.importorskip("antimony")
+    path = tmp_path / "stray.ant"
+    path.write_text("y = 2;\nmodel m()\n  J1: A -> ; k*A\n  A = 100; k = 0.5\nend\n")
+
+    def once():
+        warnings.warn("unrelated", UserWarning, stacklevel=1)
+
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("default")
+        for _ in range(3):
+            once()
+            Model.load(str(path))
+    assert [type(w.message) for w in seen].count(UserWarning) == 1, seen
+    assert [type(w.message) for w in seen].count(ConversionWarning) == 1, seen
+    # A re-read silences the warning for itself alone.
+    from bngsim import _sbml_loader
+
+    before = list(warnings.filters)
+    _sbml_loader.antimony_file_sbml(path, warn=False)
+    assert warnings.filters == before
+
+
 def test_the_sbml_texts_failures_are_named(tmp_path, monkeypatch):
     path = tmp_path / "none.xml"
     path.write_text('<?xml version="1.0" encoding="UTF-8"?>\n<a/>\n')
