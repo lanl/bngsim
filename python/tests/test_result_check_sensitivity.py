@@ -1148,3 +1148,21 @@ def test_the_quotient_reads_a_series_judged_beside_its_points_on_that_scale():
     k = cols.names.index("w") + cols.species.index("x") * len(cols.names)
     # dx/dw is about 1e-6 at the points and about 10 beside them.
     assert ctx.sens_scale is not None and ctx.sens_scale[k] > 1e3 * peak[k]
+
+
+def test_the_quotient_s_verdict_on_a_series_judged_beside_its_points_is_the_same_alone():
+    ant = """
+    model osc
+      J1: -> x; w*y
+      J2: -> y; -w*x
+      w = 3.141592653589793
+      x = 1; y = 0
+    end
+    """
+    r = Simulator(Model.from_antimony_string(ant), sensitivity_params=["w"]).run(
+        t_span=(0, 10), n_points=11
+    )
+    alone = _by_name(r.check(["sensitivity_fd"]))["sensitivity_fd"]
+    beside = _by_name(r.check(["sensitivity", "sensitivity_fd"]))["sensitivity_fd"]
+    for key in ("status", "value", "n_not_converged"):
+        assert alone[key] == beside[key], (key, alone, beside)

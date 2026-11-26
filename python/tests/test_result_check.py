@@ -34,6 +34,7 @@ KEYS = [
     "converged",
     "n_not_resolved",
     "not_resolved",
+    "n_between",
     "checks",
     "n_pass",
     "n_diff",
@@ -957,3 +958,11 @@ def test_a_path_on_a_column_judged_beside_its_points_has_that_scale_s_allowance(
     x = np.asarray(ctx.x, dtype=float).copy()
     x[:, r.species_names.index("y")] += 3e-5
     assert ctx.compare_x("grid", x, {})["status"] == "pass"
+
+
+def test_the_report_counts_columns_judged_beside_their_points_and_says_what_to_do():
+    rep = _osc().check(["tolerance"])
+    assert rep["ok"] and rep["n_between"] == 1, rep
+    assert "rerun with more points" in rep["next"]
+    assert "judged between the run's points" in str(rep)
+    assert _osc(t_span=(0, 10), n_points=101).check(["tolerance"])["n_between"] == 0

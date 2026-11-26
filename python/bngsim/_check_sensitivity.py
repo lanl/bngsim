@@ -484,9 +484,12 @@ def _tier1(
         passed = past & (later <= TOLERANCE_MOVE)
         n_between = int(passed.sum())
         peak = np.where(np.isfinite(cols.flat(cols.S)), np.abs(cols.flat(cols.S)), 0.0).max(axis=0)
-        # A series passed this way is held by the quotient to the allowance of
-        # the scale it moves on at every point.
-        ctx.sens_scale = np.where(passed, np.maximum(peak, local.min(axis=0)), peak)
+        # A series the move to rtol/10 judged this way is held by the quotient
+        # to the allowance of the scale it moves on at every point: read from
+        # that move alone, so the same whether or not the run at rtol/100 was
+        # made (which depends on the checks asked).
+        by10 = live & keep & (plain10 > TOLERANCE_MOVE) & (move10 <= TOLERANCE_MOVE)
+        ctx.sens_scale = np.where(by10, np.maximum(peak, local.min(axis=0)), peak)
     ctx.sens_between = n_between
     # An error about the same at rtol and at rtol/10 moves little between
     # them, and is seen at rtol/100 (issue #1967).
@@ -586,11 +589,19 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
             f"; {ctx.sens_between} series past the bound on their peak at the run's points, "
             "within it on the values beside each point (the grid check's run)"
         )
-    if ctx.sens_local is False and ctx.fine_exc is not None and value > TOLERANCE_MOVE:
+    if (
+        ctx.sens_local is False
+        and (ctx.fine_exc is not None or ctx.fine_mismatch)
+        and value > TOLERANCE_MOVE
+    ):
+        why = (
+            f"raised ({type(ctx.fine_exc).__name__}: {_first_line(ctx.fine_exc)})"
+            if ctx.fine_exc is not None
+            else "did not line up with the run's points"
+        )
         note += (
-            f"; the run at 8x the points raised ({type(ctx.fine_exc).__name__}: "
-            f"{_first_line(ctx.fine_exc)}), so a series past the bound is judged on its peak "
-            "at the run's points alone"
+            f"; the run at 8x the points {why}, so a series past the bound is judged on its "
+            "peak at the run's points alone"
         )
     named = _named(cols, trace | held)
     extra: dict[str, Any] = {

@@ -406,6 +406,7 @@ def check(
     out["converged"] = None
     out["n_not_resolved"] = None
     out["not_resolved"] = []
+    out["n_between"] = 0
     out["checks"] = []
 
     roundoff = any(n.code == "solver.roundoff_steps" for n in result._notices)
@@ -429,6 +430,9 @@ def check(
         trace = [n for n, keep in zip(ctx.names, ctx.relevant, strict=True) if not keep]
         out["n_not_resolved"] = len(trace)
         out["not_resolved"] = trace[:MAX_NAMED]
+    # The columns and series judged on the values beside their points (issue
+    # #1926), counted where a pass would otherwise say nothing of them.
+    out["n_between"] = ctx.n_between + ctx.sens_between
     out["bound"] = TOLERANCE_MOVE
     return _finish(out, roundoff)
 
@@ -571,6 +575,15 @@ def _next(out: Report, roundoff: bool = False) -> str:
         )
     if not out["ok"]:
         return "No check could run on this result: see each check's note."
+    between = ""
+    if out.get("n_between"):
+        n = out["n_between"]
+        between = (
+            f" {n} column(s) moved past the bound on their largest value at the run's points "
+            "and were judged on the values the run reaches between them: the points miss "
+            "part of their trajectory (a zero crossing, or a transient between two points). "
+            "To see those values, rerun with more points and check that."
+        )
     trace = out.get("not_resolved") or []
     if trace:
         more = out["n_not_resolved"] - len(trace)
@@ -584,9 +597,9 @@ def _next(out: Report, roundoff: bool = False) -> str:
             "run's largest values: to report "
             f"{'it' if out['n_not_resolved'] == 1 else 'them'}, rerun with an atol well "
             f"below {'it' if out['n_not_resolved'] == 1 else 'them'} "
-            "(result.rerun(atol=...)) and check that."
+            "(result.rerun(atol=...)) and check that." + between
         )
-    return "No check moved the answer past its bound."
+    return "No check moved the answer past its bound." + between
 
 
 def _verdict(
@@ -650,6 +663,8 @@ class _Context:
         # points is judged on its peak between them (issue #1926).
         self.fine: Result | None = None
         self.fine_exc: BaseException | None = None
+        # Whether its values did not line up with the run's points.
+        self.fine_mismatch = False
         # Whether the budget ran out before that run, where a column needed it.
         self.fine_out = False
         # The species' local_peaks, where made; which columns were judged on
@@ -853,8 +868,9 @@ class _Context:
         try:
             local = local_peaks(np.asarray(view(fine), dtype=float), shape[0])
         except ValueError:
-            return None
+            local = None
         if local is None or local.shape != tuple(shape):
+            self.fine_mismatch = True
             return None
         return local
 
@@ -1020,11 +1036,15 @@ class _Context:
                 f"within it on the values beside each point ({GRID_FACTOR}x the points)"
             )
         past = bool((self.moved > TOLERANCE_MOVE).any())
-        if self.fine_exc is not None and self.local is None and past:
+        if self.local is None and past and (self.fine_exc is not None or self.fine_mismatch):
+            why = (
+                f"raised ({type(self.fine_exc).__name__}: {_first_line(self.fine_exc)})"
+                if self.fine_exc is not None
+                else "did not line up with the run's points"
+            )
             note += (
-                f"; the run at {GRID_FACTOR}x the points raised "
-                f"({type(self.fine_exc).__name__}: {_first_line(self.fine_exc)}), so a column "
-                "past the bound is judged on its peak at the run's points alone"
+                f"; the run at {GRID_FACTOR}x the points {why}, so a column past the bound is "
+                "judged on its peak at the run's points alone"
             )
         worst = self._worst(self.moved)
         return _verdict(
@@ -1372,6 +1392,8 @@ def text(r: dict[str, Any]) -> str:
     head = f"{verdict}: {r.get('n_pass', 0)} passed, {r.get('n_diff', 0)} moved the answer"
     if r.get("n_not_resolved"):
         head += f", {r['n_not_resolved']} species not resolved"
+    if r.get("n_between"):
+        head += f", {r['n_between']} judged between the run's points"
     if r.get("method"):
         head += f" ({r['method']} run"
         if r.get("rtol") is not None:

@@ -3496,12 +3496,15 @@ class Result:
               judged again, each point on the larger of that peak and the
               largest value the species reaches in the two intervals beside
               the point, read from the grid check's run at 8x the points
-              (``n_between`` counts those it then passes): one whose points
-              all fall on or near its zeros has a peak there about its
-              integration error, and a spike between two points excuses only
-              those two (issue #1926). A species zero at every one of those
-              8x points is not seen. Where the budget runs out before that
-              run, the verdict is a ``timeout``. How far each moves is
+              (``n_between`` counts those it then passes, and the report's
+              ``n_between`` and ``next`` say so): one whose points all fall on
+              or near its zeros has a peak there about its integration error,
+              and the first point after a fast transient the points miss is
+              judged on that transient (issue #1926). A spike between two
+              points excuses only those two; a spike in every interval, with
+              the points in the quiet phase, excuses them all, and a species
+              zero at every one of the 8x points is not seen. Where the budget
+              runs out before that run, the verdict is a ``timeout``. How far each moves is
               the run's own *drift*, which the other checks are judged by.
             - ``"grid"``: the run at 8x the output points, read at its own
               times; an output point is a stop the integrator lands on. Not
