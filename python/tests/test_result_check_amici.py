@@ -486,6 +486,22 @@ def test_the_looser_runs_move_widens_a_series_drift(monkeypatch, engine):
     monkeypatch.setattr(Result, "rerun", rerun)
     v = _verdict(r)
     assert v["status"] == "pass" and v["margin"] > 0.1, v
+    # A looser run that is far off itself widens a series by no more than a
+    # thousandth of its peak: AMICI off by 5% is still a finding.
+
+    def far(x, sx):
+        return x, sx * 1.05
+
+    engine(_ClosedForm({"A": A0}, edit=far))
+
+    def rerun_far(self, **changes):
+        out = real(self, **changes)
+        if changes.get("rtol", 0) > self.record["run"]["rtol"]:
+            out = _scaled(out, 0, 1.1)
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun_far)
+    assert _verdict(r)["status"] == "diff"
 
 
 def test_a_small_series_beside_a_large_one_is_judged_on_its_own_peak(tmp_path, engine):
