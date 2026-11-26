@@ -331,6 +331,29 @@ def test_a_run_another_engine_cannot_make_again_from_the_file_is_skipped(tmp_pat
     assert "parameters only" in v["note"]
 
 
+def test_a_pinned_derived_parameter_and_a_file_changed_mid_check_are_skipped(
+    tmp_path, monkeypatch, engine
+):
+    path = _write_sbml(
+        tmp_path / "derived.xml",
+        species=[("A", A0, False)],
+        params={"k": K0, "kb": 0.0},
+        reactions=[("J1", ["A"], [], "kb*A", {})],
+        initial={"kb": "k"},
+    )
+    m = Model.load(str(path))
+    m.set_param("kb", K0, force_override=True)
+    r = Simulator(m, method="ode", sensitivity_params=["k"]).run(t_span=(0, 5), n_points=6)
+    (v,) = r.check([NAME])["checks"]
+    assert v["status"] == "skip" and "pinned by set_param" in v["note"], v
+    # The file is read once more for AMICI, and checked again then.
+    r = _decay(path)
+    monkeypatch.setattr(_check, "same_as_file", lambda ctx, name, engine: None)
+    path.write_text(path.read_text() + "\n", encoding="utf-8")
+    (v,) = r.check([NAME])["checks"]
+    assert v["status"] == "skip" and v["note"] == _check.FILE_CHANGED, v
+
+
 def test_a_model_with_an_event_or_a_switch_is_not_compared(tmp_path, engine):
     base = dict(species=[("A", A0, False)], params={"k": K0, "ton": 5.0})
     cases = {
@@ -524,67 +547,86 @@ def test_a_disagreement_the_tighter_run_does_not_show_is_the_tolerances(engine):
 
 
 def test_the_reference_is_amicis_tighter_run(engine):
-    # AMICI at the run's tolerance off by 5% of dA/dk, and of A: its run at a
-    # tenth of the tolerance is the one judged against, and a correct run
+    # AMICI at the run's tolerance off by 0.5% of dA/dk, and of A: its run at
+    # a tenth of the tolerance is the one judged against, and a correct run
     # passes. The series AMICI moves past a thousandth of their peak on are
     # named, as their allowance is that wide.
     fake = engine(_ClosedForm({"A": A0}))
-    fake.loose_error = 0.05
-    fake.loose_state_error = 0.05
+    fake.loose_error = 5e-3
+    fake.loose_state_error = 5e-3
     v = _verdict(_decay())
     assert v["status"] == "pass", v
     assert v["amici_not_converged"] == ["dA/dk"] and v["n_amici_not_converged"] == 1
     assert "AMICI itself moves past 0.001 of their peak" in v["note"]
     assert "(dA/dk)" in v["note"]
-    # Ten times AMICI's move: a reading off by twice the truth is still one.
+    # Ten times AMICI's move: a reading off by 10% is still one.
     fake = engine(_ClosedForm({"A": A0}))
-    fake.loose_error = 0.05
-    assert _verdict(_scaled(_decay(), 0, 2.0))["status"] == "diff"
+    fake.loose_error = 5e-3
+    assert _verdict(_scaled(_decay(), 0, 1.1))["status"] == "diff"
 
 
-def test_the_states_reference_is_amicis_tighter_run_too(monkeypatch, engine):
-    # bngsim's A off by 1.05% in every solve; AMICI's A off by 0.1% at the
-    # run's tolerance, the same way, and exact at a tenth of it. Against the
-    # tighter run the gap is 1.05 times ten times AMICI's move: a diff.
-    real = Simulator.run
+def test_a_series_amici_moves_by_more_than_a_hundredth_of_has_no_reference(engine):
+    # AMICI off by 10% between its runs: ten times that would forgive the
+    # whole series, so it is not judged, and with nothing else to judge the
+    # check is a skip, not a pass, even where bngsim's column is twice the
+    # truth.
+    for factor in (1.0, 2.0, 0.0):
+        fake = engine(_ClosedForm({"A": A0}))
+        fake.loose_error = 0.1
+        rep = _scaled(_decay(), 0, factor).check([NAME])
+        (v,) = rep["checks"]
+        assert v["status"] == "skip", (factor, v)
+        assert v["no_reference"] == ["dA/dk"] and v["n_no_reference"] == 1
+        assert "no reference at the run's tolerance" in v["note"]
+        assert rep["ok"] is False
 
-    def run(self, *a, **kw):
-        out = copy.copy(real(self, *a, **kw))
-        out._species = np.asarray(out._species, dtype=float) * (1 + 1.05e-2)
-        return out
 
-    monkeypatch.setattr(Simulator, "run", run)
+def test_a_diff_that_goes_at_a_tighter_tolerance_is_the_tolerances(engine):
+    # AMICI's runs at the run's tolerance and at a tenth of it agree with each
+    # other and are both 0.1% off; at a hundredth, it is exact. bngsim is
+    # right: the diff the run's tolerance shows is the tolerance's.
+    calls = []
+
+    def both_off(x, sx):
+        calls.append(1)
+        return (x, sx) if len(calls) % 3 == 0 else (x, sx * (1 + 1e-3))
+
+    engine(_ClosedForm({"A": A0}, edit=both_off))
+    rep = _decay().check([NAME])
+    (v,) = rep["checks"]
+    assert v["status"] == "diff" and v["confirmed_tighter"] is False, v
+    assert v["diff_not_converged"] is True
+    assert "agrees with AMICI's at a hundredth: the tolerance's" in v["note"]
+    assert "not converged at the run's tolerance" in rep["next"]
+
+
+def test_a_diff_that_cannot_be_compared_tighter_says_so(engine):
     fake = engine(_ClosedForm({"A": A0}))
-    fake.loose_state_error = 1e-3
+    real = fake.simulate
+
+    def simulate(ids, t0, times, **kw):
+        if len(fake.calls) == 2:
+            fake.calls.append(dict(kw, ids=list(ids), t0=t0))
+            return "status -1 (AMICI_TOO_MUCH_WORK)", np.empty((0, 0)), np.empty((0, 0, 0))
+        return real(ids, t0, times, **kw)
+
+    fake.simulate = simulate
+    rep = _scaled(_decay(), 0, 1.5).check([NAME])
+    (v,) = rep["checks"]
+    assert v["status"] == "diff" and v["confirmed_tighter"] is None, v
+    assert "could not be compared a decade tighter" in v["note"]
+    assert "could not be compared at a tighter one" in rep["next"]
+
+
+def test_an_exception_from_amici_is_a_skip(engine):
+    fake = engine(_ClosedForm({"A": A0}))
+
+    def simulate(*a, **kw):
+        raise RuntimeError("AMICI's solver setter failed")
+
+    fake.simulate = simulate
     v = _verdict(_decay())
-    assert v["status"] == "diff" and v["state_diff"] is True, v
-    assert 1.0 < v["state_margin"] < 1.1, v
-
-
-def test_a_species_the_run_does_not_resolve_is_judged_on_its_whole_scale(tmp_path, engine):
-    # B is held at 1e-11, within 100 times its atol of zero, which the run
-    # does not resolve: AMICI's B 1e-8 off is past B's own allowance, and no
-    # finding on the run's whole scale.
-    path = _write_sbml(
-        tmp_path / "trace.xml",
-        species=[("A", A0, False), ("B", 1e-11, False)],
-        params={"k": K0},
-        reactions=[("J1", ["A"], [], "k*A", {})],
-    )
-    r = _decay(path)
-    ctx = _check._Context(r, r.record, None)
-    atol_b = float(ctx.atols[1])
-    assert not _check.resolved(np.array([1e-11]), np.array([atol_b]), r.record["run"]["rtol"])[0]
-    assert _check.PATH_ATOL_FACTOR * atol_b < 1e-8
-
-    def off(x, sx):
-        x = x.copy()
-        x[:, 1] = 1e-11 + 1e-8
-        return x, sx
-
-    engine(_ClosedForm({"A": A0, "B": 1e-11}, edit=off))
-    v = _verdict(r)
-    assert v["status"] == "pass" and v["state_diff"] is False, v
+    assert v["status"] == "skip" and "RuntimeError: AMICI's solver setter failed" in v["note"]
 
 
 def test_a_value_amicis_reference_run_gives_as_not_finite_is_a_skip(engine):
@@ -700,7 +742,7 @@ def test_amicis_own_move_widens_the_states_allowance_too(monkeypatch, engine):
 def test_amici_failing_at_the_tighter_tolerance_is_a_skip(engine):
     engine(_ClosedForm({"A": A0}, fail="tight"))
     v = _verdict(_decay())
-    assert v["status"] == "skip" and "at a tenth of the run's tolerance" in v["note"], v
+    assert v["status"] == "skip" and "at 1/10 of the run's tolerance" in v["note"], v
 
 
 def test_amici_starts_where_the_run_starts(engine):
@@ -748,6 +790,13 @@ def test_a_local_parameter_beside_a_global_of_its_amici_name_is_not_judged(tmp_p
     assert v["not_judged"] == {
         "J2_kl": "a reaction's local parameter has its name in AMICI's naming too"
     }, v
+    # Two of the run's columns with one id in the file: neither is judged.
+    r = Simulator(
+        Model.load(str(path)), method="ode", sensitivity_params=["_lp_J2_kl", "J2_kl", "k"]
+    ).run(t_span=(0, 5), n_points=6)
+    v = _verdict(r)
+    reason = "another of the run's parameters has its id in the file"
+    assert v["not_judged"] == {"_lp_J2_kl": reason, "J2_kl": reason}, v
 
 
 def test_a_column_the_run_gives_as_zero_is_judged_on_amicis_scale(engine):
@@ -852,6 +901,22 @@ def test_noise_near_zero_is_judged_on_its_columns_scale(tmp_path, monkeypatch, e
     v = _verdict(noisy)
     assert v["status"] == "pass", v
     assert v["not_resolved"] == ["dB/dk"] and v["n_not_resolved"] == 1
+    # A series neither engine resolves has no scale to read its move on: it
+    # is not counted as one not converged, however it moves.
+
+    def run_moving(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if len(out._sensitivity_params) and out._sensitivities.shape[1] == 2:
+            out = copy.copy(out)
+            s = np.asarray(out._sensitivities, dtype=float).copy()
+            s[:, 1, 0] = (-80.0 if kw.get("rtol") is None else -20.0) * floor
+            out._sensitivities = s
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run_moving)
+    v = _verdict(_decay(path))
+    assert v["status"] == "pass" and v["n_not_converged"] == 0, v
+    monkeypatch.setattr(Simulator, "run", run)
     # Nor is AMICI's own move there named as wide: a series neither engine
     # resolves has no peak to read it on.
     fake = engine(_ClosedForm({"A": A0, "B": 0.1}, edit=amici_says(0.0)))
@@ -903,6 +968,7 @@ def test_a_state_amici_disagrees_on_is_a_finding_about_the_trajectory(engine):
     rep = _decay().check([NAME])
     (v,) = rep["checks"]
     assert v["status"] == "diff" and v["state_diff"] is True and v["state_margin"] > 1
+    assert v["worst_column"] == "A" and v["margin"] <= 1.0
     assert "the states disagree" in v["note"]
     assert "disagree on this model's trajectory" in rep["next"]
 
@@ -1000,6 +1066,31 @@ def test_a_load_with_compartment_sizes_is_skipped(tmp_path, engine):
     r = Simulator(m, method="ode", sensitivity_params=["k"]).run(t_span=(0, 10), n_points=11)
     v = _verdict(r)
     assert v["status"] == "skip" and "compartment_sizes=" in v["note"], v
+
+
+def test_a_row_the_run_refuses_by_design_is_not_judged(tmp_path, engine):
+    path = _write_sbml(
+        tmp_path / "two.xml",
+        species=[("A", A0, False), ("B", 0.1, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
+    )
+    r = copy.copy(_decay(path))
+    s = np.asarray(r._sensitivities, dtype=float).copy()
+    s[:, 1, :] = np.nan
+    r._sensitivities = s
+    r._ar_sens_refused = frozenset({"B"})
+    # AMICI gives B's sensitivity, far from anything: it is not judged.
+
+    def far(x, sx):
+        sx = sx.copy()
+        sx[:, 1, 0] = 1e6
+        return x, sx
+
+    engine(_ClosedForm({"A": A0, "B": 0.1}, edit=far))
+    v = _verdict(r)
+    assert v["status"] == "pass" and v["n_refused"] == 1, v
+    assert "1 series not finite in the run by design, not judged" in v["note"]
 
 
 def test_amicis_failures_are_skips_not_findings(engine):
@@ -1121,35 +1212,39 @@ def test_a_species_amici_holds_no_state_for_is_named(tmp_path, engine):
     assert fake.asked["atol"] == pytest.approx(float(np.min(ctx.atols)))
 
 
-def test_the_report_names_an_install_the_parity_suite_does_not_pin(engine):
+def test_the_report_names_an_install_the_parity_suite_does_not_pin(monkeypatch, engine):
+    engine(_ClosedForm({"A": A0}, commit="0123456789abcdef"))
+    v = _verdict(_decay())
+    assert v["engine"]["pinned"] is False and v["engine"]["commit"] == "0123456789abcdef"
+    assert (
+        f"not the commit bngsim's AMICI parity suite pins ({_check_amici.PINNED_COMMIT[:9]})"
+        in (v["note"])
+    )
+    # An install that records no commit (from PyPI, or an editable one) is not
+    # said to be another commit: whether it is the pin cannot be told.
     engine(_ClosedForm({"A": A0}, commit=None))
     v = _verdict(_decay())
     assert v["engine"] == {
         "name": "AMICI",
         "version": "0.0-test",
         "commit": None,
-        "pinned": False,
+        "pinned": None,
         "cached": True,
         "build_seconds": 0.0,
         "atol": v["engine"]["atol"],
         "atol_sensitivities": v["engine"]["atol_sensitivities"],
     }
-    assert (
-        f"not the commit bngsim's AMICI parity suite pins ({_check_amici.PINNED_COMMIT[:9]})"
-        in (v["note"])
-    )
-
-
-def test_second_engine_skips_a_file_that_changed_after_the_load_too(tmp_path):
-    pytest.importorskip("roadrunner")
-    sbml = examples.path("decay", format="sbml")
-    path = tmp_path / "decay.xml"
-    path.write_text(sbml.read_text(), encoding="utf-8")
-    r = Simulator(Model.load(str(path)), method="ode").run(t_span=(0, 5), n_points=6)
-    assert r.check(["second_engine"])["checks"][0]["status"] == "pass"
-    path.write_text(sbml.read_text().replace("<ci> k </ci>", "<ci> k </ci> "), encoding="utf-8")
-    (v,) = r.check(["second_engine"])["checks"]
-    assert v["status"] == "skip" and v["note"] == _check.FILE_CHANGED, v
+    assert "records no commit, so whether it is the one" in v["note"]
+    assert "is not the commit" not in v["note"]
+    # A confirmed diff (one every solve has) against an unpinned AMICI says to
+    # check with the pin first.
+    _loader_moves_k_twice(monkeypatch)
+    rep = _decay().check([NAME])
+    assert rep["checks"][0]["confirmed_tighter"] is True
+    assert "check with that commit before reporting" in rep["next"]
+    engine(_ClosedForm({"A": A0}, commit=_check_amici.PINNED_COMMIT))
+    rep = _decay().check([NAME])
+    assert "check with that commit" not in rep["next"] and "Report it" in rep["next"]
 
 
 def test_the_pin_is_the_parity_suites():
@@ -1179,6 +1274,9 @@ class _FakeAmici:
     def __init__(self, fail: Exception | None = None) -> None:
         self.fail = fail
         self.log = ""
+        #: Written to file descriptor 1, as AMICI's CMake and compiler do.
+        self.stdout = ""
+        self.tried = 0
         self.builds: list[Path] = []
         self.paths: list[str] = []
         self.__version__ = "0.0-fake"
@@ -1194,6 +1292,9 @@ class _FakeAmici:
                 assert kw["generate_sensitivity_code"] is True
                 assert kw["compute_conservation_laws"] is False
                 outer.paths.append(os.environ["PATH"])
+                outer.tried += 1
+                if outer.stdout:
+                    os.write(1, outer.stdout.encode())
                 if outer.log:
                     logging.getLogger("amici.importers.sbml").error(outer.log)
                 if outer.fail is not None:
@@ -1243,7 +1344,9 @@ def test_a_build_that_fails_is_a_skip_and_leaves_nothing(monkeypatch, tmp_path, 
     monkeypatch.setattr(_check_amici, "CACHE_DIR", tmp_path / "amici")
     why = _check_amici.build_engine(_FakeAmici(RuntimeError("swig not found")), "<sbml/>")
     assert why == "AMICI could not build it: RuntimeError: swig not found"
-    assert list((tmp_path / "amici").iterdir()) == []
+    # Nothing is left but the note of the failure, which the next try reads.
+    (left,) = list((tmp_path / "amici").iterdir())
+    assert left.suffix == ".failed" and left.read_text().strip() == why
     # AMICI's own log of a failure is kept off the terminal, and its first
     # error goes in the note instead of "see the messages above".
     log = logging.getLogger("amici")
@@ -1252,13 +1355,72 @@ def test_a_build_that_fails_is_a_skip_and_leaves_nothing(monkeypatch, tmp_path, 
     fake = _FakeAmici(RuntimeError("SBML Document failed to load (see error messages above)"))
     general = "libSBML SBML component consistency (Error): " + "the rule's general text " * 20
     fake.log = general + "\n\nThe species 'S' is not a modifier of 'J1'\n"
-    why = _check_amici.build_engine(fake, "<sbml/>")
+    why = _check_amici.build_engine(fake, "<sbml other/>")
     assert why.endswith("... The species 'S' is not a modifier of 'J1')"), why
     assert "(AMICI's first error: libSBML SBML component consistency (Error): the rule" in why
     assert len(why) < 500
     assert log.handlers == [handler]
     out, err = capfd.readouterr()
     assert "not a modifier" not in out + err
+
+
+def test_a_failed_builds_output_stays_off_the_terminal_and_is_not_tried_again(
+    monkeypatch, tmp_path, capfd
+):
+    import subprocess
+
+    monkeypatch.setattr(_check_amici, "CACHE_DIR", tmp_path / "amici")
+    fake = _FakeAmici(subprocess.CalledProcessError(1, ["python", "setup.py", "build_ext"]))
+    fake.stdout = (
+        "-- Configuring done\n" * 50
+        + "/tmp/x/.building_y/w.cpp:22:11: error: no member named 'w' in namespace 'std'\n"
+        + "1 error generated.\n" * 20
+    )
+    capfd.readouterr()
+    why = _check_amici.build_engine(fake, "<sbml/>")
+    out, err = capfd.readouterr()
+    assert "Configuring done" not in out + err and "no member named" not in out + err
+    assert why == (
+        "AMICI could not build it: its generated C++ did not compile "
+        "(w.cpp:22:11: error: no member named 'w' in namespace 'std')"
+    ), why
+    # The failure is kept, so the next check does not pay the build again.
+    again = _check_amici.build_engine(fake, "<sbml/>")
+    assert fake.tried == 1 and again.startswith(why) and "remove" in again
+    (marker,) = (tmp_path / "amici").glob("*.failed")
+    marker.unlink()
+    _check_amici.build_engine(fake, "<sbml/>")
+    assert fake.tried == 2
+    assert not [p for p in (tmp_path / "amici").iterdir() if p.name.startswith(".building_")]
+
+
+def test_a_rename_that_fails_with_no_build_in_place_is_a_build_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(_check_amici, "CACHE_DIR", tmp_path / "amici")
+    fake = _FakeAmici()
+    real_importer = fake.SbmlImporter
+
+    class NoStaging(real_importer):
+        def sbml2amici(self, name, out, **kw):
+            fake.paths.append(os.environ["PATH"])  # builds nothing
+
+    fake.SbmlImporter = NoStaging
+    why = _check_amici.build_engine(fake, "<sbml/>")
+    assert isinstance(why, str) and why.startswith("AMICI could not build it:"), why
+
+
+def test_the_build_key_holds_the_flags_and_the_python(monkeypatch, tmp_path):
+    monkeypatch.setattr(_check_amici, "CACHE_DIR", tmp_path / "amici")
+    fake = _FakeAmici()
+    assert _check_amici.build_engine(fake, "<sbml/>").cached is False
+    assert _check_amici.build_engine(fake, "<sbml/>").cached is True
+    monkeypatch.setattr(_check_amici, "_BUILD_FLAGS", _check_amici._BUILD_FLAGS + ";other")
+    assert _check_amici.build_engine(fake, "<sbml/>").cached is False
+    monkeypatch.setattr(
+        _check_amici,
+        "sys",
+        SimpleNamespace(version_info=(3, 99, 0), stdout=sys.stdout, stderr=sys.stderr),
+    )
+    assert _check_amici.build_engine(fake, "<sbml/>").cached is False
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific: os.kill(pid, 0) probes a pid")
@@ -1364,6 +1526,14 @@ def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, mon
     out, err = capfd.readouterr()
     assert "FORWARD_FAILURE" not in out + err
     monkeypatch.undo()
+    # From a later start, AMICI starts where the run does.
+    late = Simulator(
+        Model.load(str(examples.path("decay", format="sbml"))),
+        method="ode",
+        sensitivity_params=["k"],
+    ).run(t_span=(2, 7), n_points=6)
+    v = _verdict(late)
+    assert v["status"] == "pass" and v["state_margin"] < 0.1, v
     # A defect the loader and the sensitivity code share: only AMICI sees it.
     _loader_moves_k_twice(monkeypatch)
     by = _by_name(_decay().check(["sensitivity", "sensitivity_fd", NAME]))

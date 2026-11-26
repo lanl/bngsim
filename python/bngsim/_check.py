@@ -454,11 +454,26 @@ def _next(out: Report, roundoff: bool = False) -> str:
                 "(result.rerun(rtol=..., atol=...)) and check that run."
             )
         what = "trajectory" if diffs[0].get("state_diff") else "forward sensitivities"
+        if diffs[0].get("confirmed_tighter") is None:
+            return (
+                f"bngsim and AMICI disagree on this model's {what} at the run's tolerance, and "
+                "could not be compared at a tighter one: rerun at a tighter rtol and atol "
+                "(result.rerun(rtol=..., atol=...)) and check that run; if they still disagree, "
+                "report it at https://github.com/lanl/bngsim/issues with json.dumps(report) and "
+                "the model file."
+            )
+        unpinned = (diffs[0].get("engine") or {}).get("pinned") is not True
         return (
-            f"bngsim and AMICI disagree on this model's {what}: one of them reads the model "
-            "differently, or computes its sensitivities wrong. Report it at "
-            "https://github.com/lanl/bngsim/issues with json.dumps(report) and the model file, "
-            "and do not report those sensitivities."
+            f"bngsim and AMICI disagree on this model's {what}, and still do a decade tighter: "
+            "one of them reads the model differently, or computes its sensitivities wrong. "
+            + (
+                "This AMICI is not the commit bngsim's AMICI parity suite pins, and some AMICI "
+                "releases misread models; check with that commit before reporting. "
+                if unpinned
+                else ""
+            )
+            + "Report it at https://github.com/lanl/bngsim/issues with json.dumps(report) and the "
+            "model file, and do not report those sensitivities."
         )
     if diffs and diffs[0]["name"] == "second_engine":
         return (

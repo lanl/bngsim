@@ -3559,13 +3559,16 @@ class Result:
               against the tighter run series by series as a path is, on the
               larger of the two engines' peaks, with the series' move at the
               tighter tolerance as its drift (none where the series is not
-              converged) and AMICI's own move between its two runs on top
+              converged) or AMICI's own move between its two runs, the larger
               (``amici_not_converged`` names the series it moves past 1e-3
-              of their peak on), and the states are compared alike; an
-              initial amount is not judged (``not_judged``), as AMICI gives
-              sensitivities to parameters only. A diff in series not
-              converged at the run's tolerance that bngsim's tighter run
-              halves is ``diff_not_converged``. AMICI's build is cached in
+              of their peak on; past 1e-2 there is no reference, and the
+              series is not judged: ``no_reference``), and the states are
+              compared alike; an initial amount is not judged
+              (``not_judged``), as AMICI gives sensitivities to parameters
+              only. A diff is judged again a decade tighter (bngsim at
+              ``rtol/10`` against AMICI at ``rtol/100``):
+              ``confirmed_tighter`` says whether it holds there, and one that
+              does not is ``diff_not_converged``. AMICI's build is cached in
               ``~/.cache/bngsim/amici`` (or ``$BNGSIM_AMICI_CACHE_DIR``).
             - ``"replicates"``: a stochastic run made again at ``replicates``
               other seeds; for each observable at the last time, the mean
@@ -3619,8 +3622,9 @@ class Result:
             series alone, which ``next`` reads as the tolerance's);
             ``"sensitivity_second_engine"`` gives those of ``margin``,
             ``n_judged``, ``not_judged``, ``n_not_converged`` and
-            ``diff_not_converged`` too, ``not_converged`` and
-            ``amici_not_converged`` (series names), and ``state_margin`` and
+            ``diff_not_converged`` too, ``not_converged``,
+            ``amici_not_converged`` and ``no_reference`` (series names),
+            ``confirmed_tighter``, and ``state_margin`` and
             ``state_diff`` (the states against AMICI's),
             ``species_not_compared`` (with the reason) and ``engine``
             (AMICI's ``version``, its ``commit`` where the install records
