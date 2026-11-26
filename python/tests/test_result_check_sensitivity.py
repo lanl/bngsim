@@ -1016,7 +1016,9 @@ def test_a_budget_that_runs_out_telling_a_floor_from_the_tolerance_is_a_timeout(
         m.setattr(Result, "rerun", count)
         v = _scaled(_decay(), 0, 1.01).check(["sensitivity"], budget=600)["checks"][0]
     assert v["status"] == "diff", v
-    assert rtols == [pytest.approx(1e-9), pytest.approx(1e-10)], rtols
+    # And the grid check's run, before it, to read a series past the bound on
+    # the values beside each point (issue #1926).
+    assert rtols == [pytest.approx(1e-9), None, pytest.approx(1e-10)], rtols
     # dB/dk past the bound at rtol/10 by a few of its floor (the case the floor
     # test holds): the rtol/100 run that would tell a floor from the tolerance
     # runs out of budget, so the move is not reported as a diff it may not be.
@@ -1082,3 +1084,85 @@ def test_the_constants_say_what_the_docs_say():
     assert (_check_sensitivity.FD_RTOL_LEAST, _check_sensitivity.FD_RTOL_MOST) == (1e-14, 1e-8)
     assert math.isclose(_check_sensitivity.FD_NOISE, _check.DRIFT_FACTOR)
     assert _check.SENSITIVITY == ("sensitivity", "sensitivity_fd", "sensitivity_second_engine")
+
+
+def test_a_series_sampled_at_its_zeros_is_judged_on_its_peak_between_the_points():
+    # Issue #1926: dx/dw = -t·sin(πt) is 0 at every integer time, so its peak
+    # at the run's points is its integration error and its move 0.98 of it.
+    # Between the points its peak is about 10, and the run is right to 1e-6.
+    ant = """
+    model osc
+      J1: -> x; w*y
+      J2: -> y; -w*x
+      w = 3.141592653589793
+      x = 1; y = 0
+    end
+    """
+    r = Simulator(Model.from_antimony_string(ant), sensitivity_params=["w"]).run(
+        t_span=(0, 10), n_points=11
+    )
+    v = _by_name(r.check(["sensitivity"]))["sensitivity"]
+    assert v["status"] == "pass" and v["n_between"] >= 1, v
+    beside = _by_name(r.check(["tolerance", "grid", "sensitivity"]))["sensitivity"]
+    assert beside["value"] == v["value"] and beside["n_between"] == v["n_between"]
+
+
+def test_a_budget_out_before_the_denser_run_makes_the_sensitivity_check_a_timeout(monkeypatch):
+    ant = """
+    model osc
+      J1: -> x; w*y
+      J2: -> y; -w*x
+      w = 3.141592653589793
+      x = 1; y = 0
+    end
+    """
+    r = Simulator(Model.from_antimony_string(ant), sensitivity_params=["w"]).run(
+        t_span=(0, 10), n_points=11
+    )
+
+    def out(self):
+        raise _check._Out
+
+    monkeypatch.setattr(_check._Context, "fine_run", out)
+    v = _by_name(r.check(["sensitivity"]))["sensitivity"]
+    assert v["status"] == "timeout" and "8x the points" in v["note"], v
+
+
+def test_the_quotient_reads_a_series_judged_beside_its_points_on_that_scale():
+    ant = """
+    model osc
+      J1: -> x; w*y
+      J2: -> y; -w*x
+      w = 3.141592653589793
+      x = 1; y = 0
+    end
+    """
+    r = Simulator(Model.from_antimony_string(ant), sensitivity_params=["w"]).run(
+        t_span=(0, 10), n_points=11
+    )
+    ctx = _check._Context(r, r.record, None)
+    v = _check_sensitivity.check_sensitivity(ctx)
+    assert v["status"] == "pass" and v["n_between"] >= 1
+    cols = _check_sensitivity._context(ctx)
+    peak = np.abs(cols.flat(cols.S)).max(axis=0)
+    k = cols.names.index("w") + cols.species.index("x") * len(cols.names)
+    # dx/dw is about 1e-6 at the points and about 10 beside them.
+    assert ctx.sens_scale is not None and ctx.sens_scale[k] > 1e3 * peak[k]
+
+
+def test_the_quotient_s_verdict_on_a_series_judged_beside_its_points_is_the_same_alone():
+    ant = """
+    model osc
+      J1: -> x; w*y
+      J2: -> y; -w*x
+      w = 3.141592653589793
+      x = 1; y = 0
+    end
+    """
+    r = Simulator(Model.from_antimony_string(ant), sensitivity_params=["w"]).run(
+        t_span=(0, 10), n_points=11
+    )
+    alone = _by_name(r.check(["sensitivity_fd"]))["sensitivity_fd"]
+    beside = _by_name(r.check(["sensitivity", "sensitivity_fd"]))["sensitivity_fd"]
+    for key in ("status", "value", "n_not_converged"):
+        assert alone[key] == beside[key], (key, alone, beside)
