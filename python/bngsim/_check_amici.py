@@ -513,8 +513,9 @@ def _amici_log_to(errors: list[str]) -> Iterator[None]:
                 if not lines:
                     errors.append(record.levelname)
                     return
-                text = lines[0] if len(lines) == 1 else f"{lines[0]} ... {lines[-1]}"
-                errors.append(text[:400])
+                first = lines[0] if len(lines[0]) <= 150 else lines[0][:150] + "..."
+                text = first if len(lines) == 1 else f"{first} ... {lines[-1][:250]}"
+                errors.append(text)
 
     log = logging.getLogger("amici")
     held, propagate = list(log.handlers), log.propagate
@@ -608,6 +609,8 @@ def build_engine(amici: Any, sbml: str) -> Engine | str:
         except Exception as e:  # noqa: BLE001 - AMICI's failure is not bngsim's
             why = f"AMICI could not build it: {type(e).__name__}: {_first_line(e)}"
             if errors:
+                # The messages AMICI points "above" to are its log, kept here.
+                why = why.replace(" (see error messages above)", "")
                 why += f" (AMICI's first error: {errors[0]})"
             return why
         finally:
@@ -822,7 +825,7 @@ def compare(
     if atol is None:
         atol = float(ctx.atol or 0.0)
     floors = cols.atol[:, use]
-    atol_sens = smallest(floors[order] * size_of[:, None], floors[order])
+    atol_sens = smallest(floors[order] * size_of[:, None], floors)
     if atol_sens is None:
         atol_sens = atol
     times = np.asarray(ctx.result._time, dtype=float)

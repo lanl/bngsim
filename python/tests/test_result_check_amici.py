@@ -809,11 +809,19 @@ def test_a_species_amici_holds_no_state_for_is_named(tmp_path, engine):
         params={"k": K0},
         reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
     )
-    engine(_ClosedForm({"A": A0}))
-    v = _verdict(_decay(path))
+    fake = engine(_ClosedForm({"A": A0}))
+    r = _decay(path)
+    v = _verdict(r)
     assert v["status"] == "pass"
     assert v["species_not_compared"] == {"B": "AMICI integrates no state for it"}
     assert "1 species not compared" in v["note"]
+    # AMICI's tolerances are scalars over every state, compared or not: no
+    # looser than the run's smallest, B's here.
+    ctx = _check._Context(r, r.record, None)
+    cols = _check_sensitivity._Columns(ctx)
+    assert cols.atol[1, 0] < cols.atol[0, 0]
+    assert fake.asked["atol_sens"] == pytest.approx(float(cols.atol[:, 0].min()))
+    assert fake.asked["atol"] == pytest.approx(float(np.min(ctx.atols)))
 
 
 def test_the_report_names_an_install_the_parity_suite_does_not_pin(engine):
@@ -945,12 +953,12 @@ def test_a_build_that_fails_is_a_skip_and_leaves_nothing(monkeypatch, tmp_path, 
     handler = logging.StreamHandler()
     monkeypatch.setattr(log, "handlers", [handler])
     fake = _FakeAmici(RuntimeError("SBML Document failed to load (see error messages above)"))
-    fake.log = "libSBML: a rule's general text\n\nThe species 'S' is not a modifier of 'J1'\n"
+    general = "libSBML SBML component consistency (Error): " + "the rule's general text " * 20
+    fake.log = general + "\n\nThe species 'S' is not a modifier of 'J1'\n"
     why = _check_amici.build_engine(fake, "<sbml/>")
-    assert why.endswith(
-        "(AMICI's first error: libSBML: a rule's general text ... "
-        "The species 'S' is not a modifier of 'J1')"
-    ), why
+    assert why.endswith("... The species 'S' is not a modifier of 'J1')"), why
+    assert "(AMICI's first error: libSBML SBML component consistency (Error): the rule" in why
+    assert len(why) < 500
     assert log.handlers == [handler]
     out, err = capfd.readouterr()
     assert "not a modifier" not in out + err
