@@ -538,7 +538,7 @@ def test_the_command_points_at_the_model_s_own_spelling_and_quotes_it(tmp_path):
         ({"k1": 1.0}, "not a dict"),
         (3, "not a int"),
         (b"k1", "not a bytes"),
-        (np.array("k1"), "iteration over a 0-d array"),
+        (np.array("k1"), "not the 0-d array"),
     ],
 )
 def test_simulator_refuses_names_that_are_not_a_list(names, says):
@@ -639,3 +639,27 @@ def test_steady_state_takes_the_names_it_took_before():
     ss = Simulator(Model.load(CHAIN)).steady_state(sensitivity_params=("k1",))
     assert ss.converged
     assert list(ss.sensitivity_params) == ["k1"]
+
+
+@pytest.mark.parametrize("name", ["A()", "A"])
+def test_steady_state_points_a_species_nowhere_it_cannot_go(name):
+    # steady_state takes no sensitivity_ic: no pointer at one.
+    with pytest.raises(ParameterError) as e:
+        Simulator(Model.load(DECAY)).steady_state(sensitivity_params=[name])
+    assert "sensitivity_ic" not in str(e.value)
+    assert e.value.remedies == []
+    what = "a species" if name == "A()" else "the species 'A()'"
+    assert str(e.value) == (
+        f"sensitivity_params: {name!r} is {what}, not a parameter; Model.param_names lists "
+        "the names sensitivity_params takes."
+    )
+
+
+def test_an_error_inside_a_generator_of_names_is_its_own():
+    def names():
+        yield "k1"
+        raise TypeError("the caller's own")
+
+    with pytest.raises(TypeError, match="the caller's own") as e:
+        Simulator(Model.load(CHAIN), sensitivity_params=names())
+    assert not isinstance(e.value, ArgumentTypeError)

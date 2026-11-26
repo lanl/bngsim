@@ -2019,7 +2019,12 @@ class Simulator:
         return internal & set(self._model.function_names)
 
     def _raise_if_unknown_sensitivity_names(
-        self, model: Any, params: Sequence[str], ics: Sequence[str] = ()
+        self,
+        model: Any,
+        params: Sequence[str],
+        ics: Sequence[str] = (),
+        *,
+        takes_ic: bool = True,
     ) -> None:
         """Refuse a sensitivity name the model does not have (issue #1925),
         which the engine found only once the run, or the steady-state solve,
@@ -2027,9 +2032,10 @@ class Simulator:
         the error class and code ``set_param`` and ``set_concentration`` raise
         for the name, with its close matches. A species named as a parameter,
         a parameter as a species, and an observable of one species are pointed
-        at the keyword that takes them, by the model's own spelling. Called
-        after the refusals of names the model has but cannot differentiate, so
-        theirs come first."""
+        at the keyword that takes them, by the model's own spelling; with
+        ``takes_ic=False`` (``steady_state``, which has no ``sensitivity_ic``)
+        a species is not pointed anywhere. Called after the refusals of names
+        the model has but cannot differentiate, so theirs come first."""
         from bngsim._model import _kind_of, _sole_species
 
         for keyword, names, error, kind, listed in (
@@ -2072,6 +2078,13 @@ class Simulator:
                         pointer = ("sensitivity_ic", sole, what, "its initial amount")
                 if pointer is not None:
                     other, target, what, of_it = pointer
+                    if not takes_ic and other == "sensitivity_ic":
+                        raise error(
+                            f"{keyword}: {name!r} is {what}, not a {kind}; "
+                            f"Model.{listed} lists the names {keyword} takes.",
+                            code=code,
+                            details=details,
+                        )
                     raise error(
                         f"{keyword}: {name!r} is {what}, not a {kind}: "
                         f"{other}=[{target!r}] computes sensitivities to {of_it}.",
@@ -10302,7 +10315,9 @@ class Simulator:
             # rewrites rather than a coordinate, so the column is structurally
             # zero at steady state too.
             self._raise_if_function_backed_params(list(sensitivity_params))
-            self._raise_if_unknown_sensitivity_names(self._model, sensitivity_params)
+            self._raise_if_unknown_sensitivity_names(
+                self._model, sensitivity_params, takes_ic=False
+            )
             # Issue #704 — what a conserved total does to a column, before
             # anything is compiled for it.
             self._raise_if_conserved_total_sensitivity_unknown(list(sensitivity_params))
@@ -13454,13 +13469,12 @@ def _sensitivity_names_arg(keyword: str, names: object) -> list[str]:
             f"{keyword} takes a list of names, not a {type(names).__name__}",
             details={"argument": keyword, "value": repr(names)},
         )
-    try:
-        out = list(names)
-    except TypeError as error:  # a 0-d NumPy array: Iterable, and does not iterate
+    if getattr(names, "shape", None) == ():  # a 0-d NumPy array: Iterable, does not iterate
         raise ArgumentTypeError(
-            f"{keyword} takes a list of names, not {names!r}: {error}",
+            f"{keyword} takes a list of names, not the 0-d array {names!r}",
             details={"argument": keyword, "value": repr(names)},
-        ) from error
+        )
+    out = list(names)
     for name in out:
         if not isinstance(name, str):
             raise ArgumentTypeError(
