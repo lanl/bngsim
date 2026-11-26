@@ -63,6 +63,7 @@ import math
 import os
 import shlex
 import shutil
+import stat
 import sys
 from collections.abc import Callable, Iterator
 from typing import Any, NoReturn
@@ -1011,31 +1012,54 @@ def _write_text(out: str, text: str, name: str) -> str:
         refuse("that is a folder")
     # Through a link, to the file it names: the link stays a link.
     real = os.path.realpath(path)
-    if os.path.exists(real) and not os.access(real, os.W_OK):
-        refuse(f"cannot write {path}: it is read-only", suggest=False)
+    if os.path.exists(real):
+        if not os.path.isfile(real):
+            refuse(f"cannot write {path}: it is not a regular file", suggest=False)
+        # By its mode too: root may write a file whose mode says read-only.
+        if not os.access(real, os.W_OK) or not os.stat(real).st_mode & stat.S_IWUSR:
+            refuse(f"cannot write {path}: it is read-only", suggest=False)
     folder = os.path.dirname(real)
     tmp = os.path.join(folder, f".{os.path.basename(real)}.{os.getpid()}-{os.urandom(4).hex()}")
+
+    def cannot(error: OSError) -> NoReturn:
+        # The path the system names, when not the file's: a parent that is a
+        # file or a link to nothing, or a folder it may not write (the folder,
+        # never the temporary name).
+        where = folder if error.filename == tmp else error.filename
+        if where and os.path.abspath(where) not in (path, real):
+            if os.path.islink(where) and not os.path.exists(where):
+                reason = f"{where} is a link to nothing"
+            elif os.path.isfile(where):
+                reason = f"{where} is a file"
+            else:
+                reason = f"{where}: {error.strerror}"
+        else:
+            reason = error.strerror or str(error)
+        refuse(f"cannot write {path}: {reason}", suggest=False)
+
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         f = open(tmp, "xb")  # noqa: SIM115  (closed below, after the write)
     except OSError as error:
-        # The path the system names, when not the file's: a parent that is a
-        # file, or a folder it may not write (the folder, not the temporary name).
-        where = folder if error.filename == tmp else error.filename
-        if where and os.path.abspath(where) not in (path, real):
-            is_file = os.path.isfile(where)
-            reason = f"{where} is a file" if is_file else f"{where}: {error.strerror}"
-        else:
-            reason = error.strerror or str(error)
-        refuse(f"cannot write {path}: {reason}", suggest=False)
+        cannot(error)
     # Written beside the file and moved over it, so a write that fails part way
     # (a full disk) leaves the file as it was, or no file, never half of one.
     try:
         with f:
             f.write(text.encode("utf-8"))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+    try:
         if os.path.exists(real):
             shutil.copymode(real, tmp)
+        # On Windows this fails while another program holds the file open.
         os.replace(tmp, real)
+    except OSError as error:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        refuse(f"cannot write {path}: {error.strerror or error}", suggest=False)
     except BaseException:
         with contextlib.suppress(OSError):
             os.remove(tmp)

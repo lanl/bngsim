@@ -254,6 +254,46 @@ def test_out_a_read_only_file_is_a_usage_error_and_kept(tmp_path):
         target.chmod(stat.S_IREAD | stat.S_IWRITE)
 
 
+def test_out_a_file_another_program_holds_is_a_usage_error_and_kept(tmp_path):
+    # Windows refuses to replace a file another program holds open.
+    script = textwrap.dedent(
+        """
+        import os
+
+        def held(src, dst):
+            raise PermissionError(13, "Access is denied", src, None, dst)
+
+        os.replace = held
+        """
+    )
+    target = tmp_path / "SKILL.md"
+    target.write_text("old", encoding="utf-8")
+    run = _bngsim("skill", "--out", str(target), "--json", script=script)
+    error = _json_error(run, 2, "usage.invalid_argument")
+    assert error["message"] == f"--out {target}: cannot write {target}: Access is denied"
+    assert [p.name for p in tmp_path.iterdir()] == ["SKILL.md"]
+    assert target.read_text(encoding="utf-8") == "old"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-specific: os.mkfifo, and a symlink needs privileges"
+)
+def test_out_a_target_that_is_not_a_regular_file_or_a_link_to_nothing_is_refused(tmp_path):
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    error = _json_error(
+        _bngsim("skill", "--out", str(fifo), "--json"), 2, "usage.invalid_argument"
+    )
+    assert error["message"] == f"--out {fifo}: cannot write {fifo}: it is not a regular file"
+    assert stat.S_ISFIFO(fifo.stat().st_mode)
+    dangling = tmp_path / "dangling"
+    dangling.symlink_to(tmp_path / "nowhere")
+    out = str(dangling / "SKILL.md")
+    error = _json_error(_bngsim("skill", "--out", out, "--json"), 2, "usage.invalid_argument")
+    assert error["message"] == f"--out {out}: cannot write {out}: {dangling} is a link to nothing"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["dangling", "fifo"]
+
+
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="POSIX-specific: creating a symlink needs privileges, and file modes are POSIX's",
