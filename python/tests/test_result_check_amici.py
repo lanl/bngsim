@@ -577,6 +577,7 @@ def test_a_series_amici_moves_by_more_than_a_hundredth_of_has_no_reference(engin
         (v,) = rep["checks"]
         assert v["status"] == "skip", (factor, v)
         assert v["no_reference"] == ["dA/dk"] and v["n_no_reference"] == 1
+        assert v["amici_not_converged"] == []
         assert "no reference at the run's tolerance" in v["note"]
         assert rep["ok"] is False
 
@@ -625,6 +626,83 @@ def test_a_series_still_moving_a_decade_tighter_is_the_tolerances(monkeypatch, e
     assert "not converged at the run's tolerance" in rep["next"]
 
 
+def test_the_confirmation_compares_bngsim_at_a_tenth_with_amici_at_a_hundredth(
+    monkeypatch, engine
+):
+    levels = []
+    real_level = _check_amici._Level.__init__
+
+    def level(self, **kw):
+        real_level(self, **kw)
+        levels.append((self, kw))
+
+    monkeypatch.setattr(_check_amici._Level, "__init__", level)
+    _loader_moves_k_twice(monkeypatch)
+    fake = engine(_ClosedForm({"A": A0}))
+    r = _decay()
+    rep = r.check([NAME])
+    assert rep["checks"][0]["confirmed_tighter"] is True
+    base = r.record["run"]["rtol"]
+    assert [c["rtol"] for c in fake.calls] == pytest.approx([base, base / 10, base / 100])
+    (lv0, kw0), (lv1, kw1) = levels
+    ctx = _check._Context(r, r.record, None)
+    cols = _check_sensitivity._Columns(ctx)
+    assert kw0["rtol"] == base and kw1["rtol"] == pytest.approx(base / 10)
+    assert np.allclose(kw1["floors"], cols.atol / 10) and np.allclose(kw0["floors"], cols.atol)
+    assert np.allclose(kw1["atols"], np.asarray(ctx.atols) / 10)
+    assert kw0.get("withhold", True) is True
+    assert kw1["withhold"] is False and kw1["S_loose"] is None and kw1["x_loose"] is None
+    assert (kw1["judged"] == lv0.use).all()
+    # bngsim at a tenth (the level-0 drift's run), not the run itself.
+    assert np.array_equal(kw1["S"], kw0["S_next"]) and not np.array_equal(kw1["S"], kw0["S"])
+    assert np.array_equal(kw1["x"], kw0["x_next"])
+    # AMICI at a hundredth as the reference, at a tenth as the move.
+    assert kw1["am"] is kw0["ref"] and kw1["ref"] is not kw0["ref"]
+
+
+def test_a_diff_is_confirmed_only_where_one_series_fails_at_both(tmp_path, monkeypatch, engine):
+    # A is off in the run alone (its tighter runs right); B is right in the
+    # run and off in its tighter runs. Each fails at one level only: no
+    # series' disagreement holds, so the diff is the tolerance's.
+    path = _write_sbml(
+        tmp_path / "two.xml",
+        species=[("A", A0, False), ("B", 0.1, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
+    )
+    engine(_ClosedForm({"A": A0, "B": 0.1}))
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if not len(out._sensitivity_params):
+            return out
+        tighter = kw.get("rtol") is not None and kw["rtol"] < 1e-8
+        out = _scaled(out, 0, 1.0 if tighter else 1 + 5e-3, row=0)
+        return _scaled(out, 0, 1 + 1e-2 if tighter else 1.0, row=1)
+
+    monkeypatch.setattr(Simulator, "run", run)
+    rep = _decay(path).check([NAME])
+    (v,) = rep["checks"]
+    assert v["status"] == "diff" and v["confirmed_tighter"] is False, v
+
+
+def test_a_budget_spent_before_the_tighter_run_says_so(monkeypatch, engine):
+    real = _check._Context.rerun
+
+    def rerun(self, **changes):
+        if changes.get("rtol", 1.0) < self.rtol / 50:
+            raise _check._Out
+        return real(self, **changes)
+
+    _loader_moves_k_twice(monkeypatch)
+    monkeypatch.setattr(_check._Context, "rerun", rerun)
+    v = _verdict(_decay())
+    assert v["status"] == "diff" and v["confirmed_tighter"] is None, v
+    assert "the budget ran out before bngsim's run at 1/100 of the tolerance" in v["note"]
+    assert "_Out" not in v["note"]
+
+
 def test_a_diff_that_cannot_be_compared_tighter_says_so(engine):
     fake = engine(_ClosedForm({"A": A0}))
     real = fake.simulate
@@ -652,6 +730,48 @@ def test_an_exception_from_amici_is_a_skip(engine):
     fake.simulate = simulate
     v = _verdict(_decay())
     assert v["status"] == "skip" and "RuntimeError: AMICI's solver setter failed" in v["note"]
+
+
+def test_the_states_reference_is_amicis_tighter_run_too(monkeypatch, engine):
+    # bngsim's A off by 1.05% in every solve; AMICI's A off by 0.1% at the
+    # run's tolerance, the same way, and exact at a tenth of it. Against the
+    # tighter run the gap is 1.05 times ten times AMICI's move: a diff.
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = copy.copy(real(self, *a, **kw))
+        out._species = np.asarray(out._species, dtype=float) * (1 + 1.05e-2)
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run)
+    fake = engine(_ClosedForm({"A": A0}))
+    fake.loose_state_error = 1e-3
+    v = _verdict(_decay())
+    assert v["status"] == "diff" and v["state_diff"] is True, v
+    assert 1.0 < v["state_margin"] < 1.1, v
+
+
+def test_the_looser_runs_move_widens_a_species_drift(monkeypatch, engine):
+    # AMICI's A off by 5e-4, past what the tighter run's move allows, and
+    # within ten times half A's move at twice the tolerance.
+    def off(x, sx):
+        return x * (1 + 5e-4), sx
+
+    engine(_ClosedForm({"A": A0}, edit=off))
+    r = _decay()
+    assert _verdict(r)["state_diff"] is True
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("rtol", 0) > self.record["run"]["rtol"]:
+            out = copy.copy(out)
+            out._species = np.asarray(out._species, dtype=float) * (1 + 2e-4)
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    v = _verdict(r)
+    assert v["state_diff"] is False, v
 
 
 def test_a_value_amicis_reference_run_gives_as_not_finite_is_a_skip(engine):
@@ -948,6 +1068,7 @@ def test_noise_near_zero_is_judged_on_its_columns_scale(tmp_path, monkeypatch, e
     fake.loose_edit = amici_says(50.0 * floor)
     v = _verdict(noisy)
     assert v["status"] == "pass" and v["amici_not_converged"] == [], v
+    assert v["no_reference"] == []
     monkeypatch.setattr(Simulator, "run", real)
     # A value AMICI resolves where the run gives 0 is a finding, however small
     # beside the column's largest series: a dependency the loader dropped.
@@ -1261,6 +1382,11 @@ def test_the_report_names_an_install_the_parity_suite_does_not_pin(monkeypatch, 
     }
     assert "records no commit, so whether it is the one" in v["note"]
     assert "is not the commit" not in v["note"]
+    with monkeypatch.context() as m:
+        _loader_moves_k_twice(m)
+        rep = _decay().check([NAME])
+    assert "cannot be told (its install records no commit)" in rep["next"]
+    assert "is not the commit" not in rep["next"]
     # A confirmed diff (one every solve has) against an unpinned AMICI says to
     # check with the pin first.
     _loader_moves_k_twice(monkeypatch)
@@ -1369,9 +1495,9 @@ def test_a_build_that_fails_is_a_skip_and_leaves_nothing(monkeypatch, tmp_path, 
     monkeypatch.setattr(_check_amici, "CACHE_DIR", tmp_path / "amici")
     why = _check_amici.build_engine(_FakeAmici(RuntimeError("swig not found")), "<sbml/>")
     assert why == "AMICI could not build it: RuntimeError: swig not found"
-    # Nothing is left but the note of the failure, which the next try reads.
-    (left,) = list((tmp_path / "amici").iterdir())
-    assert left.suffix == ".failed" and left.read_text().strip() == why
+    # Nothing is left: a failure no compiler diagnostic shows to be the
+    # model's is not kept, and the next check tries again.
+    assert list((tmp_path / "amici").iterdir()) == []
     # AMICI's own log of a failure is kept off the terminal, and its first
     # error goes in the note instead of "see the messages above".
     log = logging.getLogger("amici")
@@ -1419,6 +1545,25 @@ def test_a_failed_builds_output_stays_off_the_terminal_and_is_not_tried_again(
     assert not [p for p in (tmp_path / "amici").iterdir() if p.name.startswith(".building_")]
 
 
+def test_a_failure_of_the_build_tools_is_not_kept(monkeypatch, tmp_path):
+    import subprocess
+
+    monkeypatch.setattr(_check_amici, "CACHE_DIR", tmp_path / "amici")
+    fake = _FakeAmici(subprocess.CalledProcessError(1, ["cmake"]))
+    fake.stdout = (
+        "-- The CXX compiler identification is unknown\n"
+        "CMake Error at /x/CMakeDetermineCXXCompiler.cmake:48 (message):\n"
+        "\n"
+        "  No CMAKE_CXX_COMPILER could be found.\n"
+    )
+    why = _check_amici.build_engine(fake, "<sbml/>")
+    assert why.startswith("AMICI could not build it: its build tools failed"), why
+    assert "No CMAKE_CXX_COMPILER could be found." in why
+    assert not list((tmp_path / "amici").glob("*.failed"))
+    _check_amici.build_engine(fake, "<sbml/>")
+    assert fake.tried == 2
+
+
 def test_a_rename_that_fails_with_no_build_in_place_is_a_build_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(_check_amici, "CACHE_DIR", tmp_path / "amici")
     fake = _FakeAmici()
@@ -1457,12 +1602,14 @@ def test_a_killed_builds_staging_directory_is_removed(monkeypatch, tmp_path):
     young = tmp_path / "amici" / ".building_bngsim_amici_89ab_999999998"
     for d in (dead, alive, young):
         d.mkdir(parents=True)
-    for d in (dead, alive):
+    dead_log = tmp_path / "amici" / ".building_bngsim_amici_0123_999999999.log"
+    dead_log.write_text("cmake output\n")
+    for d in (dead, alive, dead_log):
         os.utime(d, (old, old))
     assert isinstance(_check_amici.build_engine(_FakeAmici(), "<sbml/>"), _check_amici.Engine)
     # Gone and old: removed. Alive, or touched lately (a build in another
     # container, whose pid this host does not know): left alone.
-    assert not dead.exists() and alive.exists() and young.exists()
+    assert not dead.exists() and not dead_log.exists() and alive.exists() and young.exists()
 
 
 def test_the_build_cache_is_the_suites_own():

@@ -22,7 +22,9 @@ AMICI's build (about 15 s cold for a small model, minutes for a large one) or
 its runs; a build is cached under ``~/.cache/bngsim/amici`` (or
 ``$BNGSIM_AMICI_CACHE_DIR``), keyed by the SBML text and the AMICI install,
 about 4 MB a model, and nothing prunes it (``bngsim-cache`` manages the codegen
-cache only): remove the directory to clear it.
+cache only): remove the directory to clear it. A model whose generated C++
+does not compile is kept there as a ``.failed`` file, so it is not built again
+at every check; remove that file to retry.
 
 **What is carried over from ``parity_checks/amici_parity``**, which the wheel
 cannot import, and only what the check needs:
@@ -163,6 +165,7 @@ from bngsim._check import (
     TOLERANCE_MOVE,
     _first_line,
     _num,
+    _Out,
     _verdict,
     differences,
     moves,
@@ -619,18 +622,28 @@ def _output_to(log: Path) -> Iterator[None]:
             os.close(f)
 
 
-def _first_compiler_error(log: Path) -> str | None:
-    """The first line of *log* that a compiler or CMake writes as an error."""
+#: A compiler's diagnostic in a generated source file: ``w.cpp:22:11: error:``.
+_COMPILER_ERROR = re.compile(r"\S+\.(?:cpp|cc|c|h|hpp):\d+(?::\d+)?:\s*(?:fatal )?error:")
+
+
+def _build_errors(log: Path) -> tuple[str | None, str | None]:
+    """From *log*: the first compiler error in a generated source (the
+    model's own failure), and else the first error of the build tools
+    (CMake's, SWIG's: the environment's), each as one line."""
     try:
-        text = log.read_text(encoding="utf-8", errors="replace")
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
-        return None
-    for line in text.splitlines():
-        if "error:" in line or line.startswith("CMake Error"):
+        return None, None
+    tools = None
+    for k, line in enumerate(lines):
+        if _COMPILER_ERROR.search(line):
             # A source file's path is the staging directory's, gone by now.
-            line = re.sub(r"^\S*/(?=[^/\s]+:\d+)", "", line.strip())
-            return line[:300]
-    return None
+            return re.sub(r"^\S*/(?=[^/\s]+:\d+)", "", line.strip())[:300], None
+        if tools is None and (line.startswith("CMake Error") or "error:" in line.lower()):
+            # CMake puts the reason on the lines after its "CMake Error at".
+            after = [ln.strip() for ln in lines[k + 1 : k + 6] if ln.strip()]
+            tools = " ".join([line.strip(), *after[:1]])[:300]
+    return None, tools
 
 
 def _remove_dead_staging(root: Path) -> None:
@@ -665,7 +678,13 @@ def build_engine(amici: Any, sbml: str) -> Engine | str:
     A build is made in a directory of this process's own and renamed into
     place, so a cached directory is always a whole build, and two processes
     building the same model at once both end with one (the parity suite's
-    ``_amici_sens._build_sens_model``)."""
+    ``_amici_sens._build_sens_model``). While it builds, file descriptors 1
+    and 2 of the whole process go to a log (AMICI's CMake and compiler write
+    there), so output another thread writes then is lost. A build whose
+    generated C++ does not compile is the model's: it is kept as a
+    ``<build>.failed`` file, which the next check reads instead of building
+    again (remove it to retry). A failure of the build tools is the
+    environment's, and is not kept."""
     version, commit = amici_version(amici)
     key = hashlib.sha256(
         "\0".join(
@@ -724,15 +743,22 @@ def build_engine(amici: Any, sbml: str) -> Engine | str:
                     raise
         except Exception as e:  # noqa: BLE001 - AMICI's failure is not bngsim's
             why = f"AMICI could not build it: {type(e).__name__}: {_first_line(e)[:200]}"
-            compiler = _first_compiler_error(log)
+            compiler, tools = _build_errors(log)
             if compiler:
                 why = f"AMICI could not build it: its generated C++ did not compile ({compiler})"
+                # The model's own failure, which no change here mends: kept,
+                # so the next check does not pay for the build again.
+                with suppress(OSError):
+                    failed.write_text(why + "\n", encoding="utf-8")
+            elif tools:
+                why = (
+                    "AMICI could not build it: its build tools failed (a compiler, CMake or "
+                    f"SWIG this environment lacks or cannot run: {tools})"
+                )
             elif errors:
                 # The messages AMICI points "above" to are its log, kept here.
                 why = why.replace(" (see error messages above)", "")
                 why += f" (AMICI's first error: {errors[0]})"
-            with suppress(OSError):
-                failed.write_text(why + "\n", encoding="utf-8")
             return why
         finally:
             shutil.rmtree(staging, ignore_errors=True)
@@ -1222,8 +1248,13 @@ def _judge(
         if tight100 is None and deeper is not None:
             try:
                 tight100 = ctx.tight100 = ctx.rerun(**ctx._tighter(100.0))
-            except Exception as e:  # noqa: BLE001 - _Out too: the diff stands, unconfirmed
-                why = f"bngsim's run at 1/100 of the tolerance did not finish: {type(e).__name__}"
+            except _Out:
+                why = "the budget ran out before bngsim's run at 1/100 of the tolerance"
+            except Exception as e:  # noqa: BLE001 - the diff stands, unconfirmed
+                why = (
+                    f"bngsim's run at 1/100 of the tolerance raised {type(e).__name__}: "
+                    f"{_first_line(e)}"
+                )
         if deeper is None or tight100 is None:
             unconfirmed = why
         else:

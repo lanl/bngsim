@@ -462,16 +462,24 @@ def _next(out: Report, roundoff: bool = False) -> str:
                 "report it at https://github.com/lanl/bngsim/issues with json.dumps(report) and "
                 "the model file."
             )
-        unpinned = (diffs[0].get("engine") or {}).get("pinned") is not True
+        pinned = (diffs[0].get("engine") or {}).get("pinned")
+        if pinned is None:
+            caveat = (
+                "Whether this AMICI is the commit bngsim's AMICI parity suite pins cannot be "
+                "told (its install records no commit), and some AMICI releases misread models; "
+                "check with that commit before reporting. "
+            )
+        elif not pinned:
+            caveat = (
+                "This AMICI is not the commit bngsim's AMICI parity suite pins, and some AMICI "
+                "releases misread models; check with that commit before reporting. "
+            )
+        else:
+            caveat = ""
         return (
             f"bngsim and AMICI disagree on this model's {what}, and still do a decade tighter: "
             "one of them reads the model differently, or computes its sensitivities wrong. "
-            + (
-                "This AMICI is not the commit bngsim's AMICI parity suite pins, and some AMICI "
-                "releases misread models; check with that commit before reporting. "
-                if unpinned
-                else ""
-            )
+            + caveat
             + "Report it at https://github.com/lanl/bngsim/issues with json.dumps(report) and the "
             "model file, and do not report those sensitivities."
         )
