@@ -173,4 +173,4 @@ without reading any text.
 | 3 | refusal: the model holds a construct BNGsim cannot simulate faithfully. The model, not the command, has to change. |
 | 4 | failed run: a run started and the solver gave up |
 | 5 | timeout: a run took longer than its wall-clock limit |
-| 6 | check not ok: `bngsim check` finished, and the run's answer moved when a setting changed, a changed run raised or ran out of time, the run is not converged at its own tolerance, or no check asked for applies to the run. The report is on standard output, as for success. |
+| 6 | check not ok: `bngsim check` finished, and the run's answer moved when a setting changed, a changed run raised or ran out of time, the run is not converged at its own tolerance, no check asked for applies to the run, or the only check that ran judges nothing (a stochastic run's `replicates`, whose status is `info`). The report is on standard output, as for success. |

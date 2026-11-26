@@ -3628,8 +3628,8 @@ class Result:
             ``checks``
             (in the order run, each with ``name``, ``status``, ``value``,
             ``worst_column``, ``changed`` (the setting changed) and
-            ``note``), ``n_pass``, ``n_diff`` and
-            ``next``, what to do. A status is ``"pass"``, ``"diff"`` (the
+            ``note``), ``n_pass``, ``n_diff``, ``n_info`` (checks that
+            judged nothing) and ``next``, what to do. A status is ``"pass"``, ``"diff"`` (the
             answer moved past the bound), ``"skip"`` (with the reason),
             ``"unsupported"``, ``"exception"`` (the changed run raised),
             ``"no_base"`` (no species is converged at the run's own

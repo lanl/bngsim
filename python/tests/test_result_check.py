@@ -37,6 +37,7 @@ KEYS = [
     "checks",
     "n_pass",
     "n_diff",
+    "n_info",
     "next",
 ]
 CHECK_KEYS = ["name", "status", "value", "worst_column", "changed", "note"]
@@ -321,7 +322,7 @@ def test_replicates_give_the_mean_its_spread_and_one_draws_z():
     assert col["run_last"] == r.observables["A"][-1]
     # The run is one draw, as each rerun is: its distance from the mean of ten
     # is spread by sd·sqrt(1 + 1/10), not by the mean's standard error, over
-    # which a correct run is about sqrt(11) of them away.
+    # which a correct run's root-mean-square distance is sqrt(11) of them.
     assert col["z"] == pytest.approx((col["run_last"] - col["mean_last"]) / (sd * math.sqrt(1.1)))
     assert c["value"] == pytest.approx(abs(col["z"])) and c["worst_column"] == "A"
     exact = examples.exact("birth_death", np.array([10.0]))["A"][0]
@@ -343,6 +344,7 @@ def test_a_stochastic_runs_report_is_not_ok_as_its_check_judges_nothing():
     assert rep["check_version"] == _check.CHECK_VERSION == 2
     assert [c["status"] for c in rep["checks"]] == ["info"]
     assert rep["ok"] is False and rep["n_pass"] == 0 and rep["n_diff"] == 0
+    assert rep["n_info"] == 1
     assert "judges nothing" in rep["next"] and "not checked" in rep["next"]
     head = str(rep).splitlines()[0]
     assert head.startswith("NOT OK: 0 passed") and "1 judged nothing" in head, head
@@ -359,9 +361,9 @@ def test_a_stochastic_runs_report_is_not_ok_as_its_check_judges_nothing():
 def test_a_correct_draws_z_is_an_ordinary_one():
     # Each run is a correct draw, so its z is about a t-statistic on 9 degrees
     # of freedom: past 2.262 in 5% of runs, with a median of 0.70. Over the
-    # mean's standard error, as it was, a correct run's median was about 2.1
-    # and a third of runs were past 3.25 (binding at seed 1: 8.5, an ordinary
-    # draw 2.6 standard deviations out). Seeds 11 apart: no rerun is shared.
+    # mean's standard error, as it was, a correct run's median was about 2.2
+    # and a third of runs were past 3.25 (binding at seed 1 had 8.5, where its
+    # z here is 2.6). Seeds 11 apart: no rerun is shared.
     sim = Simulator(examples.load("binding"), method="ssa")
     z = []
     for b in range(200):

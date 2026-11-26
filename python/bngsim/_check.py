@@ -409,6 +409,7 @@ def _finish(out: Report, roundoff: bool = False) -> Report:
     )
     out["n_pass"] = statuses.count("pass")
     out["n_diff"] = statuses.count("diff")
+    out["n_info"] = statuses.count(INFO)
     out["next"] = _next(out, roundoff)
     return out
 
@@ -1032,8 +1033,8 @@ class _Context:
         mine = obs[-1]
         # The run is one draw, as each rerun is: its distance from the reruns'
         # mean is spread by one draw's variance and the mean's, sd²·(1 + 1/n),
-        # and not by the mean's alone. Over the standard error, a correct run
-        # is about sqrt(n + 1) of them away.
+        # and not by the mean's alone. Over the standard error, a correct
+        # run's root-mean-square distance is sqrt(n + 1) of them.
         spread = sd * math.sqrt(1.0 + 1.0 / n)
         z = np.where(spread > 0, (mine - mean) / np.where(spread > 0, spread, 1.0), np.nan)
         cols = [
@@ -1230,9 +1231,8 @@ def text(r: dict[str, Any]) -> str:
     lines = []
     verdict = "OK" if r.get("ok") else "NOT OK"
     head = f"{verdict}: {r.get('n_pass', 0)} passed, {r.get('n_diff', 0)} moved the answer"
-    n_info = sum(c.get("status") == INFO for c in r.get("checks", []))
-    if n_info:
-        head += f", {n_info} judged nothing"
+    if r.get("n_info"):
+        head += f", {r['n_info']} judged nothing"
     if r.get("n_not_resolved"):
         head += f", {r['n_not_resolved']} species not resolved"
     if r.get("method"):
