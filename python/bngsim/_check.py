@@ -57,6 +57,7 @@ from __future__ import annotations
 import math
 import time
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -996,14 +997,21 @@ class _Context:
         )
 
 
+#: A model file whose bytes are not the ones its run's model was loaded from.
+FILE_CHANGED = "the model file changed after the run's model was loaded from it"
+
+
 def same_as_file(ctx: _Context, name: str, engine: str) -> dict[str, Any] | None:
     """Why another *engine* cannot make the run again from the model file
     alone, as the check *name*'s skip verdict, or None where it can: the run
     started from the model's initial state, of a model unchanged since its
-    load, over a plain ``t_span``, at the file's own parameters (none pinned)
-    and from the file's initial state. Shared by :func:`_second_engine` and the
-    AMICI check (:mod:`bngsim._check_amici`), whose reruns read the file and
-    nothing the session did to the model."""
+    load, from a file whose bytes are still the ones it was loaded from (the
+    record's sha256), over a plain ``t_span``, at the file's own parameters
+    (none pinned) and from the file's initial state. Shared by
+    :func:`_second_engine` and the AMICI check (:mod:`bngsim._check_amici`),
+    whose runs read the file and nothing the session did to the model."""
+    import hashlib
+
     model = ctx.rec.get("model") or {}
     if ctx.run.get("started_from") != "initial":
         return _verdict(name, "skip", note="the run did not start from the model's initial state")
@@ -1014,6 +1022,16 @@ def same_as_file(ctx: _Context, name: str, engine: str) -> dict[str, Any] | None
     if ctx.run.get("parameters_pinned"):
         return _verdict(name, "skip", note="a derived parameter was pinned by set_param")
     path = model.get("path")
+    sha256 = model.get("sha256")
+    if path and sha256:
+        try:
+            data = Path(path).read_bytes()
+        except OSError as e:
+            return _verdict(
+                name, "skip", note=f"the model file could not be read again: {_first_line(e)}"
+            )
+        if hashlib.sha256(data).hexdigest() != sha256:
+            return _verdict(name, "skip", note=FILE_CHANGED)
     import bngsim
 
     try:

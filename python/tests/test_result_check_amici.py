@@ -520,9 +520,8 @@ def test_a_small_series_beside_a_large_one_is_judged_on_its_own_peak(tmp_path, e
     assert v["status"] == "diff" and v["worst_column"] == "dB/dk", v
 
 
-def test_noise_near_zero_is_judged_on_its_columns_scale(tmp_path, engine):
-    # B is held at 0.1 and k moves nothing of it: bngsim's dB/dk is 0, within
-    # its tolerance of zero, which the run does not resolve.
+def test_noise_near_zero_is_judged_on_its_columns_scale(tmp_path, monkeypatch, engine):
+    # B is held at 0.1 and k moves nothing of it: the true dB/dk is 0.
     path = _write_sbml(
         tmp_path / "held.xml",
         species=[("A", A0, False), ("B", 0.1, False)],
@@ -531,6 +530,8 @@ def test_noise_near_zero_is_judged_on_its_columns_scale(tmp_path, engine):
     )
     r = _decay(path)
     assert np.abs(np.asarray(r.sensitivities)[:, 1, 0]).max() == 0.0
+    cols = _check_sensitivity._Columns(_check._Context(r, r.record, None))
+    floor = float(cols.atol[1, 0])
 
     def amici_says(value):
         def edit(x, sx):
@@ -540,16 +541,61 @@ def test_noise_near_zero_is_judged_on_its_columns_scale(tmp_path, engine):
 
         return edit
 
-    # AMICI's noise there, far past that tolerance and a millionth of the
-    # column's largest series, is no finding.
-    engine(_ClosedForm({"A": A0, "B": 0.1}, edit=amici_says(1e-4)))
-    v = _verdict(r)
+    # Each engine's noise within 100 of the series' tolerances of zero, on
+    # opposite sides: 160 tolerances apart, past what the series' own scale
+    # allows, and no finding on its column's.
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if len(out._sensitivity_params) and out._sensitivities.shape[1] == 2:
+            out = copy.copy(out)
+            s = np.asarray(out._sensitivities, dtype=float).copy()
+            s[:, 1, 0] = -80.0 * floor
+            out._sensitivities = s
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run)
+    noisy = _decay(path)
+    engine(_ClosedForm({"A": A0, "B": 0.1}, edit=amici_says(80.0 * floor)))
+    v = _verdict(noisy)
     assert v["status"] == "pass", v
     assert v["not_resolved"] == ["dB/dk"] and v["n_not_resolved"] == 1
-    # A departure as large as a hundredth of the column's scale is one.
-    engine(_ClosedForm({"A": A0, "B": 0.1}, edit=amici_says(1.0)))
+    monkeypatch.setattr(Simulator, "run", real)
+    # A value AMICI resolves where the run gives 0 is a finding, however small
+    # beside the column's largest series: a dependency the loader dropped.
+    engine(_ClosedForm({"A": A0, "B": 0.1}, edit=amici_says(1e-4)))
     v = _verdict(r)
     assert v["status"] == "diff" and v["worst_column"] == "dB/dk", v
+    assert v["not_resolved"] == []
+
+
+def test_a_series_dropped_in_every_solve_is_judged_on_amicis_scale(tmp_path, monkeypatch, engine):
+    # dB/dk is a thousandth of dA/dk, and every bngsim solve gives it as 0.
+    path = _write_sbml(
+        tmp_path / "two.xml",
+        species=[("A", A0, False), ("B", 0.1, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
+    )
+    engine(_ClosedForm({"A": A0, "B": 0.1}))
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        return _scaled(out, 0, 0.0, row=1) if len(out._sensitivity_params) else out
+
+    monkeypatch.setattr(Simulator, "run", run)
+    for rtol in (1e-8, 1e-6, 1e-4):
+        v = _verdict(_decay(path, rtol=rtol))
+        assert v["status"] == "diff" and v["worst_column"] == "dB/dk", (rtol, v)
+    # Dropped in the run alone, the tighter run's move is the whole series:
+    # read on AMICI's peak, it is no drift to forgive the drop with.
+    monkeypatch.setattr(Simulator, "run", real)
+    for rtol in (1e-8, 1e-6, 1e-4):
+        v = _verdict(_scaled(_decay(path, rtol=rtol), 0, 0.0, row=1))
+        assert v["status"] == "diff" and v["worst_column"] == "dB/dk", (rtol, v)
+        assert v["diff_not_converged"] is True
 
 
 def test_a_state_amici_disagrees_on_is_a_finding_about_the_trajectory(engine):
@@ -571,6 +617,8 @@ def test_a_value_the_run_gives_as_not_finite_is_a_finding_and_amicis_a_skip(engi
     bad._sensitivities = s
     v = _verdict(bad)
     assert v["status"] == "diff" and v["margin"] > 1e300, v
+    assert "1 series not finite in the run where AMICI's are" in v["note"]
+    assert "1.8e+308" not in v["note"]
 
     def nan(x, sx):
         sx = sx.copy()
@@ -635,11 +683,13 @@ def test_a_budget_spent_on_bngsims_reruns_builds_nothing(monkeypatch, engine):
     assert v["status"] == "timeout" and built == [], v
 
 
-def test_a_run_with_no_converged_species_judges_nothing(engine):
+def test_a_run_with_no_converged_species_judges_nothing_and_builds_nothing(monkeypatch, engine):
     r = _decay(rtol=0.1)
     assert r.check(["tolerance"])["converged"] is False
+    built = []
+    monkeypatch.setattr(_check_amici, "build_engine", lambda amici, sbml: built.append(sbml))
     v = _verdict(r)
-    assert v["status"] == "no_base", v
+    assert v["status"] == "no_base" and built == [], v
 
 
 def test_a_load_with_compartment_sizes_is_skipped(tmp_path, engine):
@@ -696,21 +746,29 @@ def test_a_column_amici_has_no_free_parameter_for_is_named(engine):
     assert v["status"] == "skip" and "AMICI reads it as 0.25" in v["note"]
 
 
-def test_an_amount_amici_holds_is_compared_as_a_concentration(tmp_path, engine):
-    # A in a compartment of size 2, held as an amount (hasOnlySubstanceUnits):
-    # AMICI integrates the amount, 100·e^{-kt}; bngsim reports half of it.
+@pytest.mark.parametrize("size", [2.0, 1e-6])
+def test_an_amount_amici_holds_is_compared_as_a_concentration(tmp_path, engine, size):
+    # A held as an amount (hasOnlySubstanceUnits) in a compartment of *size*:
+    # AMICI integrates the amount, A0·size·e^{-kt}; bngsim reports A0·e^{-kt}.
     path = _write_sbml(
         tmp_path / "amount.xml",
-        species=[("A", A0, True)],
+        species=[("A", A0 * size, True)],
         params={"k": K0},
         reactions=[("J1", ["A"], [], "k*A", {})],
-        size=2.0,
+        size=size,
     )
     r = _decay(path)
-    assert np.allclose(np.asarray(r.species)[:, 0], 0.5 * A0 * np.exp(-K0 * np.asarray(r.time)))
-    engine(_ClosedForm({"A": A0}))
+    assert np.allclose(np.asarray(r.species)[:, 0], A0 * np.exp(-K0 * np.asarray(r.time)))
+    fake = engine(_ClosedForm({"A": A0 * size}))
     v = _verdict(r)
     assert v["status"] == "pass" and v["species_not_compared"] == {}, v
+    # AMICI is held on its own scale as tight as bngsim holds the
+    # concentration: an amount's tolerance is the concentration's times the
+    # size, or a small compartment would hold AMICI that many times looser.
+    ctx = _check._Context(r, r.record, None)
+    cols = _check_sensitivity._Columns(ctx)
+    assert fake.asked["atol"] == pytest.approx(float(ctx.atols[0]) * size)
+    assert fake.asked["atol_sens"] == pytest.approx(float(cols.atol[0, 0]) * size)
 
 
 def test_an_amount_in_a_compartment_an_initial_assignment_sizes_is_not_compared(tmp_path, engine):
@@ -767,12 +825,25 @@ def test_the_report_names_an_install_the_parity_suite_does_not_pin(engine):
         "pinned": False,
         "cached": True,
         "build_seconds": 0.0,
+        "atol": v["engine"]["atol"],
         "atol_sensitivities": v["engine"]["atol_sensitivities"],
     }
     assert (
         f"not the commit bngsim's AMICI parity suite pins ({_check_amici.PINNED_COMMIT[:9]})"
         in (v["note"])
     )
+
+
+def test_second_engine_skips_a_file_that_changed_after_the_load_too(tmp_path):
+    pytest.importorskip("roadrunner")
+    sbml = examples.path("decay", format="sbml")
+    path = tmp_path / "decay.xml"
+    path.write_text(sbml.read_text(), encoding="utf-8")
+    r = Simulator(Model.load(str(path)), method="ode").run(t_span=(0, 5), n_points=6)
+    assert r.check(["second_engine"])["checks"][0]["status"] == "pass"
+    path.write_text(sbml.read_text().replace("<ci> k </ci>", "<ci> k </ci> "), encoding="utf-8")
+    (v,) = r.check(["second_engine"])["checks"]
+    assert v["status"] == "skip" and v["note"] == _check.FILE_CHANGED, v
 
 
 def test_the_pin_is_the_parity_suites():
@@ -801,6 +872,7 @@ class _FakeAmici:
 
     def __init__(self, fail: Exception | None = None) -> None:
         self.fail = fail
+        self.log = ""
         self.builds: list[Path] = []
         self.paths: list[str] = []
         self.__version__ = "0.0-fake"
@@ -811,9 +883,13 @@ class _FakeAmici:
                 assert from_file is False
 
             def sbml2amici(self, name, out, **kw):
+                import logging
+
                 assert kw["generate_sensitivity_code"] is True
                 assert kw["compute_conservation_laws"] is False
                 outer.paths.append(os.environ["PATH"])
+                if outer.log:
+                    logging.getLogger("amici.importers.sbml").error(outer.log)
                 if outer.fail is not None:
                     raise outer.fail
                 Path(out, name).mkdir(parents=True)
@@ -855,11 +931,35 @@ def test_a_build_is_cached_whole_and_the_tools_are_found(monkeypatch, tmp_path):
     assert _check_amici.build_engine(fake, "<sbml/>").cached is False
 
 
-def test_a_build_that_fails_is_a_skip_and_leaves_nothing(monkeypatch, tmp_path):
+def test_a_build_that_fails_is_a_skip_and_leaves_nothing(monkeypatch, tmp_path, capfd):
+    import logging
+
     monkeypatch.setattr(_check_amici, "CACHE_DIR", tmp_path / "amici")
     why = _check_amici.build_engine(_FakeAmici(RuntimeError("swig not found")), "<sbml/>")
     assert why == "AMICI could not build it: RuntimeError: swig not found"
     assert list((tmp_path / "amici").iterdir()) == []
+    # AMICI's own log of a failure is kept off the terminal, and its first
+    # error goes in the note instead of "see the messages above".
+    log = logging.getLogger("amici")
+    handler = logging.StreamHandler()
+    monkeypatch.setattr(log, "handlers", [handler])
+    fake = _FakeAmici(RuntimeError("SBML Document failed to load (see error messages above)"))
+    fake.log = "libSBML: the species S is not a modifier of J1\nline two"
+    why = _check_amici.build_engine(fake, "<sbml/>")
+    assert why.endswith("(AMICI's first error: libSBML: the species S is not a modifier of J1)")
+    assert log.handlers == [handler]
+    out, err = capfd.readouterr()
+    assert "not a modifier" not in out + err
+
+
+def test_a_killed_builds_staging_directory_is_removed(monkeypatch, tmp_path):
+    monkeypatch.setattr(_check_amici, "CACHE_DIR", tmp_path / "amici")
+    dead = tmp_path / "amici" / ".building_bngsim_amici_0123_999999999"
+    alive = tmp_path / "amici" / f".building_bngsim_amici_4567_{os.getppid()}"
+    for d in (dead, alive):
+        d.mkdir(parents=True)
+    assert isinstance(_check_amici.build_engine(_FakeAmici(), "<sbml/>"), _check_amici.Engine)
+    assert not dead.exists() and alive.exists()
 
 
 def test_the_build_cache_is_the_suites_own():
@@ -917,19 +1017,20 @@ def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, mon
 
 
 def test_amici_lines_up_locals_amounts_renamed_ids_and_initial_assignments(_amici, tmp_path):
-    # J1 moves A (a concentration) to B (an amount in a compartment of size 2);
-    # J2 moves B to x (AMICI's amici_x) at a local kl; J3 drains x at kb, which
-    # an initial assignment sets to 2·k1; A starts at A0 by another.
+    # J1 moves A (a concentration) to B (an amount in a compartment of size
+    # 1e-6, which AMICI integrates on that scale); J2 moves B to x (AMICI's
+    # amici_x) at a local kl; J3 drains x at kb, which an initial assignment
+    # sets to 2·k1; A starts at A0 by another.
     path = _write_sbml(
         tmp_path / "lineup.xml",
-        species=[("A", 10.0, False), ("B", 4.0, True), ("x", 1.0, False)],
+        species=[("A", 10.0, False), ("B", 4e-6, True), ("x", 1.0, False)],
         params={"k1": 0.3, "kb": 0.0, "A0": 10.0},
         reactions=[
             ("J1", ["A"], ["B"], "k1*A*C", {}),
             ("J2", ["B"], ["x"], "kl*B", {"kl": 0.2}),
             ("J3", ["x"], [], "kb*x*C", {}),
         ],
-        size=2.0,
+        size=1e-6,
         initial={"kb": "2*k1", "A": "A0"},
     )
     model = Model.load(str(path))

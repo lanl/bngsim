@@ -40,26 +40,31 @@ cannot import, and only what the check needs:
   its states and its sensitivities alike, where bngsim reports a
   concentration. Such a species is divided by its compartment's size where the
   file gives that size as a constant (declared, set by no rule and no initial
-  assignment), and not compared otherwise. A species AMICI holds no state for
-  (a constant species, one a rule sets) is not compared either; each is named.
+  assignment), and not compared otherwise; AMICI's absolute tolerances are
+  scaled by that size too, or an amount in a small compartment would be held
+  as many times looser than bngsim holds its concentration (the parity
+  suite's MODEL1509020000, whose amounts sit far under its atol, is that
+  case). A species AMICI holds no state for (a constant species, one a rule
+  sets) is not compared either; each is named.
 - *Initial amounts.* AMICI gives sensitivities to parameters only, so a
   ``sensitivity_ic=`` column is not judged here.
-- *The dispositions* in ``AMICI_KNOWN_ISSUES.md`` that touch sensitivities are
-  all about events or switches: AMICI computes no sensitivity jump at a switch
-  time a parameter sets (Class 4's MODEL2105110001), misses an equality
-  trigger between its output times and fires a strict time trigger at its own
-  threshold (Classes 5 and 7, which the parity suite answers by running AMICI
-  through each event's instant and leaving the sample on a strict onset
-  unjudged), and reads a trigger or a piecewise condition that sits exactly at
-  its threshold at the start differently from bngsim (the 2026-11 triage). A
-  model with an event, or whose math switches anywhere (a piecewise, a
-  comparison, a logical operator, ``floor``, ``ceiling``, ``min``, ``max``, a
-  remainder or a delay), is therefore not compared: the check skips it and says
-  so, rather than read AMICI's known misreadings of it as bngsim's. So is a
-  model whose function definition names an argument twice, which defines no
-  one model (MODEL2003040001: AMICI binds the first, bngsim the last). The
-  event and switch cases are left to a follow-up, which would carry over the
-  parity suite's event instants and onset rows.
+- *The dispositions* in ``AMICI_KNOWN_ISSUES.md`` that touch sensitivities,
+  but for the amounts above, are about events or switches: AMICI computes no
+  sensitivity jump at a switch time a parameter sets (Class 4's
+  MODEL2105110001), misses an equality trigger between its output times and
+  fires a strict time trigger at its own threshold (Classes 5 and 7, which the
+  parity suite answers by running AMICI through each event's instant and
+  leaving the sample on a strict onset unjudged), and reads a trigger or a
+  piecewise condition that sits exactly at its threshold at the start
+  differently from bngsim (the 2026-11 triage). A model with an event, or
+  whose math switches anywhere (a piecewise, a comparison, a logical operator,
+  ``floor``, ``ceiling``, ``min``, ``max``, a remainder, a quotient or a delay), is
+  therefore not compared: the check skips it and says so, rather than read
+  AMICI's known misreadings of it as bngsim's. So is a model whose function
+  definition names an argument twice, which defines no one model
+  (MODEL2003040001: AMICI binds the first, bngsim the last). The event and
+  switch cases are left to a follow-up, which would carry over the parity
+  suite's event instants and onset rows.
 
 **The rule** is the ``"sensitivity"`` tier's, series by series
 (:class:`bngsim._check_sensitivity._Columns`): one species and one parameter,
@@ -67,19 +72,24 @@ over time, on the larger of its peak in bngsim and in AMICI, past the absolute
 tolerance the solver held it to, against a path's allowance
 (:func:`bngsim._check.path_margins`, column by column) with the series' own
 move at the tenfold tighter tolerance (or half its move at twice the
-tolerance) as its drift. A series the run does not resolve (within
-:data:`bngsim._check.TRACE_ATOLS` of its tolerance of zero) is held to its
-column's whole scale too. A series not converged at the run's tolerance is
-judged on its own scale with no drift, which would forgive its own error, as
-the quotient check judges it (a diff in such series alone is
-``diff_not_converged``, which ``next`` reads as the tolerance's). The states AMICI
+tolerance) as its drift. A series that neither engine resolves (within
+:data:`bngsim._check.TRACE_ATOLS` of its tolerance of zero in both) is held
+to its column's whole scale too, so the two engines' noise there is no
+finding. One the run gives as 0 where AMICI does not is resolved, on AMICI's
+peak, and its move at the tighter tolerance is read on that peak as well. A
+series not converged at the run's tolerance is judged on its own scale with no
+drift, which would forgive its own error, as the quotient check judges it (a
+diff in such series alone is ``diff_not_converged``, which ``next`` reads as
+the tolerance's). The states AMICI
 integrates are compared too, species by species, as every path is
 (:meth:`bngsim._check._Context.compare_x`): sensitivities about two different
 trajectories say nothing, and a disagreement there is reported as one about
 the trajectory (``state_diff``). AMICI runs at the run's ``rtol``, at the
-smallest of its atols for the states, and for the sensitivities at the
-smallest of the judged series' absolute tolerances, so it is held at least as
-tight as bngsim on every series.
+smallest of the compared species' atols for the states, and for the
+sensitivities at the smallest of the judged series' absolute tolerances, each
+on AMICI's scale (an amount's times its compartment's size), so it is held at
+least as tight as bngsim on every species and series. A run with no species
+converged at its own tolerance is ``no_base`` before AMICI builds anything.
 
 The report names AMICI's version and, from the install's PEP 610 record, its
 commit, and says when that is not the commit the parity suite pins
@@ -116,6 +126,7 @@ from bngsim._check import (
     _num,
     _verdict,
     differences,
+    moves,
     path_margins,
     spread,
 )
@@ -168,13 +179,14 @@ CACHE_DIR = _default_cache_dir()
 def _sbml_text(path: str, fmt: str, sha256: str | None) -> tuple[str | None, str]:
     """The model file as SBML text, and why not where it cannot be had (the
     file is gone, its bytes are not the ones bngsim read, Antimony cannot
-    convert it)."""
+    convert it). The bytes are read once, and checked against the sha256 the
+    record holds, so AMICI reads what bngsim read."""
     try:
         data = Path(path).read_bytes()
     except OSError as e:
         return None, f"the model file could not be read again: {_first_line(e)}"
     if sha256 is not None and hashlib.sha256(data).hexdigest() != sha256:
-        return None, "the model file changed after the run's model was loaded from it"
+        return None, _check.FILE_CHANGED
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as e:
@@ -479,6 +491,44 @@ class Engine:
         return "", x, sx
 
 
+@contextmanager
+def _amici_log_to(errors: list[str]) -> Iterator[None]:
+    """AMICI's log records kept from stderr while it builds: AMICI's own
+    console handler is set aside, and the first line of each error collected
+    into *errors*, for the verdict's note."""
+    import logging
+
+    class _Keep(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.levelno >= logging.ERROR:
+                text = record.getMessage().strip()
+                errors.append(text.splitlines()[0][:300] if text else record.levelname)
+
+    log = logging.getLogger("amici")
+    held, propagate = list(log.handlers), log.propagate
+    log.handlers = [_Keep()]
+    log.propagate = False
+    try:
+        yield
+    finally:
+        log.handlers, log.propagate = held, propagate
+
+
+def _remove_dead_staging(root: Path) -> None:
+    """Remove the staging directories of builds whose process is gone (one
+    killed mid-build leaves its own behind); a live build's is left alone."""
+    for d in root.glob(".building_*"):
+        pid = d.name.rsplit("_", 1)[-1]
+        if not pid.isdigit():
+            continue
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            shutil.rmtree(d, ignore_errors=True)
+        except OSError:  # another user's process, or no permission: alive
+            continue
+
+
 def build_engine(amici: Any, sbml: str) -> Engine | str:
     """AMICI's model of *sbml*, built once and cached (:data:`CACHE_DIR`), or
     why it could not be built or loaded.
@@ -507,10 +557,12 @@ def build_engine(amici: Any, sbml: str) -> Engine | str:
     cached = where.is_dir()
     if not cached:
         staging = root / f".building_{name}_{os.getpid()}"
+        errors: list[str] = []
         try:
             root.mkdir(parents=True, exist_ok=True)
+            _remove_dead_staging(root)
             shutil.rmtree(staging, ignore_errors=True)
-            with _tools_on_path(), warnings.catch_warnings():
+            with _tools_on_path(), _amici_log_to(errors), warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 importer = amici.SbmlImporter(sbml, from_file=False)
                 importer.sbml2amici(
@@ -529,7 +581,10 @@ def build_engine(amici: Any, sbml: str) -> Engine | str:
                 if not where.is_dir():
                     raise
         except Exception as e:  # noqa: BLE001 - AMICI's failure is not bngsim's
-            return f"AMICI could not build it: {type(e).__name__}: {_first_line(e)}"
+            why = f"AMICI could not build it: {type(e).__name__}: {_first_line(e)}"
+            if errors:
+                why += f" (AMICI's first error: {errors[0]})"
+            return why
         finally:
             shutil.rmtree(staging, ignore_errors=True)
     try:
@@ -546,6 +601,12 @@ def build_engine(amici: Any, sbml: str) -> Engine | str:
 
 
 # --- the check ---------------------------------------------------------------
+
+
+def _times(x: float) -> str:
+    """A margin as the note gives it: one not finite (the largest double,
+    where a value is not finite) as ``inf``."""
+    return "inf" if not math.isfinite(x) or x >= 1e300 else f"{x:.2g}"
 
 
 def _engine_label(engine: Engine) -> str:
@@ -607,14 +668,23 @@ def check(ctx: _Context) -> dict[str, Any]:
             "skip",
             note="AMICI is not installed, or does not import here "
             f"({type(e).__name__}: {_first_line(e)}): it is no dependency or extra of bngsim "
-            "(pip install amici; it compiles C++ per model and needs SWIG, a C++ compiler, a "
-            "BLAS and Python 3.12 or later), so the sensitivities were not checked against a "
-            "second engine",
+            "(pip install amici; it compiles C++ per model and needs SWIG, a C++ compiler and "
+            "a BLAS, and from AMICI 1.1 on Python 3.12 or later), so the sensitivities were "
+            "not checked against a second engine",
         )
     err = ctx._ensure_drift()
     if err:
         return _verdict(
             NAME, "no_base", note=f"the run at a tenfold tighter tolerance raised ({err})"
+        )
+    assert ctx.moved is not None
+    if not (ctx.relevant & (ctx.moved <= TOLERANCE_MOVE)).any():
+        # compare_x would say no_base after the build: say it before.
+        return _verdict(
+            NAME,
+            "no_base",
+            note=f"no column is converged at the run's tolerance (each moves past "
+            f"{TOLERANCE_MOVE:g} of its peak at a tenfold tighter one): nothing is judged",
         )
     # The run's own error, read before AMICI's build: the reruns are what
     # budget= bounds, and a budget spent there leaves no build to wait for.
@@ -708,12 +778,16 @@ def compare(
             changed=changed,
         )
 
-    # AMICI held at least as tight as bngsim on every series judged.
+    # AMICI held at least as tight as bngsim on every species and series it
+    # gives, on its own scale: an amount is its concentration times the size,
+    # and so is the absolute tolerance that resolves it as finely.
     rtol = float(ctx.rtol or 0.0)
-    atols = np.asarray(ctx.atols, dtype=float)
-    positive = atols[atols > 0]
-    atol = float(positive.min()) if positive.size else float(ctx.atol or 0.0)
-    floors = cols.atol[np.ix_(sorted(rows), use)]
+    order = sorted(rows)
+    size_of = np.asarray([rows[i][1] for i in order], dtype=float)
+    atols = np.asarray(ctx.atols, dtype=float)[order] * size_of
+    atols = atols[np.isfinite(atols) & (atols > 0)]
+    atol = float(atols.min()) if atols.size else float(ctx.atol or 0.0)
+    floors = cols.atol[np.ix_(order, use)] * size_of[:, None]
     floors = floors[np.isfinite(floors) & (floors > 0)]
     atol_sens = float(floors.min()) if floors.size else atol
     times = np.asarray(ctx.result._time, dtype=float)
@@ -746,8 +820,9 @@ def compare(
     for i, (k, size) in rows.items():
         x_cmp[:, i] = x_am[:, k] / size
         for c, j in enumerate(use):
-            S_cmp[:, i, j] = sx_am[:, k, c] / size
-            compared[i, j] = True
+            if not cols.refused[i, j]:
+                S_cmp[:, i, j] = sx_am[:, k, c] / size
+                compared[i, j] = True
     live = compared & ~cols.refused
     seen = np.concatenate([x_cmp[:, sorted(rows)].ravel(), S_cmp[:, live].ravel()])
     if not np.isfinite(seen).all():
@@ -764,7 +839,7 @@ def compare(
         changed,
         not_judged,
         species_not_compared,
-        use,
+        atol,
         atol_sens,
     )
 
@@ -779,7 +854,7 @@ def _judge(
     changed: dict[str, Any],
     not_judged: dict[str, str],
     species_not_compared: dict[str, str],
-    use: list[int],
+    atol: float,
     atol_sens: float,
 ) -> dict[str, Any]:
     """The verdict: see the module docstring."""
@@ -788,7 +863,6 @@ def _judge(
     move = np.asarray(move_flat, dtype=float).reshape(n_sp, n_cols)
     keep = np.asarray(keep_flat, dtype=bool).reshape(n_sp, n_cols)
     d10 = np.asarray(d10_flat, dtype=float).reshape(n_sp, n_cols)
-    converged = move <= TOLERANCE_MOVE
     S = np.asarray(cols.S, dtype=float)
     fin_b, fin_a = np.isfinite(S), np.isfinite(S_cmp)
     peak = np.maximum(
@@ -809,9 +883,20 @@ def _judge(
             pass
         else:
             drift = spread(drift.reshape(-1), d_loose, peak.reshape(-1)).reshape(n_sp, n_cols)
-    drift = np.where(converged & np.isfinite(drift), drift, 0.0)
-    own = judged & keep
     rtol = float(ctx.rtol or 0.0)
+    # Resolved on the larger peak: a series the run gives as 0 where AMICI
+    # does not is judged on AMICI's scale, not taken for noise. Its move at
+    # the tighter tolerance is then read on that scale too (the tolerance
+    # tier reads it on its column's largest peak), so a run whose whole error
+    # is that series' value does not get it back as drift.
+    resolved = _check.resolved(peak.reshape(-1), cols.atol.reshape(-1), rtol).reshape(n_sp, n_cols)
+    own_move = moves(d10.reshape(-1), peak.reshape(-1), cols.atol.reshape(-1)).reshape(
+        n_sp, n_cols
+    )
+    move = np.where(resolved & ~keep, own_move, move)
+    converged = move <= TOLERANCE_MOVE
+    drift = np.where(converged & np.isfinite(drift), drift, 0.0)
+    own = judged & resolved
 
     # The states, as every path's are judged.
     state = ctx.compare_x(NAME, x_cmp, changed)
@@ -828,26 +913,33 @@ def _judge(
         ratio[:, j], rel[:, j] = r, q
     margin = float(ratio.max()) if ratio.size else 0.0
     value = float(rel.max()) if rel.size else 0.0
-    state_margin = float(state.get("margin") or 0.0)
     state_diff = state["status"] == "diff"
+    sm = state.get("margin")
+    state_margin = float(sm) if sm is not None else (math.inf if state_diff else 0.0)
     failing = judged & (ratio > 1.0)
     unconverged_only = bool(failing.any() and not (failing & converged).any() and not state_diff)
     status = "diff" if margin > 1.0 or state_diff else "pass"
     n_judged = int(judged.any(axis=0).sum())
-    trace = judged & ~keep
+    trace = judged & ~resolved
     n_out = int((judged & ~converged).sum())
+    n_nonfinite = int((judged & np.isinf(d)).sum())
 
+    if n_nonfinite:
+        head = f"{n_nonfinite} series not finite in the run where AMICI's are"
+    else:
+        head = f"{value:.2e} of a series' scale at most, {_times(margin)} of the allowance"
     note = (
         f"bngsim's forward sensitivities against {_engine_label(engine)}'s, from the model "
-        f"file: {value:.2e} of a series' scale at most, {margin:.2g} of the allowance, over "
-        f"{int(judged.sum())} series of {n_judged} of {n_cols} column(s); the states "
-        f"{'disagree' if state_diff else 'agree'}, {state_margin:.2g} of their allowance"
+        f"file: {head}, over {int(judged.sum())} series of {n_judged} of {n_cols} column(s); "
+        f"the states {'disagree' if state_diff else 'agree'}, {_times(state_margin)} of "
+        "their allowance"
     )
     if state_diff and state.get("worst_column"):
         note += f" (most in {state['worst_column']})"
     if n_out:
         note += (
-            f"; {n_out} series not converged at the run's tolerance, judged on the tolerance alone"
+            f"; {n_out} series not converged at the run's tolerance, judged with no drift of "
+            "their own"
         )
     if trace.any():
         note += (
@@ -866,14 +958,18 @@ def _judge(
             f"; {_engine_label(engine)} is not the commit bngsim's AMICI parity suite pins "
             f"({PINNED_COMMIT[:9]})"
         )
+    n_refused = int((cols.refused & judged.any(axis=0)[None, :]).sum())
+    if n_refused:
+        note += f"; {n_refused} series not finite in the run by design, not judged"
     if engine.cached:
-        note += "; AMICI's build of the model was cached"
+        note += (
+            "; AMICI's build of the model was cached; budget= bounds neither it nor AMICI's run"
+        )
     else:
         note += (
-            f"; AMICI built the model in {engine.build_seconds:.0f} s, which budget= does not "
-            "bound"
+            f"; AMICI built the model in {engine.build_seconds:.0f} s; budget= bounds neither "
+            "that nor AMICI's run"
         )
-    n_refused = int((cols.refused & judged.any(axis=0)[None, :]).sum())
 
     score = np.where(judged, ratio, 0.0).reshape(-1)
     entry = _check_sensitivity._columns_entry(cols, np.where(judged, ratio, -1.0).reshape(-1))
@@ -899,6 +995,7 @@ def _judge(
             "pinned": pinned,
             "cached": engine.cached,
             "build_seconds": _num(round(engine.build_seconds, 3)),
+            "atol": _num(atol),
             "atol_sensitivities": _num(atol_sens),
         },
     }
