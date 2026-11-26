@@ -48,14 +48,15 @@ bngsim skill --out ~/.claude/skills/bngsim/SKILL.md
 ```
 
 `--out FILE` writes the file itself, as the UTF-8 bytes the command prints,
-making its folder and replacing any such file, and prints the path it wrote. A
+making its folder and replacing any such file (through a link, the file the
+link names), and prints the path it wrote. A
 leading `~` is your home folder even where the shell does not expand it, as in
 PowerShell. Use `--out` rather than a redirect: PowerShell before 7.4 reads the
 output of `>` in the console's code page, and Windows PowerShell 5.1 writes it
 again as UTF-16. A `FILE` it cannot write is a usage error (exit 2): a folder or a path ending in a separator, an empty path,
-`-` (leave out `--out` to print), a `~` that names no home folder, or a file the
-system will not let it make. A failure while writing, such as a full disk, exits
-1 and leaves no part of the file. `bngsim guide --out FILE` writes the guide the
+`-` (leave out `--out` to print), a `~` that names no home folder, a read-only
+file, or a file the system will not let it make. A failure while writing, such as
+a full disk, exits 1 and leaves the file as it was. `bngsim guide --out FILE` writes the guide the
 same way. The guide is the installed version's, so write the skill again after an
 upgrade.
 

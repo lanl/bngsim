@@ -62,6 +62,7 @@ import json
 import math
 import os
 import shlex
+import shutil
 import sys
 from collections.abc import Callable, Iterator
 from typing import Any, NoReturn
@@ -977,8 +978,8 @@ def _write_text(out: str, text: str, name: str) -> str:
     A path that names no file this can make is a usage error naming ``--out``:
     a folder (or a path ending in a separator, which ``abspath`` would drop), an
     empty string, ``-``, a ``~`` that names no home folder, and a file the
-    system will not let it make. A failure while writing the file it made (a
-    full disk) is not: that raises, and leaves no part of the file."""
+    system will not let it make, or one that is read-only. A failure while
+    writing (a full disk) is not: that raises, and leaves the file as it was."""
     seps = "".join(s for s in (os.sep, os.altsep) if s)
     example = os.path.join(out, name)
 
@@ -1008,25 +1009,36 @@ def _write_text(out: str, text: str, name: str) -> str:
     path = os.path.abspath(expanded)
     if os.path.isdir(path):
         refuse("that is a folder")
+    # Through a link, to the file it names: the link stays a link.
+    real = os.path.realpath(path)
+    if os.path.exists(real) and not os.access(real, os.W_OK):
+        refuse(f"cannot write {path}: it is read-only", suggest=False)
+    folder = os.path.dirname(real)
+    tmp = os.path.join(folder, f".{os.path.basename(real)}.{os.getpid()}-{os.urandom(4).hex()}")
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        f = open(path, "wb")  # noqa: SIM115  (closed below, after the write)
+        f = open(tmp, "xb")  # noqa: SIM115  (closed below, after the write)
     except OSError as error:
         # The path the system names, when not the file's: a parent that is a
-        # file, or a folder it may not write.
-        where = error.filename
-        if where and os.path.abspath(where) != path:
+        # file, or a folder it may not write (the folder, not the temporary name).
+        where = folder if error.filename == tmp else error.filename
+        if where and os.path.abspath(where) not in (path, real):
             is_file = os.path.isfile(where)
             reason = f"{where} is a file" if is_file else f"{where}: {error.strerror}"
         else:
             reason = error.strerror or str(error)
         refuse(f"cannot write {path}: {reason}", suggest=False)
+    # Written beside the file and moved over it, so a write that fails part way
+    # (a full disk) leaves the file as it was, or no file, never half of one.
     try:
         with f:
             f.write(text.encode("utf-8"))
+        if os.path.exists(real):
+            shutil.copymode(real, tmp)
+        os.replace(tmp, real)
     except BaseException:
         with contextlib.suppress(OSError):
-            os.remove(path)
+            os.remove(tmp)
         raise
     return path
 

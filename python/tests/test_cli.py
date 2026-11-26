@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import textwrap
@@ -200,35 +201,88 @@ def test_out_a_file_cannot_be_written_to_is_a_usage_error_that_writes_nothing(ou
     assert (tmp_path / "a_file").read_text(encoding="utf-8") == "a file"
 
 
-def test_out_a_write_that_fails_part_way_exits_1_and_leaves_no_file(tmp_path):
-    # A full disk after the file is made: not a usage error, and no half file.
-    script = textwrap.dedent(
-        """
-        import errno
-        import bngsim._cli as cli
+_FULL_DISK = textwrap.dedent(
+    """
+    import errno
+    import bngsim._cli as cli
 
-        class Full:
-            def __init__(self, f):
-                self.f = f
-            def __enter__(self):
-                return self
-            def __exit__(self, *exc):
-                self.f.close()
-            def write(self, data):
-                self.f.write(data[:100])
-                raise OSError(errno.ENOSPC, "No space left on device")
+    class Full:
+        def __init__(self, f):
+            self.f = f
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            self.f.close()
+        def write(self, data):
+            self.f.write(data[:100])
+            raise OSError(errno.ENOSPC, "No space left on device")
 
-        cli.open = lambda path, mode: Full(open(path, mode))
-        """
-    )
+    cli.open = lambda *args, **kwargs: Full(open(*args, **kwargs))
+    """
+)
+
+
+def test_out_a_write_that_fails_part_way_exits_1_and_leaves_the_file_as_it_was(tmp_path):
+    # A full disk part way through: not a usage error, no half file, and the
+    # skill already there is kept, not lost with the failed upgrade.
     target = tmp_path / "SKILL.md"
     target.write_text("old", encoding="utf-8")
     error = _json_error(
-        _bngsim("skill", "--out", str(target), "--json", script=script), 1, "error"
+        _bngsim("skill", "--out", str(target), "--json", script=_FULL_DISK), 1, "error"
     )
     assert error["type"] == "OSError"
     assert "No space left" in error["message"]
+    assert [p.name for p in tmp_path.iterdir()] == ["SKILL.md"]
+    assert target.read_text(encoding="utf-8") == "old"
+    # With no file there before, there is none after.
+    target.unlink()
+    _json_error(_bngsim("skill", "--out", str(target), "--json", script=_FULL_DISK), 1, "error")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_out_a_read_only_file_is_a_usage_error_and_kept(tmp_path):
+    target = tmp_path / "SKILL.md"
+    target.write_text("old", encoding="utf-8")
+    target.chmod(stat.S_IREAD)
+    try:
+        error = _json_error(
+            _bngsim("skill", "--out", str(target), "--json"), 2, "usage.invalid_argument"
+        )
+        assert error["message"] == f"--out {target}: cannot write {target}: it is read-only"
+        assert target.read_text(encoding="utf-8") == "old"
+    finally:
+        target.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-specific: creating a symlink needs privileges, and file modes are POSIX's",
+)
+def test_out_writes_through_a_link_and_keeps_a_files_mode(tmp_path):
+    expected = bngsim.agent_guide(skill=True)
+    # A skill kept in a dotfiles folder, linked into ~/.claude/skills.
+    kept = tmp_path / "dotfiles" / "SKILL.md"
+    kept.parent.mkdir()
+    kept.write_text("old", encoding="utf-8")
+    kept.chmod(0o640)
+    link = tmp_path / "skills" / "bngsim" / "SKILL.md"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(kept)
+    _json_error(_bngsim("skill", "--out", str(link), "--json", script=_FULL_DISK), 1, "error")
+    assert link.is_symlink() and kept.read_text(encoding="utf-8") == "old"
+    assert sorted(p.name for p in kept.parent.iterdir()) == ["SKILL.md"]
+    run = _bngsim("skill", "--out", str(link))
+    assert run.returncode == 0, run.stderr
+    assert link.is_symlink() and link.resolve() == kept.resolve()
+    assert kept.read_text(encoding="utf-8") == expected
+    assert stat.S_IMODE(kept.stat().st_mode) == 0o640
+    # A new file has the mode the umask gives any new file, not a temporary
+    # file's 0600.
+    umask = os.umask(0)
+    os.umask(umask)
+    fresh = tmp_path / "fresh" / "SKILL.md"
+    assert _bngsim("skill", "--out", str(fresh)).returncode == 0
+    assert stat.S_IMODE(fresh.stat().st_mode) == 0o666 & ~umask
 
 
 def test_examples_lists_every_example_with_its_files():
