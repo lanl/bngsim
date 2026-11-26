@@ -433,6 +433,25 @@ def test_a_column_wrong_in_the_run_alone_fails(engine):
     assert _verdict(_scaled(_decay(), 0, 1 + 1e-7))["status"] == "pass"
 
 
+def test_a_small_error_in_every_solve_is_past_the_allowance(monkeypatch, engine):
+    # Every solve off alike: the tighter run agrees with the run, so its drift
+    # forgives nothing, and the allowance is the tolerance's alone.
+    real = Simulator.run
+
+    def off_by(factor):
+        def run(self, *a, **kw):
+            out = real(self, *a, **kw)
+            return _scaled(out, 0, factor) if len(out._sensitivity_params) else out
+
+        monkeypatch.setattr(Simulator, "run", run)
+
+    off_by(1 + 1e-4)
+    v = _verdict(_decay())
+    assert v["status"] == "diff" and 1.0 < v["margin"] < 10.0, v
+    off_by(1 + 1e-5)
+    assert _verdict(_decay())["status"] == "pass"
+
+
 def test_a_column_the_run_gives_as_zero_is_judged_on_amicis_scale(engine):
     v = _verdict(_scaled(_decay(), 0, 0.0))
     assert v["status"] == "diff" and v["margin"] > 100, v
@@ -451,6 +470,38 @@ def test_a_small_series_beside_a_large_one_is_judged_on_its_own_peak(tmp_path, e
     # dB/dk is a thousandth of dA/dk: off by 1% there is far under the
     # largest series' scale, and still a finding.
     v = _verdict(_scaled(r, 0, 1.01, row=1))
+    assert v["status"] == "diff" and v["worst_column"] == "dB/dk", v
+
+
+def test_noise_near_zero_is_judged_on_its_columns_scale(tmp_path, engine):
+    # B is held at 0.1 and k moves nothing of it: bngsim's dB/dk is 0, within
+    # its tolerance of zero, which the run does not resolve.
+    path = _write_sbml(
+        tmp_path / "held.xml",
+        species=[("A", A0, False), ("B", 0.1, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {})],
+    )
+    r = _decay(path)
+    assert np.abs(np.asarray(r.sensitivities)[:, 1, 0]).max() == 0.0
+
+    def amici_says(value):
+        def edit(x, sx):
+            x, sx = x.copy(), sx.copy()
+            x[:, 1], sx[:, 1, 0] = 0.1, value
+            return x, sx
+
+        return edit
+
+    # AMICI's noise there, far past that tolerance and a millionth of the
+    # column's largest series, is no finding.
+    engine(_ClosedForm({"A": A0, "B": 0.1}, edit=amici_says(1e-4)))
+    v = _verdict(r)
+    assert v["status"] == "pass", v
+    assert v["not_resolved"] == ["dB/dk"] and v["n_not_resolved"] == 1
+    # A departure as large as a hundredth of the column's scale is one.
+    engine(_ClosedForm({"A": A0, "B": 0.1}, edit=amici_says(1.0)))
+    v = _verdict(r)
     assert v["status"] == "diff" and v["worst_column"] == "dB/dk", v
 
 
@@ -510,6 +561,16 @@ def test_a_series_not_converged_at_the_runs_tolerance_gets_no_drift(tmp_path, mo
     assert v["status"] == "diff" and v["worst_column"] == "dB/dk", v
     assert v["n_not_converged"] == 1 and v["diff_not_converged"] is True
     assert "not converged at the run's tolerance" in rep["next"]
+    # With the trajectory off as well, the diff is not the tolerance's alone.
+
+    def off(x, sx):
+        return x * 1.01, sx
+
+    engine(_ClosedForm({"A": A0, "B": 0.1}, edit=off))
+    rep = _scaled(r, 0, 1.5, row=1).check([NAME])
+    (v,) = rep["checks"]
+    assert v["state_diff"] is True and v["diff_not_converged"] is False
+    assert "disagree on this model's trajectory" in rep["next"]
 
 
 def test_amicis_failures_are_skips_not_findings(engine):
@@ -561,6 +622,25 @@ def test_an_amount_amici_holds_is_compared_as_a_concentration(tmp_path, engine):
     engine(_ClosedForm({"A": A0}))
     v = _verdict(r)
     assert v["status"] == "pass" and v["species_not_compared"] == {}, v
+
+
+def test_an_amount_in_a_compartment_an_initial_assignment_sizes_is_not_compared(tmp_path, engine):
+    # The file declares C's size as 1 and sets it to 2 at the start: the
+    # declared size is not the size, and no guess is divided by.
+    path = _write_sbml(
+        tmp_path / "sized.xml",
+        species=[("A", A0, True)],
+        params={"k": K0, "s": 1.0},
+        reactions=[("J1", ["A"], [], "k*A", {})],
+        size=1.0,
+        initial={"C": "2*s"},
+    )
+    r = _decay(path)
+    assert np.allclose(np.asarray(r.species)[:, 0], 0.5 * A0 * np.exp(-K0 * np.asarray(r.time)))
+    engine(_ClosedForm({"A": A0}))
+    v = _verdict(r)
+    assert v["status"] == "skip" and "no species AMICI integrates is bngsim's" in v["note"], v
+    assert "whose size the file does not give as a constant" in v["note"]
 
 
 def test_a_species_amici_holds_no_state_for_is_named(tmp_path, engine):
