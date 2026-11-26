@@ -197,7 +197,9 @@ class _ClosedForm:
         self.asked: dict = {}
 
     def simulate(self, ids, t0, times, *, rtol, atol, atol_sens, method):
-        self.asked = dict(ids=list(ids), t0=t0, rtol=rtol, atol=atol, atol_sens=atol_sens)
+        self.asked = dict(
+            ids=list(ids), t0=t0, rtol=rtol, atol=atol, atol_sens=atol_sens, method=method
+        )
         if self.fail:
             return self.fail, np.empty((0, 0)), np.empty((0, 0, 0))
         t = np.asarray(times, dtype=float)[:, None]
@@ -399,6 +401,10 @@ def test_a_closed_form_passes(engine):
     cols = _check_sensitivity._Columns(_check._Context(r, r.record, None))
     assert fake.asked["ids"] == ["amici_k"] and fake.asked["rtol"] == r.record["run"]["rtol"]
     assert fake.asked["atol_sens"] == pytest.approx(float(cols.atol.min()))
+    assert fake.asked["method"] == "staggered" == r.record["run"]["sensitivity_method"]
+    fake = engine(_ClosedForm({"A": A0}))
+    _verdict(_decay(sensitivity_method="simultaneous"))
+    assert fake.asked["method"] == "simultaneous"
     assert rep["ok"] is True
     assert json.loads(json.dumps(rep, allow_nan=False)) == rep
 
@@ -571,6 +577,21 @@ def test_a_series_not_converged_at_the_runs_tolerance_gets_no_drift(tmp_path, mo
     (v,) = rep["checks"]
     assert v["state_diff"] is True and v["diff_not_converged"] is False
     assert "disagree on this model's trajectory" in rep["next"]
+
+
+def test_a_budget_spent_on_bngsims_reruns_builds_nothing(monkeypatch, engine):
+    real = _check._Context._ensure_spread
+
+    def spread_then_spent(self):
+        out = real(self)
+        self.deadline = 0.0  # the reruns took the whole budget
+        return out
+
+    monkeypatch.setattr(_check._Context, "_ensure_spread", spread_then_spent)
+    built = []
+    monkeypatch.setattr(_check_amici, "build_engine", lambda amici, sbml: built.append(sbml))
+    v = _verdict(_decay())
+    assert v["status"] == "timeout" and built == [], v
 
 
 def test_amicis_failures_are_skips_not_findings(engine):
