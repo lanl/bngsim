@@ -513,8 +513,11 @@ def _amici_log_to(errors: list[str]) -> Iterator[None]:
                 if not lines:
                     errors.append(record.levelname)
                     return
-                first = lines[0] if len(lines[0]) <= 150 else lines[0][:150] + "..."
-                text = first if len(lines) == 1 else f"{first} ... {lines[-1][:250]}"
+                first = lines[0] if len(lines[0]) <= 150 else lines[0][:150]
+                if len(lines) == 1:
+                    text = first if first == lines[0] else first + "..."
+                else:
+                    text = f"{first} ... {lines[-1][:250]}"
                 errors.append(text)
 
     log = logging.getLogger("amici")
