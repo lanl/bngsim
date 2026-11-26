@@ -73,6 +73,7 @@ user-guide/loading-models
 user-guide/simulation
 user-guide/network-free
 user-guide/results
+user-guide/checking
 user-guide/events
 user-guide/table-functions
 user-guide/solvers
