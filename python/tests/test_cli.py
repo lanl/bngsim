@@ -10,6 +10,7 @@ an error as a JSON object on standard error, and an exit code per outcome.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -102,6 +103,58 @@ def test_guide_and_skill_as_json_carry_the_guide(command):
     payload = _json_out(_bngsim(command, "--json"))
     assert payload["text"] == bngsim.agent_guide(skill=command == "skill")
     assert payload["version"] == bngsim.__version__
+
+
+@pytest.mark.parametrize("command", ["guide", "skill"])
+def test_out_writes_the_bytes_the_command_prints_and_makes_the_folder(command, tmp_path):
+    printed = subprocess.run(
+        [sys.executable, "-m", "bngsim", command], capture_output=True, check=True
+    ).stdout
+    target = tmp_path / "skills" / "bngsim" / "SKILL.md"
+    target.parent.parent.mkdir()
+    target.parent.with_name("other").write_text("not touched", encoding="utf-8")
+    run = _bngsim(command, "--out", str(target))
+    assert run.returncode == 0, run.stderr
+    assert run.stdout == f"{command} written to {target}\n"
+    assert target.read_bytes() == printed
+    assert printed == bngsim.agent_guide(skill=command == "skill").encode("utf-8")
+    # A second write replaces the file; --json says where, and the text stays
+    # in the file rather than coming back too.
+    target.write_text("old", encoding="utf-8")
+    payload = _json_out(_bngsim(command, "--out", str(target), "--json"))
+    assert payload == {
+        "version": bngsim.__version__,
+        "format": "skill" if command == "skill" else "markdown",
+        "out": str(target),
+    }
+    assert target.read_bytes() == printed
+    assert (tmp_path / "skills" / "other").read_text(encoding="utf-8") == "not touched"
+
+
+def test_out_expands_a_leading_tilde_itself(tmp_path):
+    # Passed as a program argument, as PowerShell passes it: no shell expands it.
+    env = {**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    run = subprocess.run(
+        [sys.executable, "-m", "bngsim", "skill", "--out", "~/.claude/skills/bngsim/SKILL.md"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        cwd=tmp_path,
+    )
+    assert run.returncode == 0, run.stderr
+    written = tmp_path / ".claude" / "skills" / "bngsim" / "SKILL.md"
+    assert written.read_text(encoding="utf-8") == bngsim.agent_guide(skill=True)
+    assert not (tmp_path / "~").exists()
+
+
+def test_out_naming_a_folder_is_a_usage_error_that_writes_nothing(tmp_path):
+    error = _json_error(
+        _bngsim("skill", "--out", str(tmp_path), "--json"), 2, "usage.invalid_argument"
+    )
+    assert error["details"] == {"argument": "--out", "value": str(tmp_path)}
+    assert str(tmp_path / "SKILL.md") in error["message"]
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_examples_lists_every_example_with_its_files():

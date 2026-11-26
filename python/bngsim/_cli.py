@@ -234,19 +234,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "compiler codegen would use. Run it first in a new environment, and "
         "paste it into a bug report.",
     )
-    sub.add_parser(
+    guide = sub.add_parser(
         "guide",
         parents=[common],
         help="print the agent guide of this version",
         description="Print the BNGsim agent guide of this version (bngsim.agent_guide()).",
     )
-    sub.add_parser(
+    skill = sub.add_parser(
         "skill",
         parents=[common],
         help="print the agent guide as a SKILL.md file",
-        description="Print the agent guide as a SKILL.md file, for agent "
-        "harnesses that load skills: bngsim skill > ~/.claude/skills/bngsim/SKILL.md",
+        description="Print the agent guide as a SKILL.md file, for agent harnesses that "
+        "load skills. For Claude Code, in every project: "
+        "bngsim skill --out ~/.claude/skills/bngsim/SKILL.md "
+        "(or .claude/skills/bngsim/SKILL.md for one project). Run it again after an "
+        "upgrade: the guide is the installed version's.",
     )
+    for p, what in ((guide, "the guide"), (skill, "the SKILL.md file")):
+        p.add_argument(
+            "--out",
+            metavar="FILE",
+            help=f"write {what} to FILE, as UTF-8, instead of printing it: makes FILE's "
+            "folder and replaces any such file. A leading ~ is your home folder, in any shell",
+        )
     examples = sub.add_parser(
         "examples",
         parents=[common],
@@ -943,8 +953,32 @@ def _guide(args: argparse.Namespace) -> tuple[Any, str]:
     skill = args.command == "skill"
     text = bngsim.agent_guide(skill=skill)
     payload = {"version": bngsim.__version__, "format": "skill" if skill else "markdown"}
-    payload["text"] = text
-    return payload, text
+    if args.out is None:
+        payload["text"] = text
+        return payload, text
+    path = _write_text(args.out, text, "SKILL.md" if skill else "agent_guide.md")
+    payload["out"] = path
+    return payload, f"{'skill' if skill else 'guide'} written to {path}\n"
+
+
+def _write_text(out: str, text: str, name: str) -> str:
+    """``text`` written to the file ``out``, as the UTF-8 bytes the command
+    prints, its folder made first; the file's absolute path. ``~`` is expanded
+    here, not by the shell: PowerShell leaves it to the program. Not through a
+    shell redirect, which in Windows PowerShell 5.1 decodes the output in the
+    console's code page and writes it again as UTF-16."""
+    path = os.path.abspath(os.path.expanduser(out))
+    if os.path.isdir(path):
+        _refuse(
+            f"--out {out!r} is a folder; give the file's path, such as "
+            f"{os.path.join(out, name)!r}",
+            "--out",
+            value=out,
+        )
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(text.encode("utf-8"))
+    return path
 
 
 def _example_entry(name: str) -> dict[str, Any]:

@@ -38,7 +38,16 @@ beyond SciPy and NumPy.
 - `bngsim.agent_guide()` returns a one-page
   [guide](https://bngsim.readthedocs.io/en/latest/agent-guide.html) for the
   installed version, with no network. `python -m bngsim guide` prints it, and
-  `python -m bngsim skill` prints it as a `SKILL.md` file.
+  `python -m bngsim skill` prints it as a `SKILL.md` file. To give it to Claude
+  Code in every project, write it to your personal skills folder, in any shell:
+
+  ```bash
+  python -m bngsim skill --out ~/.claude/skills/bngsim/SKILL.md
+  ```
+
+  For one project only, write it to `.claude/skills/bngsim/SKILL.md` there, and
+  commit it to share it. Run the command again after upgrading BNGsim: the
+  guide is the installed version's.
 - The `bngsim` command (also `python -m bngsim`) works from a shell:
   `bngsim doctor` says what this install can do and what is missing,
   `bngsim examples` lists the bundled models, and `bngsim inspect MODEL`

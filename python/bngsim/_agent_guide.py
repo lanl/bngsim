@@ -136,7 +136,9 @@ def agent_guide(*, skill: bool = False) -> str:
     skill : bool, optional
         Put a skill header before the guide: YAML front matter naming bngsim
         and saying when to use it, the form several agent harnesses load as a
-        ``SKILL.md`` file. ``python -m bngsim skill`` prints this form.
+        ``SKILL.md`` file. ``python -m bngsim skill`` prints this form, and
+        ``python -m bngsim skill --out ~/.claude/skills/bngsim/SKILL.md``
+        installs it for Claude Code in every project.
 
     Returns
     -------
