@@ -972,7 +972,8 @@ def test_a_budget_spent_before_the_tighter_run_says_so(monkeypatch, engine):
 def _off_by_tolerance(monkeypatch, offsets, row=None, *, states=False):
     """Every bngsim solve's dA/dk (or one series of it; or with *states* one
     species' state) off by *offsets*: ``(at the run's rtol, at a tenth, at a
-    hundredth)``, the looser run as the run. *offsets* may be a dict of a row
+    hundredth[, at a thousandth])``, the looser run as the run, and a run
+    tighter than the last given as that one. *offsets* may be a dict of a row
     to its offsets."""
     real = Simulator.run
     base = _decay().record["run"]["rtol"]
@@ -983,15 +984,15 @@ def _off_by_tolerance(monkeypatch, offsets, row=None, *, states=False):
         if not len(out._sensitivity_params):
             return out
         rtol = kw.get("rtol") or base
-        level = 0 if rtol > base / 5 else (1 if rtol > base / 50 else 2)
+        level = sum(rtol <= base / f for f in (5, 50, 500))
         for i, offs in by_row.items():
             if states:
                 out = copy.copy(out)
                 x = np.asarray(out._species, dtype=float).copy()
-                x[:, i] *= 1 + offs[level]
+                x[:, i] *= 1 + offs[min(level, len(offs) - 1)]
                 out._species = x
             else:
-                out = _scaled(out, 0, 1 + offs[level], row=i)
+                out = _scaled(out, 0, 1 + offs[min(level, len(offs) - 1)], row=i)
         return out
 
     monkeypatch.setattr(Simulator, "run", run)
@@ -1169,8 +1170,8 @@ def test_a_series_amici_converges_keeps_its_reference_beside_one_that_goes_deepe
 
 def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, engine):
     # dB/dk off by +2e-3 of its peak at the run's tolerance, -2e-3 a decade
-    # tighter and +2e-3 two: an error that does not shrink, which the
-    # tolerance tier takes for a floor's and passes, as the quotient does.
+    # tighter, +2e-3 two and -2e-3 three: an error that does not shrink, which
+    # the tolerance tier takes for a floor's and passes, as the quotient does.
     path = _write_sbml(
         tmp_path / "two.xml",
         species=[("A", 1000.0, False), ("B", 1.0, False)],
@@ -1178,7 +1179,7 @@ def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, e
         reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
     )
     engine(_ClosedForm({"A": 1000.0, "B": 1.0}))
-    _off_by_tolerance(monkeypatch, (2e-3, -2e-3, 2e-3), row=1)
+    _off_by_tolerance(monkeypatch, (2e-3, -2e-3, 2e-3, -2e-3), row=1)
     by = _by_name(_decay(path).check(["sensitivity", NAME]))
     assert by["sensitivity"]["status"] == "pass" and by["sensitivity"]["n_floor_held"] == 1
     v = by[NAME]
