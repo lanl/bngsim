@@ -3492,8 +3492,20 @@ class Result:
             - ``"tolerance"``: the run at ``rtol/10`` and ``atol/10`` (and at
               ``/100``, where the budget allows); passes when no species moves
               by more than 1e-3 of its own peak, past the atol the run applied
-              to it. How far each moves is the run's own *drift*, which the
-              other checks are judged by.
+              to it. A species past that on its peak at the run's points is
+              judged again, each point on the larger of that peak and the
+              largest value the species reaches in the two intervals beside
+              the point, read from the grid check's run at 8x the points
+              (``n_between`` counts those it then passes, and the report's
+              ``n_between`` and ``next`` say so): one whose points all fall on
+              or near its zeros has a peak there about its integration error,
+              and the first point after a fast transient the points miss is
+              judged on that transient (issue #1926). A spike between two
+              points excuses only those two; a spike in every interval, with
+              the points in the quiet phase, excuses them all, and a species
+              zero at every one of the 8x points is not seen. Where the budget
+              runs out before that run, the verdict is a ``timeout``. How far each moves is
+              the run's own *drift*, which the other checks are judged by.
             - ``"grid"``: the run at 8x the output points, read at its own
               times; an output point is a stop the integrator lands on. Not
               for a run that stopped at a steady state, whose other checks
@@ -3515,7 +3527,9 @@ class Result:
               species, one parameter or initial amount, over time) is judged
               on its own peak, past the base absolute tolerance the solver set
               for it (``atol_i·max(|x_i(0)|, 1)/|θ_j|``; the solver's own
-              roundoff floor can raise it during the run), and passes when it
+              roundoff floor can raise it during the run; a series past the
+              bound on its peak at the run's points is read at each point on
+              the values beside it too, as in ``"tolerance"``), and passes when it
               moves by at most 1e-3 of that peak to either run: an error about
               the same at ``rtol`` and ``rtol/10`` moves little between them,
               and is seen at ``rtol/100``. The verdict gives both moves

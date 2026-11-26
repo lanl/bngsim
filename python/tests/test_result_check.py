@@ -34,6 +34,7 @@ KEYS = [
     "converged",
     "n_not_resolved",
     "not_resolved",
+    "n_between",
     "checks",
     "n_pass",
     "n_diff",
@@ -228,7 +229,14 @@ def test_a_loose_tolerance_moves_the_answer():
     (c,) = rep["checks"]
     tight = r.rerun(rtol=1e-3, atol=1e-3)
     d, peak = _check.differences(np.asarray(tight.species), np.asarray(r.species))
-    expected = _check.moves(d, peak, np.full(3, 1e-2))
+    # A column past the bound is read at each point on the values beside it
+    # too, from the grid check's run (issue #1926): B's peak falls between two.
+    fine = np.asarray(r.rerun(n_points=(len(r.time) - 1) * _check.GRID_FACTOR + 1).species)
+    local = _check.local_peaks(fine, len(r.time))
+    plain = _check.moves(d, peak, np.full(3, 1e-2))
+    atol = np.full(3, 1e-2)
+    near = _check.local_moves(np.asarray(tight.species), np.asarray(r.species), atol, peak, local)
+    expected = np.where(plain > _check.TOLERANCE_MOVE, near, plain)
     assert c["value"] == pytest.approx(expected.max(), rel=1e-12)
     assert c["status"] == "diff" and c["bound"] == _check.TOLERANCE_MOVE
     assert c["worst_column"] == r.species_names[int(np.argmax(expected))]
@@ -843,3 +851,168 @@ def test_a_species_at_zero_that_departs_in_a_rerun_fails_the_check(monkeypatch):
     (c,) = rep["checks"]
     assert "I" in rep["not_resolved"]
     assert c["status"] == "diff" and c["worst_column"] == "I", c
+
+
+# ─── A column whose points fall on its zeros (issue #1926) ─────────────────
+
+OSC = """
+model osc
+  J1: -> x; w*y
+  J2: -> y; -w*x
+  w = 3.141592653589793
+  x = 1; y = 0
+end
+"""
+
+
+def _osc(**kw) -> Result:
+    # x = cos(πt), y = -sin(πt): y is 0 at every integer time.
+    model = bngsim.Model.from_antimony_string(OSC)
+    return Simulator(model, **kw.pop("sim", {})).run(**{"t_span": (0, 100), "n_points": 101, **kw})
+
+
+def _tol(r: Result, *others: str) -> dict:
+    return next(c for c in r.check(["tolerance", *others])["checks"] if c["name"] == "tolerance")
+
+
+def test_a_column_sampled_at_its_zeros_is_judged_on_the_values_beside_each_point():
+    # y's peak at the run's points is its integration error, and its move
+    # there 0.84 of it; beside every point it reaches 1, and the run is right
+    # to 2e-5 of that.
+    v = _tol(_osc())
+    assert v["status"] == "pass", v
+    assert v["n_between"] == 1, v
+    assert v["value_100"] < _check.TOLERANCE_MOVE, v
+    assert "beside each point" in v["note"]
+
+
+def test_the_verdict_on_such_a_column_is_the_same_beside_the_grid_check():
+    r = _osc()
+    alone, beside = _tol(r), _tol(r, "grid")
+    for key in ("status", "value", "value_100", "n_between"):
+        assert alone[key] == beside[key], (key, alone, beside)
+
+
+def test_a_column_off_on_the_scale_it_moves_on_is_still_a_diff():
+    # 1e-2 of y's peak between the points, added at the points: past the bound
+    # on that scale too.
+    r = _osc()
+    out = copy.copy(r)
+    x = np.asarray(r._species, dtype=float).copy()
+    x[:, r.species_names.index("y")] += 1e-2
+    out._species = x
+    v = _tol(out)
+    assert v["status"] == "diff" and v["worst_column"] == "y", v
+
+
+def test_sample_times_on_the_zeros_are_judged_between_them_too():
+    v = _tol(_osc(sample_times=[float(t) for t in range(101)], t_span=None, n_points=None))
+    assert v["status"] == "pass" and v["n_between"] == 1, v
+
+
+def test_where_the_denser_run_raises_the_peak_at_the_points_stands(monkeypatch):
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        if "n_points" in changes:
+            from bngsim._exceptions import SimulationError
+
+            raise SimulationError("did not converge", code="sim.failed")
+        return real(self, **changes)
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    v = _tol(_osc())
+    assert v["status"] == "diff" and v["n_between"] == 0, v
+
+
+SPIKE = """
+model spike
+  J1: -> x; w*y
+  J2: -> y; -w*x
+  w = 3.3
+  x = 1; y = 0
+  E1: at (time > 0.5): x = x*1000, y = y*1000
+  E2: at (time > 0.75): x = x/1000, y = y/1000
+end
+"""
+
+
+def test_a_spike_between_two_points_excuses_no_other_point():
+    # Between t = 0 and 1 the columns are a thousand times their size at any
+    # point; at every point the run is 22% off at rtol 1e-4. Judged on the
+    # largest value beside each point, the points far from the spike are
+    # judged on their own scale, and the run is a diff, as on main.
+    model = bngsim.Model.from_antimony_string(SPIKE)
+    r = Simulator(model).run(t_span=(0, 1000), n_points=1001, rtol=1e-4)
+    v = _tol(r)
+    assert v["status"] == "diff" and v["value"] > 0.1 and v["n_between"] == 0, v
+
+
+def test_a_budget_out_before_the_denser_run_is_a_timeout(monkeypatch):
+    # Without it a column past the bound cannot be told from one sampled at its
+    # zeros: the check does not say "tighten the tolerance" on a guess.
+    def out(self):
+        raise _check._Out
+
+    monkeypatch.setattr(_check._Context, "fine_run", out)
+    v = _tol(_osc())
+    assert v["status"] == "timeout" and "8x the points" in v["note"], v
+    assert _tol(_osc(t_span=(0, 10), n_points=11))["status"] == "pass"
+
+
+def test_a_denser_run_that_raises_is_made_once_and_named(monkeypatch):
+    tried = []
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        if "n_points" in changes:
+            tried.append(changes["n_points"])
+            from bngsim._exceptions import SimulationError
+
+            raise SimulationError("did not converge", code="sim.failed")
+        return real(self, **changes)
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    rep = _osc().check(["tolerance", "grid"])
+    by = {c["name"]: c for c in rep["checks"]}
+    assert len(tried) == 1, tried
+    assert by["tolerance"]["status"] == "diff" and "did not converge" in by["tolerance"]["note"]
+    assert by["grid"]["status"] == "exception"
+
+
+def test_the_grid_check_reads_a_column_judged_beside_its_points_on_that_scale():
+    rep = _osc().check(["tolerance", "grid"])
+    assert all(c["status"] == "pass" for c in rep["checks"]), rep["checks"]
+
+
+def test_only_the_columns_past_the_bound_are_judged_beside_their_points():
+    # x is sampled at its peaks and moves 2e-5 there: its move stays the one
+    # on its peak at the run's points; only y, past the bound, is rejudged.
+    r = _osc()
+    ctx = _check._Context(r, r.record, None)
+    assert ctx._ensure_drift() is None
+    d, peak = _check.differences(ctx._view(ctx.tight), ctx.x)
+    plain = _check.moves(d, peak, ctx.atols)
+    i = r.species_names.index("x")
+    assert ctx.moved[i] == plain[i]
+    assert ctx.rescaled is not None and list(ctx.rescaled) == [False, True]
+
+
+def test_a_path_on_a_column_judged_beside_its_points_has_that_scale_s_allowance():
+    # A difference of 3e-5 of y's amplitude: 0.54 of the allowance of y's
+    # scale beside its points, 1.2 of the one its peak at the points (its
+    # integration error) would give it.
+    r = _osc()
+    ctx = _check._Context(r, r.record, None)
+    assert ctx._ensure_drift() is None
+    x = np.asarray(ctx.x, dtype=float).copy()
+    x[:, r.species_names.index("y")] += 3e-5
+    assert ctx.compare_x("grid", x, {})["status"] == "pass"
+
+
+def test_the_report_counts_columns_judged_beside_their_points_and_says_what_to_do():
+    rep = _osc().check(["tolerance"])
+    assert rep["ok"] and rep["n_between"] == 1, rep
+    assert "rerun with more points" in rep["next"]
+    assert "judged between the run's points" in str(rep)
+    assert _osc(t_span=(0, 10), n_points=101).check(["tolerance"])["n_between"] == 0

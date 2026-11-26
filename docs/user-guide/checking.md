@@ -38,6 +38,20 @@ An ODE run gets two checks by default:
 Each check compares the species one at a time, each on its own scale. A
 species at 1e-3 beside one at 1e3 is judged as carefully as the large one.
 
+## Species the output points miss
+
+A species whose output points miss part of its trajectory has a small peak
+there: an oscillation sampled at its zero crossings, or the first point after a
+fast transient between two points. Its move at a tighter tolerance is then a
+large share of that small peak even when the run is right. So a species that
+moves by more than 0.1% of its peak at the points is judged again, each point
+against the largest value the species reaches beside it, read from the `grid`
+check's run at 8 times the points. The report's `n_between` counts the species
+judged this way, and `next` suggests more output points to see those values.
+A spike between two points excuses only those two. A spike in every interval,
+with the points in its quiet phase, excuses them all, and a species that is
+zero at every one of the 8 times as many points is not seen.
+
 `report["next"]` says what to do next, in a sentence. The report is a plain
 dict, ready for `json.dumps`. Keep it with `result.record` when you report the
 numbers.
