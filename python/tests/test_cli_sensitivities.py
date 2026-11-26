@@ -538,3 +538,29 @@ def test_simulator_takes_names_from_any_ordered_iterable():
     r = sim.run(t_span=(0, 1), n_points=2)
     assert list(r.sensitivity_params) == ["k2", "k1"]
     assert r.sensitivities.shape == (2, 3, 2)
+
+
+def test_simulator_takes_a_numpy_array_of_names():
+    # `names or []` asked an array of two names for its truth value.
+    sim = Simulator(Model.load(CHAIN), sensitivity_params=np.array(["k1", "k2"]))
+    r = sim.run(t_span=(0, 1), n_points=2)
+    assert list(r.sensitivity_params) == ["k1", "k2"]
+    assert all(type(name) is str for name in r.sensitivity_params)
+
+
+def test_an_empty_iterable_is_no_names_for_any_method():
+    sim = Simulator(Model.load(BIRTH_DEATH), method="ssa", sensitivity_params=iter([]))
+    assert sim.run(t_span=(0, 1), n_points=2, seed=1).species.shape[0] == 2
+
+
+def test_the_command_names_its_option_where_the_message_names_the_keyword(tmp_path):
+    error = _error(
+        _bngsim("run", _comma_model(tmp_path), "--t-end", "1", "--sensitivity-params", "Both",
+                "--json"),
+        _cli.EXIT_USAGE,
+        "usage.invalid_argument",
+    )  # fmt: skip
+    assert error["message"] == (
+        "--sensitivity-params Both: 'Both' is an observable, not a parameter; "
+        "Model.param_names lists the names --sensitivity-params takes."
+    )

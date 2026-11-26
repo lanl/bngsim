@@ -1252,6 +1252,11 @@ class Simulator:
         # bngsim.examples.path() hands out a Path, which the network-free cores
         # refused with a raw pybind11 TypeError (issue #1924).
         xml_path = _xml_path_arg(xml_path)
+        # A string, a set, a dict or a NumPy array of names met a raw TypeError
+        # or ValueError, from the engine's binding at the run or from `x or []`
+        # here (issue #1925): each is a list of names from here on.
+        sensitivity_params = _sensitivity_names_arg("sensitivity_params", sensitivity_params)
+        sensitivity_ic = _sensitivity_names_arg("sensitivity_ic", sensitivity_ic)
         # Normalize the user-facing method token before backend dispatch.
         # normalize_method() validates the token, checks availability,
         # and returns (canonical, dispatch) where dispatch is the
@@ -1844,7 +1849,6 @@ class Simulator:
                 code="usage.method_unsupported",
                 remedies=[use_method("ode")],
             )
-        self._raise_if_sensitivity_names_are_not_names()
         self._raise_if_compartment_size_params(self._sensitivity_params)
         self._raise_if_folded_at_load_params(self._sensitivity_params)
         self._raise_if_function_backed_params(self._sensitivity_params)
@@ -2003,36 +2007,6 @@ class Simulator:
             return set()
         return internal & set(self._model.function_names)
 
-    def _raise_if_sensitivity_names_are_not_names(self) -> None:
-        """Refuse a ``sensitivity_params`` or ``sensitivity_ic`` that is not a
-        list of names (issue #1925), and hold either as a list. One name given
-        as a string, which Python reads as a sequence of one-letter names, met
-        a raw ``TypeError`` from the engine's binding once the run started; so
-        did a set, whose order would set the columns' order, and a dict."""
-        for keyword in ("sensitivity_params", "sensitivity_ic"):
-            names = getattr(self, f"_{keyword}")
-            if isinstance(names, str):
-                raise ArgumentTypeError(
-                    f"{keyword} takes a list of names, not the string {names!r}: "
-                    f"{keyword}=[{names!r}]",
-                    details={"argument": keyword, "value": names},
-                    remedies=[pass_argument(keyword, [names])],
-                )
-            if isinstance(names, set | frozenset | dict) or not isinstance(names, Iterable):
-                raise ArgumentTypeError(
-                    f"{keyword} takes a list of names, in the order of the columns, not a "
-                    f"{type(names).__name__}",
-                    details={"argument": keyword, "value": repr(names)},
-                )
-            names = list(names)
-            for name in names:
-                if not isinstance(name, str):
-                    raise ArgumentTypeError(
-                        f"{keyword} takes names, not {name!r} of type {type(name).__name__}",
-                        details={"argument": keyword, "value": repr(name)},
-                    )
-            setattr(self, f"_{keyword}", names)
-
     def _raise_if_unknown_sensitivity_names(self, model: Any) -> None:
         """Refuse, as the Simulator is made, a sensitivity name the model does
         not have (issue #1925), which the engine found only once the run had
@@ -2043,16 +2017,18 @@ class Simulator:
         the keyword that takes them, by the model's own spelling. Runs after the
         refusals of names the model has but cannot differentiate, so theirs
         come first."""
+        if not (self._sensitivity_params or self._sensitivity_ic):
+            return  # no names: nothing read from the model, whatever it is
         from bngsim._model import _kind_of, _sole_species
 
-        params = set(model._core.param_names)
-        species = set(model.species_names)
-        for keyword, names, known, error, kind, listed in (
-            ("sensitivity_params", self._sensitivity_params, params, ParameterError,
-             "parameter", "param_names"),
-            ("sensitivity_ic", self._sensitivity_ic, species, ModelError,
-             "species", "species_names"),
+        for keyword, names, error, kind, listed in (
+            ("sensitivity_params", self._sensitivity_params, ParameterError, "parameter",
+             "param_names"),
+            ("sensitivity_ic", self._sensitivity_ic, ModelError, "species", "species_names"),
         ):  # fmt: skip
+            if not names:
+                continue
+            known = set(model._core.param_names if kind == "parameter" else model.species_names)
             code = "param.not_found" if kind == "parameter" else "species.not_found"
             for name in names:
                 if name in known:
@@ -13425,6 +13401,37 @@ def _expression_names(tree: ast.Expression) -> tuple[frozenset[str], frozenset[s
         elif isinstance(node, ast.arg):
             binds.add(node.arg)
     return frozenset(loads), frozenset(binds)
+
+
+def _sensitivity_names_arg(keyword: str, names: object) -> list[str]:
+    """``sensitivity_params`` or ``sensitivity_ic`` as the list of names the
+    Simulator holds (issue #1925). ``None`` is no names. One name given as a
+    string, which Python reads as a sequence of one-letter names, a set, whose
+    order would set the columns' order, a dict and anything not iterable are
+    refused; any other iterable of strings (a tuple, a generator, a NumPy array
+    of names) is taken in its order."""
+    if names is None:
+        return []
+    if isinstance(names, str):
+        raise ArgumentTypeError(
+            f"{keyword} takes a list of names, not the string {names!r}: {keyword}=[{names!r}]",
+            details={"argument": keyword, "value": names},
+            remedies=[pass_argument(keyword, [names])],
+        )
+    if isinstance(names, set | frozenset | dict) or not isinstance(names, Iterable):
+        raise ArgumentTypeError(
+            f"{keyword} takes a list of names, in the order of the columns, not a "
+            f"{type(names).__name__}",
+            details={"argument": keyword, "value": repr(names)},
+        )
+    out = list(names)
+    for name in out:
+        if not isinstance(name, str):
+            raise ArgumentTypeError(
+                f"{keyword} takes names, not {name!r} of type {type(name).__name__}",
+                details={"argument": keyword, "value": repr(name)},
+            )
+    return [str(name) for name in out]
 
 
 def _xml_path_arg(xml_path: object) -> str:

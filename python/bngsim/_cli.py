@@ -1512,6 +1512,7 @@ def _sensitivity_names_from(args: argparse.Namespace) -> Iterator[None]:
             if error.code != code or name not in (getattr(args, attr) or ()):
                 continue
             message = str(error).removeprefix(f"{attr}: ")
+            message = message.replace(f"the names {attr} takes", f"the names {flag} takes")
             remedies = list(error.remedies or [])
             for remedy in remedies:
                 keyword = remedy.get("argument")
