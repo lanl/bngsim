@@ -3560,15 +3560,16 @@ class Result:
               larger of the two engines' peaks, with the series' move at the
               tighter tolerance as its drift (none where the series is not
               converged) or AMICI's own move between its two runs, the larger
-              (``amici_not_converged`` names the series it moves past 1e-3
-              of their peak on; past 1e-2 there is no reference, and the
-              series is not judged: ``no_reference``), and the states are
-              compared alike; an initial amount is not judged
+              (a series AMICI moves past 1e-3 of its peak on has no
+              reference and is not judged: ``no_reference``), and the
+              states are compared alike; an initial amount is not judged
               (``not_judged``), as AMICI gives sensitivities to parameters
               only. A diff is judged again a decade tighter (bngsim at
               ``rtol/10`` against AMICI at ``rtol/100``):
-              ``confirmed_tighter`` says whether it holds there, and one that
-              does not is ``diff_not_converged``. AMICI's build is cached in
+              ``confirmed_tighter`` is True where it holds as large with
+              both engines converged there (the reading's), False where it
+              goes or halves (the tolerance's: ``diff_not_converged``), and
+              None where that does not settle it. AMICI's build is cached in
               ``~/.cache/bngsim/amici`` (or ``$BNGSIM_AMICI_CACHE_DIR``).
             - ``"replicates"``: a stochastic run made again at ``replicates``
               other seeds; for each observable at the last time, the mean
@@ -3623,7 +3624,7 @@ class Result:
             ``"sensitivity_second_engine"`` gives those of ``margin``,
             ``n_judged``, ``not_judged``, ``n_not_converged`` and
             ``diff_not_converged`` too, ``not_converged``,
-            ``amici_not_converged`` and ``no_reference`` (series names),
+            ``no_reference`` and ``floor_held`` (series names),
             ``confirmed_tighter``, and ``state_margin`` and
             ``state_diff`` (the states against AMICI's),
             ``species_not_compared`` (with the reason) and ``engine``

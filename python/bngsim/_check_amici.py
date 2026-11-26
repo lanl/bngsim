@@ -91,31 +91,34 @@ AMICI runs twice, at the run's tolerance and at a tenth of it (its build is
 cached, so the second costs a run). The tighter run is the reference, and the
 move between the two is every series' and species' drift where it is the
 larger: it is how far a correct engine strays at the run's tolerance, which
-bngsim's own move can understate (BIOMD0000000810 at rtol 1e-7: bngsim 1.2e-4
-and AMICI 7e-5 of a series' peak from the solution, 2e-4 apart, and in
-agreement once converged). It is not capped: on that model's gamma_C column
-both engines err by percent at the run's tolerance, which a cap would read as a
-misreading. So the series AMICI moves past :data:`bngsim._check.TOLERANCE_MOVE`
-of their peak on, whose allowance is that wide, are named
-(``amici_not_converged``). A series AMICI moves past
-:data:`bngsim._check.PATH_CEILING` of its peak on has no reference at the run's
-tolerance (ten times that would forgive a tenth of the series): it is not
-judged, and is named (``no_reference``); where no series is left to judge, the
-check is a ``skip``.
+bngsim's own move can understate (BIOMD0000000810 at rtol 1e-7, with the
+parameters gamma_C, delta_Treg, myu_TcS, k6 and tck to t = 500: bngsim 1.2e-4
+and AMICI 7e-5 of a series' peak from bngsim's answer at rtol 1e-12, 2e-4
+apart). A series AMICI moves past :data:`bngsim._check.TOLERANCE_MOVE` of its
+peak on is one AMICI does not converge at the run's tolerance (ten times its
+move would forgive whole percents of the series, a column 8% wrong among them):
+it is judged instead against AMICI's run at a hundredth of the tolerance, with
+AMICI's move from a tenth as drift, where AMICI converges it there
+(``n_judged_deeper``), and otherwise is not judged, and is named
+(``no_reference``); where no series is left to judge, the check is a ``skip``.
+A series the tolerance tier takes to be held by a floor keeps its move as
+drift, as that tier and the quotient's allow it (``floor_held``).
 
-A diff at the run's tolerance is judged again a decade tighter: bngsim's run
-at a tenth of the tolerance (the tolerance check's) against AMICI at a
-hundredth, with bngsim's run at a hundredth as its drift. Either engine's one
-move can understate its error (on BIOMD0000000810 to t = 50 at rtol 1e-8,
-AMICI's two runs agree with each other and are 1e-3 of some series' peak from
-the solution, which both engines reach at rtol 1e-10), and a model read two
-ways differs as much at any tolerance. So a diff that holds there is the
-reading's (``confirmed_tighter``), judged with every series keeping its own
-move a decade tighter as drift, converged or not, so that tolerance error a
-series still has there is not read as a misreading; one that does not hold is
-the tolerance's:
-the verdict is still ``diff``, with ``diff_not_converged``, which ``next``
-reads as the tolerance's. Where the tighter runs cannot be made, it says so.
+A diff at the run's tolerance is judged again a decade tighter: bngsim's run at
+a tenth of the tolerance (the tolerance check's) against AMICI at a hundredth,
+every series keeping its own move a decade tighter as drift, converged or not.
+Either engine's one move can understate its error, and a model read two ways
+differs as much at any tolerance. So a failing series is the tolerance's where
+a decade tighter it passes, or its gap shrinks to :data:`SHRINK` of what it was
+or less; it is the reading's (``confirmed_tighter``) where it fails there too,
+its gap does not shrink so, and both engines converge it there (bngsim's move
+and AMICI's within :data:`bngsim._check.TOLERANCE_MOVE` of its peak);
+otherwise, as for a series still moving a decade tighter, it is not determined
+(``confirmed_tighter`` None). The verdict is ``diff`` in each case;
+``diff_not_converged`` (the tolerance's) and an undetermined one say to tighten
+the tolerance, the first plainly, the second before reporting it. Where the
+tighter runs cannot be made, it says so.
+
 The states AMICI integrates are compared
 too, species by species, on every path's rule
 (:func:`bngsim._check.path_margins`, as
@@ -161,7 +164,6 @@ import numpy as np
 from bngsim import _check, _check_sensitivity
 from bngsim._check import (
     MAX_NAMED,
-    PATH_CEILING,
     TOLERANCE_MOVE,
     _first_line,
     _num,
@@ -194,6 +196,11 @@ PINNED_COMMIT = "7fb8c571ac9e4d5aafb85d5da08982ea7c5a19dc"
 #: model AMICI cannot integrate pays the whole budget before it gives up.
 MAX_STEPS = 1_000_000
 
+#: A disagreement is the tolerance's where, a decade tighter, its gap is at
+#: most this share of the gap at the run's tolerance: tolerance error shrinks
+#: about tenfold a decade, and a model read two ways differs as much at any.
+SHRINK = 0.5
+
 #: bngsim's prefix for a reaction's local parameter.
 LOCAL_PREFIX = "_lp_"
 #: AMICI's prefix for an id that collides with one of its own symbols.
@@ -203,6 +210,8 @@ AMICI_PREFIX = "amici_"
 #: sensitivity code on, conservation laws off (every species a state), no
 #: observation model.
 _BUILD_FLAGS = "sens=1;cl=0;obs=0;bngsim-check=1"
+#: The environment a build reads, and so part of its key.
+_BUILD_ENV = ("CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS")
 
 
 def _default_cache_dir() -> Path:
@@ -243,7 +252,8 @@ def _sbml_text(path: str, fmt: str, sha256: str | None) -> tuple[str | None, str
         import antimony
     except ImportError:
         return None, "Antimony is not installed, so the model cannot be read again as SBML"
-    if antimony.loadAntimonyString(text) < 0:
+    # By the file, so an import in it resolves against its own directory.
+    if antimony.loadAntimonyFile(path) < 0:
         return None, f"Antimony could not read the model again: {antimony.getLastError()}"
     return str(antimony.getSBMLString(antimony.getMainModuleName())), ""
 
@@ -399,17 +409,15 @@ def bngsim_ids(names: list[str]) -> list[str | None]:
 
 def compartment_sizes(model: Any) -> dict[str, float | None]:
     """Each compartment's size where the file gives it as a constant: declared,
-    and set by no rule and no initial assignment; None otherwise."""
+    and set by no rule and no initial assignment (no event sets it either: a
+    model with one is not compared; nor an algebraic rule, which bngsim does
+    not load); None otherwise."""
     ruled = {r.getVariable() for r in model.getListOfRules() if r.isSetVariable()}
-    algebraic = any(r.isAlgebraic() for r in model.getListOfRules())
     out: dict[str, float | None] = {}
     for c in model.getListOfCompartments():
         cid = c.getId()
         fixed = (
-            cid not in ruled
-            and model.getInitialAssignmentBySymbol(cid) is None
-            and c.isSetSize()
-            and (c.getConstant() or not algebraic)
+            cid not in ruled and model.getInitialAssignmentBySymbol(cid) is None and c.isSetSize()
         )
         out[cid] = float(c.getSize()) if fixed else None
     return out
@@ -697,6 +705,9 @@ def build_engine(amici: Any, sbml: str) -> Engine | str:
                 commit or "",
                 f"{sys.version_info[0]}.{sys.version_info[1]}",
                 platform.machine(),
+                # A build failure is kept: under another compiler or flags it
+                # may build.
+                *(f"{k}={os.environ.get(k, '')}" for k in _BUILD_ENV),
             ]
         ).encode("utf-8")
     ).hexdigest()[:16]
@@ -814,6 +825,18 @@ def check(ctx: _Context) -> dict[str, Any]:
             "skip",
             note="the model was loaded with compartment_sizes= the file does not give",
         )
+    try:
+        amici = _import_amici()
+    except Exception as e:  # noqa: BLE001 - an install that cannot import is no install
+        return _verdict(
+            NAME,
+            "skip",
+            note="AMICI is not installed, or does not import here "
+            f"({type(e).__name__}: {_first_line(e)}): it is no dependency or extra of bngsim "
+            "(pip install amici; it compiles C++ per model and needs SWIG, a C++ compiler and "
+            "a BLAS, and from AMICI 1.1 on Python 3.12 or later), so the sensitivities were "
+            "not checked against a second engine",
+        )
     skip = _check.same_as_file(ctx, NAME, "AMICI")
     if skip:
         return skip
@@ -849,18 +872,6 @@ def check(ctx: _Context) -> dict[str, Any]:
     if not wanted:
         first = next(iter(not_judged.items()))
         return _verdict(NAME, "skip", note=f"no column AMICI can give ({first[0]}: {first[1]})")
-    try:
-        amici = _import_amici()
-    except Exception as e:  # noqa: BLE001 - an install that cannot import is no install
-        return _verdict(
-            NAME,
-            "skip",
-            note="AMICI is not installed, or does not import here "
-            f"({type(e).__name__}: {_first_line(e)}): it is no dependency or extra of bngsim "
-            "(pip install amici; it compiles C++ per model and needs SWIG, a C++ compiler and "
-            "a BLAS, and from AMICI 1.1 on Python 3.12 or later), so the sensitivities were "
-            "not checked against a second engine",
-        )
     err = ctx._ensure_drift()
     if err:
         return _verdict(
@@ -875,8 +886,9 @@ def check(ctx: _Context) -> dict[str, Any]:
             note=f"no column is converged at the run's tolerance (each moves past "
             f"{TOLERANCE_MOVE:g} of its peak at a tenfold tighter one): nothing is judged",
         )
-    # The run's own error, read before AMICI's build: the reruns are what
-    # budget= bounds, and a budget spent there leaves no build to wait for.
+    # The run's own error, and which series a floor holds, read before AMICI's
+    # build: the reruns are what budget= bounds, and a budget spent there
+    # leaves no build to wait for.
     _check_sensitivity._tier1(ctx, cols)
     ctx._ensure_spread()
     ctx._left()
@@ -911,10 +923,16 @@ def compare(
         k = am_by_file.get(str(by_file[j]))
         p = cols.params[j]
         if k is None:
-            not_judged[p] = (
-                "AMICI has no free parameter for it: an initial assignment or a rule sets it, "
-                "or AMICI holds it fixed"
-            )
+            sid = str(by_file[j])
+            if sbml_model.getCompartment(sid) is not None:
+                not_judged[p] = "a compartment's size, which AMICI holds as no free parameter"
+            elif sid not in file_ids:
+                not_judged[p] = "not a parameter of the file (a name of bngsim's own)"
+            else:
+                not_judged[p] = (
+                    "AMICI has no free parameter for it: an initial assignment or a rule sets "
+                    "it, or AMICI holds it fixed"
+                )
             continue
         mine = values.get(p)
         theirs = engine.free_values[k]
@@ -1084,7 +1102,9 @@ class _Level:
     tighter (the reference) and at this tolerance; *floors*, *atols*, *rtol*:
     the tolerances at this level; *judged*: the series compared;
     *withhold*: give a series not converged no drift of its own (False to
-    ask whether a gap is more than the series' own move can explain)."""
+    ask whether a gap is more than the series' own move can explain);
+    *held*: the series the tolerance tier takes to be held by a floor, which
+    keep their move as drift, as that tier and the quotient's allow them."""
 
     def __init__(
         self,
@@ -1102,6 +1122,7 @@ class _Level:
         rtol: float,
         judged: NDArray[np.bool_],
         withhold: bool = True,
+        held: NDArray[np.bool_] | None = None,
     ) -> None:
         n_sp, n_cols = floors.shape
         x_ref, S_ref = ref
@@ -1137,16 +1158,18 @@ class _Level:
         if S_loose is not None:
             drift = shaped(spread(flat(drift), flat(_series_gap(S_loose, S)), flat(peak)))
         if withhold:
-            drift = np.where(self.converged, drift, 0.0)
-        # AMICI's own move between its two runs, which measures how far a
-        # correct engine strays at this tolerance. It is not capped: where both
-        # engines err by percent (BIOMD0000000810's gamma_C column at rtol
-        # 1e-7) a cap would read that error as a misreading. But where AMICI
-        # moves past PATH_CEILING of a series' peak it is no reference: ten
-        # times that would forgive a tenth of the series and more.
+            keep = self.converged if held is None else self.converged | held
+            drift = np.where(keep, drift, 0.0)
+        # AMICI's own move between its two runs measures how far a correct
+        # engine strays at this tolerance, and is the drift where it is the
+        # larger. A series AMICI moves past TOLERANCE_MOVE of its peak on is
+        # one AMICI does not converge at this tolerance: no reference there
+        # (ten times its move would forgive whole percents of the series, a
+        # column 8% wrong among them), so it is not judged, and is named.
         am_move = _series_gap(S_am, S_ref)
-        self.no_reference = judged & self.resolved & (am_move > PATH_CEILING * peak)
-        self.wide = judged & self.resolved & ~self.no_reference & (am_move > TOLERANCE_MOVE * peak)
+        self.am_move = am_move
+        self.no_reference = judged & self.resolved & ~(am_move <= TOLERANCE_MOVE * peak)
+        self.floor_held = judged & (held if held is not None else False) & ~self.no_reference
         drift = np.maximum(drift, np.where(np.isfinite(am_move), am_move, 0.0))
         self.use = judged & ~self.no_reference
         own = self.use & self.resolved
@@ -1182,9 +1205,24 @@ class _Level:
         self.ratio_x, _ = path_margins(
             d_x, peak_x, atols, rtol, drift_x, np.ones(peak_x.shape, dtype=bool), own=self.x_conv
         )
+        self.d_x = d_x
         self.state_margin = float(self.ratio_x.max()) if self.ratio_x.size else 0.0
         self.failing = self.use & (self.ratio > 1.0)
         self.failing_x = self.ratio_x > 1.0
+        self.diff = self.margin > 1.0 or self.state_margin > 1.0
+
+    def take(self, other: _Level) -> None:
+        """The series *other* judges (those this level had no reference
+        for, against a deeper AMICI run), judged as *other* judges them."""
+        take = other.use
+        for name in ("ratio", "rel", "d", "peak", "resolved", "converged", "am_move"):
+            setattr(self, name, np.where(take, getattr(other, name), getattr(self, name)))
+        self.no_reference = other.no_reference
+        self.floor_held = self.floor_held | other.floor_held
+        self.use = self.use | take
+        self.failing = self.use & (self.ratio > 1.0)
+        self.margin = float(self.ratio.max()) if self.ratio.size else 0.0
+        self.value = float(self.rel.max()) if self.rel.size else 0.0
         self.diff = self.margin > 1.0 or self.state_margin > 1.0
 
 
@@ -1217,6 +1255,10 @@ def _judge(
 
     S = np.asarray(cols.S, dtype=float)
     S_tight = block_of(ctx.tight)
+    # The series the tolerance tier takes to be held by a floor (issue #177):
+    # judged with their move as drift, as that tier and the quotient's allow.
+    _, _, _, held_flat = _check_sensitivity._tier1(ctx, cols)
+    held = np.asarray(held_flat, dtype=bool).reshape(n_sp, n_cols)
     lv = _Level(
         S=S,
         S_next=S_tight,
@@ -1230,7 +1272,43 @@ def _judge(
         atols=ctx.atols,
         rtol=rtol,
         judged=judged,
+        held=held,
     )
+    # AMICI at a hundredth of the tolerance, made once where needed.
+    deeper_run: dict[str, Any] = {}
+
+    def deeper_answer() -> tuple[str, _Answer | None]:
+        if "answer" not in deeper_run:
+            deeper_run["answer"] = amici_at(100.0)
+        out: tuple[str, _Answer | None] = deeper_run["answer"]
+        return out
+
+    # A series AMICI does not converge at a tenth of the tolerance is judged
+    # against its run at a hundredth instead, with its move from a tenth as
+    # drift, where it converges there: not judging it would pass a column
+    # twice the truth unseen. One it does not converge there either is not
+    # judged, and is named.
+    n_deeper = 0
+    if lv.no_reference.any():
+        why_b, deeper_b = deeper_answer()
+        if deeper_b is not None:
+            lv_b = _Level(
+                S=S,
+                S_next=S_tight,
+                S_loose=None if ctx.loose is None else block_of(ctx.loose),
+                x=ctx.x,
+                x_next=ctx._view(ctx.tight),
+                x_loose=None if ctx.loose is None else ctx._view(ctx.loose),
+                ref=deeper_b,
+                am=reference,
+                floors=cols.atol,
+                atols=ctx.atols,
+                rtol=rtol,
+                judged=lv.no_reference,
+                held=held,
+            )
+            lv.take(lv_b)
+            n_deeper = int(lv_b.use.sum())
     status = "diff" if lv.diff else "pass"
     n_judged = int(lv.use.any(axis=0).sum())
     if not lv.use.any() and not lv.diff:
@@ -1245,7 +1323,7 @@ def _judge(
     confirmed: bool | None = None
     unconfirmed = ""
     if lv.diff:
-        why, deeper = amici_at(100.0)
+        why, deeper = deeper_answer()
         tight100 = ctx.tight100
         if tight100 is None and deeper is not None:
             try:
@@ -1275,14 +1353,32 @@ def _judge(
                 judged=lv.use,
                 withhold=False,
             )
-            # Held where the gap there is more than ten times what the series
-            # itself still moves at that tolerance: a series bngsim does not
-            # converge even a decade tighter keeps that move as its drift, so
-            # its tolerance error is not read as a misreading, and a column
-            # twice the truth still is one.
-            confirmed = bool(
-                (lv.failing & lv1.failing).any() or (lv.failing_x & lv1.failing_x).any()
-            )
+            # Per series that fails at the run's tolerance:
+            # - the tolerance's where a decade tighter it passes (with its own
+            #   move there as drift), or its gap shrinks to SHRINK or less;
+            # - the reading's where it fails there too, its gap does not
+            #   shrink so, and both engines converge it there (bngsim's move
+            #   and AMICI's at most TOLERANCE_MOVE of its peak): one move
+            #   alone can understate an engine's error, and a gap that holds
+            #   as both converge does not;
+            # - undetermined otherwise (still moving a decade tighter).
+            with np.errstate(invalid="ignore"):
+                shrinks = np.isfinite(lv1.d) & (lv1.d <= SHRINK * lv.d)
+                shrinks_x = np.isfinite(lv1.d_x) & (lv1.d_x <= SHRINK * lv.d_x)
+            conv1 = lv1.resolved & lv1.converged & ~lv1.no_reference
+            reading = lv.failing & lv1.failing & ~shrinks & conv1
+            reading_x = lv.failing_x & lv1.failing_x & ~shrinks_x & lv1.x_conv
+            tolerance = lv.failing & (~lv1.failing | shrinks)
+            tolerance_x = lv.failing_x & (~lv1.failing_x | shrinks_x)
+            if reading.any() or reading_x.any():
+                confirmed = True
+            elif (tolerance == lv.failing).all() and (tolerance_x == lv.failing_x).all():
+                confirmed = False
+            else:
+                unconfirmed = (
+                    "a disagreement neither goes nor holds clearly a decade tighter, where a "
+                    "series it is in is still not converged"
+                )
     tolerance_only = lv.diff and confirmed is False
 
     margin, value, state_margin = lv.margin, lv.value, lv.state_margin
@@ -1307,35 +1403,41 @@ def _judge(
         note += f" (most in {state_worst})"
     if lv.diff and confirmed:
         note += (
-            "; it holds between bngsim's run at a tenth of the tolerance and AMICI's at a "
-            "hundredth: the reading's, not the tolerance's"
+            "; it holds, as large, between bngsim's run at a tenth of the tolerance and AMICI's "
+            "at a hundredth, both converged there: the reading's, not the tolerance's"
         )
     elif tolerance_only:
         note += (
-            "; bngsim's run at a tenth of the tolerance agrees with AMICI's at a hundredth: the "
-            "tolerance's, not the reading's"
+            "; it goes, or shrinks to half or less, between bngsim's run at a tenth of the "
+            "tolerance and AMICI's at a hundredth: the tolerance's, not the reading's"
         )
     elif lv.diff:
-        note += f"; it could not be compared a decade tighter ({unconfirmed})"
+        note += f"; a decade tighter does not settle it ({unconfirmed})"
     not_converged = _check_sensitivity._named(cols, use & ~lv.converged)
     if n_out:
         note += (
             f"; {n_out} series not converged at the run's tolerance, judged with no drift of "
             f"their own ({', '.join(not_converged[:3])}{', ...' if n_out > 3 else ''})"
         )
-    wide = _check_sensitivity._named(cols, lv.wide)
-    if wide:
+    if n_deeper:
         note += (
-            f"; AMICI itself moves past {TOLERANCE_MOVE:g} of their peak between its two runs "
-            f"on {len(wide)} series, whose allowance takes ten times that move "
-            f"({', '.join(wide[:3])}{', ...' if len(wide) > 3 else ''})"
+            f"; {n_deeper} series AMICI does not converge at a tenth of the tolerance judged "
+            "against its run at a hundredth"
         )
     no_reference = _check_sensitivity._named(cols, lv.no_reference)
     if no_reference:
         note += (
-            f"; AMICI moves past {PATH_CEILING:g} of their peak between its two runs on "
-            f"{len(no_reference)} series, no reference at the run's tolerance, not judged "
+            f"; AMICI moves past {TOLERANCE_MOVE:g} of their peak between its runs on "
+            f"{len(no_reference)} series, at a tenth of the tolerance and at a hundredth: no "
+            f"reference, not judged "
             f"({', '.join(no_reference[:3])}{', ...' if len(no_reference) > 3 else ''})"
+        )
+    floor_held = _check_sensitivity._named(cols, lv.floor_held)
+    if floor_held:
+        note += (
+            f"; {len(floor_held)} series the tolerance tier takes to be held by a floor, "
+            f"judged with their move as drift ({', '.join(floor_held[:3])}"
+            f"{', ...' if len(floor_held) > 3 else ''})"
         )
     if trace.any():
         note += (
@@ -1375,7 +1477,9 @@ def _judge(
     score = np.where(use, lv.ratio, 0.0).reshape(-1)
     entry = _check_sensitivity._columns_entry(cols, np.where(use, lv.ratio, -1.0).reshape(-1))
     gone = set(not_judged)
-    entry["columns"] = [c for c in entry["columns"] if c["name"] not in gone]
+    entry["columns"] = [
+        c for c in entry["columns"] if c["name"] not in gone and (c["value"] or 0.0) >= 0.0
+    ]
     extra: dict[str, Any] = {
         "margin": _num(margin),
         **entry,
@@ -1386,8 +1490,9 @@ def _judge(
         "species_not_compared": dict(list(species_not_compared.items())[:MAX_NAMED]),
         "n_not_converged": n_out,
         "not_converged": not_converged[:MAX_NAMED],
-        "n_amici_not_converged": len(wide),
-        "amici_not_converged": wide[:MAX_NAMED],
+        "n_floor_held": len(floor_held),
+        "floor_held": floor_held[:MAX_NAMED],
+        "n_judged_deeper": n_deeper,
         "n_no_reference": len(no_reference),
         "no_reference": no_reference[:MAX_NAMED],
         "confirmed_tighter": confirmed,
@@ -1412,8 +1517,8 @@ def _judge(
     if status == "skip":
         note = (
             "AMICI moves past "
-            f"{PATH_CEILING:g} of the peak of every series it gives between its two runs: it is "
-            "no reference at the run's tolerance (rerun at a tighter one); " + note
+            f"{TOLERANCE_MOVE:g} of the peak of every series it gives between its two runs: it "
+            "is no reference at the run's tolerance (rerun at a tighter one); " + note
         )
     return _verdict(
         NAME,

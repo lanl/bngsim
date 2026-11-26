@@ -456,8 +456,8 @@ def _next(out: Report, roundoff: bool = False) -> str:
         what = "trajectory" if diffs[0].get("state_diff") else "forward sensitivities"
         if diffs[0].get("confirmed_tighter") is None:
             return (
-                f"bngsim and AMICI disagree on this model's {what} at the run's tolerance, and "
-                "could not be compared at a tighter one: rerun at a tighter rtol and atol "
+                f"bngsim and AMICI disagree on this model's {what} at the run's tolerance, and a "
+                "tighter comparison did not settle whose it is: rerun at a tighter rtol and atol "
                 "(result.rerun(rtol=..., atol=...)) and check that run; if they still disagree, "
                 "report it at https://github.com/lanl/bngsim/issues with json.dumps(report) and "
                 "the model file."

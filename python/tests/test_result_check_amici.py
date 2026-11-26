@@ -380,6 +380,27 @@ def test_a_model_with_an_event_or_a_switch_is_not_compared(tmp_path, engine):
     assert v["status"] == "skip" and "event" in v["note"]
 
 
+def test_the_scan_reads_an_l2_stoichiometry():
+    import libsbml
+
+    doc = libsbml.SBMLDocument(2, 4)
+    m = doc.createModel()
+    c = m.createCompartment()
+    c.setId("C"), c.setSize(1.0)
+    for sid in ("A", "B"):
+        s = m.createSpecies()
+        s.setId(sid), s.setCompartment("C"), s.setInitialConcentration(1.0)
+    r = m.createReaction()
+    r.setId("J1")
+    ref = r.createReactant()
+    ref.setSpecies("A")
+    sm = ref.createStoichiometryMath()
+    sm.setMath(libsbml.parseL3Formula("piecewise(1, B > 0.5, 2)"))
+    r.createKineticLaw().setMath(libsbml.parseL3Formula("A"))
+    why = _check_amici.not_comparable(doc.getModel())
+    assert why is not None and "reaction J1's stoichiometry has a piecewise" in why, why
+
+
 @pytest.mark.parametrize(
     ("where", "formula", "what"),
     [
@@ -546,39 +567,73 @@ def test_a_disagreement_the_tighter_run_does_not_show_is_the_tolerances(engine):
     assert "not converged at the run's tolerance" in rep["next"]
 
 
-def test_the_reference_is_amicis_tighter_run(engine):
-    # AMICI at the run's tolerance off by 0.5% of dA/dk, and of A: its run at
-    # a tenth of the tolerance is the one judged against, and a correct run
-    # passes. The series AMICI moves past a thousandth of their peak on are
-    # named, as their allowance is that wide.
+def test_the_reference_is_amicis_tighter_run(monkeypatch, engine):
+    # AMICI at the run's tolerance off by 5e-4 of dA/dk (it converges the
+    # series: under 1e-3); its run at a tenth of the tolerance is the one
+    # judged against, and a correct run passes.
     fake = engine(_ClosedForm({"A": A0}))
-    fake.loose_error = 5e-3
-    fake.loose_state_error = 5e-3
+    fake.loose_error = 5e-4
+    fake.loose_state_error = 5e-4
     v = _verdict(_decay())
-    assert v["status"] == "pass", v
-    assert v["amici_not_converged"] == ["dA/dk"] and v["n_amici_not_converged"] == 1
-    assert "AMICI itself moves past 0.001 of their peak" in v["note"]
-    assert "(dA/dk)" in v["note"]
-    # Ten times AMICI's move: a reading off by 10% is still one.
+    assert v["status"] == "pass" and v["no_reference"] == [], v
+    # bngsim's dA/dk off by 4.75e-3 in every solve, and AMICI's at the run's
+    # tolerance by -5e-4: within ten times AMICI's move of its tighter run,
+    # 10.5 times it of its run at the run's tolerance.
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        return _scaled(out, 0, 1 + 4.75e-3) if len(out._sensitivity_params) else out
+
+    monkeypatch.setattr(Simulator, "run", run)
     fake = engine(_ClosedForm({"A": A0}))
-    fake.loose_error = 5e-3
-    assert _verdict(_scaled(_decay(), 0, 1.1))["status"] == "diff"
+    fake.loose_error = -5e-4
+    v = _verdict(_decay())
+    assert v["status"] == "pass" and 0.9 < v["margin"] < 1.0, v
 
 
-def test_a_series_amici_moves_by_more_than_a_hundredth_of_has_no_reference(engine):
-    # AMICI off by 10% between its runs: ten times that would forgive the
-    # whole series, so it is not judged, and with nothing else to judge the
-    # check is a skip, not a pass, even where bngsim's column is twice the
-    # truth.
+def test_a_series_amici_moves_by_more_than_a_thousandth_of_has_no_reference(monkeypatch, engine):
+    def amici_off(*offs):
+        """AMICI's dA/dk off by *offs* at the run's tolerance, a tenth and a
+        hundredth of it."""
+        fake = _ClosedForm({"A": A0})
+
+        def edit(x, sx):
+            return x, sx * (1 + offs[min(len(fake.calls), 3) - 1])
+
+        fake.edit = edit
+        return engine(fake)
+
+    # AMICI moves 10% between the run's tolerance and a tenth of it, and not
+    # from a tenth to a hundredth: the series is judged against AMICI's run
+    # at a hundredth, and a column twice the truth, or 8% off, is a finding
+    # (ten times AMICI's 10% would have forgiven both).
+    for factor, status in ((1.0, "pass"), (2.0, "diff"), (1.08, "diff"), (0.0, "diff")):
+        amici_off(0.1, 0.0, 0.0)
+        v = _verdict(_scaled(_decay(), 0, factor))
+        assert v["status"] == status and v["n_judged_deeper"] == 1, (factor, v)
+        assert v["no_reference"] == []
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        return _scaled(out, 0, 1.08) if len(out._sensitivity_params) else out
+
+    with monkeypatch.context() as m:
+        m.setattr(Simulator, "run", run)
+        amici_off(9e-3, 0.0, 0.0)
+        assert _verdict(_decay())["status"] == "diff"
+    # AMICI moving 10% and then 5%: no reference at either, not judged, and
+    # with nothing else to judge the check is a skip, not a pass, even where
+    # bngsim's column is twice the truth.
     for factor in (1.0, 2.0, 0.0):
-        fake = engine(_ClosedForm({"A": A0}))
-        fake.loose_error = 0.1
+        amici_off(0.1, 0.05, 0.0)
         rep = _scaled(_decay(), 0, factor).check([NAME])
         (v,) = rep["checks"]
         assert v["status"] == "skip", (factor, v)
         assert v["no_reference"] == ["dA/dk"] and v["n_no_reference"] == 1
-        assert v["amici_not_converged"] == []
-        assert "no reference at the run's tolerance" in v["note"]
+        assert "no reference, not judged" in v["note"]
+        assert v["columns"] == []
         assert rep["ok"] is False
 
 
@@ -597,16 +652,18 @@ def test_a_diff_that_goes_at_a_tighter_tolerance_is_the_tolerances(engine):
     (v,) = rep["checks"]
     assert v["status"] == "diff" and v["confirmed_tighter"] is False, v
     assert v["diff_not_converged"] is True
-    assert "agrees with AMICI's at a hundredth: the tolerance's" in v["note"]
+    assert "shrinks to half or less, between bngsim's run at a tenth" in v["note"]
+    assert "the tolerance's, not the reading's" in v["note"]
     assert "not converged at the run's tolerance" in rep["next"]
 
 
 def test_a_series_still_moving_a_decade_tighter_is_the_tolerances(monkeypatch, engine):
-    # bngsim's dA/dk off by 5e-3 at the run's tolerance, 3e-3 at a tenth of it
-    # and 1e-3 at a hundredth: not converged at either, and nearer AMICI as
-    # it tightens. The gap a decade tighter is within ten times what the
-    # series still moves there, so the diff is the tolerance's, not the
-    # reading's; a column twice the truth is not (the shared-defect test).
+    # bngsim's dA/dk off by 5e-3 at the run's tolerance, 1e-3 at a tenth of it
+    # and 5e-4 at a hundredth: not converged at the run's tolerance (and not
+    # floor-held: its move shrinks), and nearer AMICI as it tightens. A decade
+    # tighter the gap is within ten times what the series still moves, so the
+    # diff is the tolerance's, not the reading's; a column twice the truth is
+    # not (the shared-defect test).
     real = Simulator.run
     base = _decay().record["run"]["rtol"]
 
@@ -615,7 +672,7 @@ def test_a_series_still_moving_a_decade_tighter_is_the_tolerances(monkeypatch, e
         if not len(out._sensitivity_params):
             return out
         rtol = kw.get("rtol") or base
-        off = 5e-3 if rtol > base / 5 else (3e-3 if rtol > base / 50 else 1e-3)
+        off = 5e-3 if rtol > base / 5 else (1e-3 if rtol > base / 50 else 5e-4)
         return _scaled(out, 0, 1 + off)
 
     monkeypatch.setattr(Simulator, "run", run)
@@ -718,6 +775,61 @@ def test_a_budget_spent_before_the_tighter_run_says_so(monkeypatch, engine):
     assert "raised RuntimeError: the solver gave up" in v["note"]
 
 
+def _off_by_tolerance(monkeypatch, offsets, row=None):
+    """Every bngsim solve's dA/dk (or one series of it) off by *offsets*:
+    ``(at the run's rtol, at a tenth, at a hundredth)``, the looser run as the
+    run."""
+    real = Simulator.run
+    base = _decay().record["run"]["rtol"]
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if not len(out._sensitivity_params):
+            return out
+        rtol = kw.get("rtol") or base
+        off = offsets[0] if rtol > base / 5 else (offsets[1] if rtol > base / 50 else offsets[2])
+        return _scaled(out, 0, 1 + off, row=row)
+
+    monkeypatch.setattr(Simulator, "run", run)
+
+
+def test_a_gap_that_holds_where_bngsim_converges_is_the_readings(monkeypatch, engine):
+    # dA/dk off by 2%, 1.8% and 1.79%: bngsim converges, to the wrong value.
+    _off_by_tolerance(monkeypatch, (2e-2, 1.8e-2, 1.79e-2))
+    v = _verdict(_decay())
+    assert v["status"] == "diff" and v["confirmed_tighter"] is True, v
+
+
+def test_a_gap_that_neither_goes_nor_holds_converged_is_not_settled(monkeypatch, engine):
+    # dA/dk off by 4%, 3% and 2.8%: still moving a decade tighter, and the gap
+    # there neither within its move nor halved.
+    _off_by_tolerance(monkeypatch, (4e-2, 3e-2, 2.8e-2))
+    rep = _decay().check([NAME])
+    (v,) = rep["checks"]
+    assert v["status"] == "diff" and v["confirmed_tighter"] is None, v
+    assert v["diff_not_converged"] is False
+    assert "a decade tighter does not settle it" in v["note"]
+    assert "did not settle whose it is" in rep["next"]
+
+
+def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, engine):
+    # dB/dk off by +2e-3 of its peak at the run's tolerance, -2e-3 a decade
+    # tighter and +2e-3 two: an error that does not shrink, which the
+    # tolerance tier takes for a floor's and passes, as the quotient does.
+    path = _write_sbml(
+        tmp_path / "two.xml",
+        species=[("A", 1000.0, False), ("B", 1.0, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
+    )
+    engine(_ClosedForm({"A": 1000.0, "B": 1.0}))
+    _off_by_tolerance(monkeypatch, (2e-3, -2e-3, 2e-3), row=1)
+    by = _by_name(_decay(path).check(["sensitivity", NAME]))
+    assert by["sensitivity"]["status"] == "pass" and by["sensitivity"]["n_floor_held"] == 1
+    v = by[NAME]
+    assert v["status"] == "pass" and v["floor_held"] == ["dB/dk"], v
+
+
 def test_a_diff_that_cannot_be_compared_tighter_says_so(engine):
     fake = engine(_ClosedForm({"A": A0}))
     real = fake.simulate
@@ -732,8 +844,8 @@ def test_a_diff_that_cannot_be_compared_tighter_says_so(engine):
     rep = _scaled(_decay(), 0, 1.5).check([NAME])
     (v,) = rep["checks"]
     assert v["status"] == "diff" and v["confirmed_tighter"] is None, v
-    assert "could not be compared a decade tighter" in v["note"]
-    assert "could not be compared at a tighter one" in rep["next"]
+    assert "a decade tighter does not settle it (AMICI could not run it" in v["note"]
+    assert "a tighter comparison did not settle whose it is" in rep["next"]
 
 
 def test_an_exception_from_amici_is_a_skip(engine):
@@ -1093,8 +1205,7 @@ def test_noise_near_zero_is_judged_on_its_columns_scale(tmp_path, monkeypatch, e
     fake = engine(_ClosedForm({"A": A0, "B": 0.1}, edit=amici_says(0.0)))
     fake.loose_edit = amici_says(50.0 * floor)
     v = _verdict(noisy)
-    assert v["status"] == "pass" and v["amici_not_converged"] == [], v
-    assert v["no_reference"] == []
+    assert v["status"] == "pass" and v["no_reference"] == [], v
     monkeypatch.setattr(Simulator, "run", real)
     # A value AMICI resolves where the run gives 0 is a finding, however small
     # beside the column's largest series: a dependency the loader dropped.
@@ -1174,18 +1285,9 @@ def test_a_series_not_converged_at_the_runs_tolerance_gets_no_drift(tmp_path, mo
     )
     engine(_ClosedForm({"A": A0, "B": 0.1}))
     r = _decay(path)
-    real = _check_sensitivity._tier1
-
-    def tier1(ctx, cols):
-        move, keep, d10, held = real(ctx, cols)
-        # dB/dk moves past the bound at the tighter tolerance, by as much as
-        # it is off: a drift that, kept, would forgive the very error it is.
-        move, d10 = move.copy(), d10.copy()
-        move[1], d10[1] = 0.01, 1.0
-        return move, keep, d10, held
-
-    monkeypatch.setattr(_check_sensitivity, "_tier1", tier1)
     assert _verdict(r)["status"] == "pass"
+    # dB/dk 50% off in the run alone: its move at the tighter tolerance is its
+    # whole error, a drift that, kept, would forgive the very error it is.
     rep = _scaled(r, 0, 1.5, row=1).check([NAME])
     (v,) = rep["checks"]
     assert v["status"] == "diff" and v["worst_column"] == "dB/dk", v
@@ -1280,6 +1382,21 @@ def test_amicis_failures_are_skips_not_findings(engine):
 
 
 # ─── What AMICI names, and what it holds ─────────────────────────────────────
+
+
+def test_a_compartment_column_is_named_as_one(tmp_path, engine):
+    path = _write_sbml(
+        tmp_path / "sized.xml",
+        species=[("A", A0, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A*C", {})],
+        size=2.0,
+    )
+    r = Simulator(Model.load(str(path)), method="ode", sensitivity_params=["k", "C"]).run(
+        t_span=(0, 5), n_points=6
+    )
+    v = _verdict(r)
+    assert v["not_judged"] == {"C": "a compartment's size, which AMICI holds as no free parameter"}
 
 
 def test_ids_are_matched_without_guessing():
@@ -1624,6 +1741,10 @@ def test_the_build_key_holds_the_flags_and_the_python(monkeypatch, tmp_path):
     assert _check_amici.build_engine(fake, "<sbml/>").cached is False
     assert _check_amici.build_engine(fake, "<sbml/>").cached is True
     monkeypatch.setattr(_check_amici, "_BUILD_FLAGS", _check_amici._BUILD_FLAGS + ";other")
+    assert _check_amici.build_engine(fake, "<sbml/>").cached is False
+    monkeypatch.setenv("CXX", "another-c++")
+    assert _check_amici.build_engine(fake, "<sbml/>").cached is False
+    monkeypatch.setattr(_check_amici, "amici_version", lambda amici: ("0.0-fake", "abc"))
     assert _check_amici.build_engine(fake, "<sbml/>").cached is False
     monkeypatch.setattr(
         _check_amici,
