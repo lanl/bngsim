@@ -15,11 +15,15 @@ something does.
 The calls in `bngsim.__all__`, and the documented methods, properties and
 keywords of `Model`, `Simulator` and `Result`, keep their names.
 
-A call that is to be renamed or removed is first deprecated. It keeps working,
-warns `DeprecationWarning`, and is listed under "Deprecated" in the changelog,
-for at least one minor release. When it is removed, it is listed under
-"Removed", and the old name raises an error that names the call to use. No
-public call has been removed so far.
+A call or keyword that is to be renamed or removed is first deprecated. It
+keeps working, warns `DeprecationWarning`, and is listed under "Deprecated" in
+the changelog, for at least one minor release. When it is removed, it is listed
+under "Removed", and the old name raises an error that names the call to use.
+No public call has been removed so far.
+
+An option that a bundled engine deprecates, such as RuleMonkey's
+`block_same_complex_binding=False`, is listed under "Deprecated" too, but the
+warning is the engine's own: RuleMonkey prints one line to standard error.
 
 ## Error and notice codes
 
@@ -38,6 +42,7 @@ number of its own:
 | `Result.record` | `schema_version` |
 | `Result.check()` | `check_version` |
 | `Result.digest()` | `digest_version` |
+| `Model.describe()`, and `bngsim inspect --json` | `schema_version` (its own, not the record's) |
 | the steady-state forms of the command line's `--json` | `form_version` |
 
 The same rule holds for each:
@@ -47,8 +52,8 @@ The same rule holds for each:
   version.** The changelog says what changed. So a reader that checks the
   version it was written for can tell a form it may misread.
 
-Tests pin the keys of `check()` and `digest()`, so a key there cannot go
-missing unnoticed.
+Tests pin the top-level keys of `check()` and `digest()`, and the keys every
+check in a report has.
 
 ## `capabilities()`
 
@@ -59,17 +64,22 @@ every platform. A feature an install lacks is `False`, with the reason in
 
 ## The command line
 
-With `--json`, each command prints one JSON object on standard output. A
-command's JSON keeps its keys under the same rule as the forms above, and the
-`record`, `digest` and steady-state forms inside it carry their own versions.
-An error is one JSON object on standard error, `BngsimError.to_dict()`, with
-its `code`. The exit codes keep their meanings. See
-[The bngsim command](command-line.md).
+With `--json`, each command except `bngsim convert` and `bngsim cache`, which
+keep their tools' own output, prints one JSON object on standard output. Its
+top-level keys have no version of their own. A key may be added in any
+release. One is removed or renamed only with an entry in the changelog. The
+`record`, `digest`, `check` and steady-state forms inside carry their own
+versions. An error is one JSON object on standard error,
+`BngsimError.to_dict()`, with its `code`. The exit codes of those commands
+keep their meanings. See [The bngsim command](command-line.md).
 
 ## Saved results
 
-`Result.load` reads a file that `Result.save` wrote in an earlier release. A
-file from a release before volumes were recorded loads as one that does not
-say what the compartment sizes were. A file written by a later release is not
-promised to load in an earlier one. A `.npz` file holds plain arrays and the
-run's `record` as a JSON string, so read its record's `schema_version`.
+`Result.load` reads an HDF5 file that `Result.save` wrote in an earlier
+release. A file from a release before volumes were recorded loads as one that
+does not say what the compartment sizes were. A file written by a later
+release is not promised to load in an earlier one.
+
+`Result.save` also writes `.npz`, which `Result.load` does not read: read it
+with `numpy.load`. It holds plain arrays and the run's `record` as a JSON
+string, so read its record's `schema_version`.

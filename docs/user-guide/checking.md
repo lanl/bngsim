@@ -31,8 +31,9 @@ An ODE run gets two checks by default:
 - **`tolerance`** runs the model again at a tenth of the run's `rtol` and
   `atol`. It fails where any species moves by more than 0.1% of its peak. A
   run that moves is not converged at its own tolerance.
-- **`grid`** runs it again at 8 times the output points. Output points stop
-  the solver, so a run should not change when they move.
+- **`grid`** runs it again at 8 times the output points. The output values
+  are read off the solver's own steps by interpolation, so a run should not
+  change when the output points move.
 
 Each check compares the species one at a time, each on its own scale. A
 species at 1e-3 beside one at 1e3 is judged as carefully as the large one.
@@ -119,16 +120,19 @@ print(statuses["second_engine"])  # unsupported
 ```
 
 The first three compare two BNGsim paths. The fourth is the only one that
-uses another simulator, and it applies only where all of these hold:
+uses another simulator. It applies only where, among other things:
 
-- the model was loaded from SBML or Antimony (this one is a `.net` file, so
-  the check is `unsupported`);
-- libRoadRunner is installed (`pip install bngsim[roadrunner]`);
+- the model was loaded from an SBML or Antimony file (this one is a `.net`
+  file, so the check is `unsupported`), and no edit to it is recorded;
+- libRoadRunner is installed (`pip install bngsim[roadrunner]`) and can run
+  the model;
 - the run started from the file's initial state, at the file's parameters;
+- the run is a plain run over a `t_span`, not one at `sample_times=` or one
+  stopped at a steady state;
 - the file has not changed since it was loaded.
 
-Otherwise the check is `skip` or `unsupported`, with the reason in its note.
-Here a parameter changed after loading:
+Otherwise the check is `skip` or `unsupported`, and its note says why. Here a
+parameter changed after loading:
 
 ```python
 sbml_model = bngsim.examples.load("binding", format="sbml")
@@ -169,9 +173,11 @@ print([(c["name"], c["status"]) for c in report["checks"]])  # [('tolerance', 'p
 
 ## Stochastic runs
 
-A stochastic run gets one check, `replicates`. It runs the model again at 10
+An SSA or PSA run gets one check, `replicates`. It runs the model again at 10
 other seeds and reports each observable's mean and standard error over them at
-the last time, and how far this run is from that mean.
+the last time, and how far this run is from that mean. A network-free run
+(`method="nf"` or `"rm"`) gets none: there `replicates` is `unsupported`, and
+the report is not ok.
 
 ```python
 model.reset()
@@ -211,7 +217,8 @@ Whether you are a person or an agent reporting a result:
    `atol` before you report them.
 4. **Say "checked against libRoadRunner" only when `second_engine` is `pass`**,
    and "checked against AMICI" only when `sensitivity_second_engine` is `pass`.
-   The other checks compare BNGsim with itself.
+   Even then, AMICI's pass covers only the series it judged: name the ones in
+   its `no_reference`. The other checks compare BNGsim with itself.
 5. **A stochastic run's check is no check of its answer.** Report means over
    replicates.
 6. **Keep the evidence.** Save `json.dumps(report)` beside `result.record`.
