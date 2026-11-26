@@ -103,6 +103,7 @@ reference/command-line
 about/why
 about/architecture
 about/benchmarks
+about/limitations
 development/building
 development/extending
 development/sensitivity-terms

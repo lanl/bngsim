@@ -20,6 +20,11 @@ Information about other tools comes from our inspection of their source code in
 July and August 2026 (libRoadRunner 2.9.2, AMICI 1.0.1, COPASI 4.46, BioNetGen
 2.9.3).
 
+[Known limitations](about/limitations.md) lists what BNGsim refuses, where it
+departs from other simulators on purpose, and where to find the open defects
+that can give a wrong answer with no error. Before you rely on a result,
+[check it](user-guide/checking.md).
+
 ## Tips
 
 - **Compiler.** If a C compiler is available, BNGsim uses it automatically.
