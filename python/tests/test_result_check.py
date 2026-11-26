@@ -827,6 +827,7 @@ def test_a_column_sampled_at_its_zeros_is_judged_on_its_peak_between_the_points(
     v = _tol(_osc())
     assert v["status"] == "pass", v
     assert v["n_between"] == 1, v
+    assert v["value_100"] < _check.TOLERANCE_MOVE, v
     assert "between them" in v["note"]
 
 
