@@ -814,4 +814,4 @@ def test_the_constants_say_what_the_docs_say():
     assert _check_sensitivity.FD_STEP == 1e-3 and _check_sensitivity.FD_TIGHTER == 100.0
     assert (_check_sensitivity.FD_RTOL_LEAST, _check_sensitivity.FD_RTOL_MOST) == (1e-14, 1e-8)
     assert math.isclose(_check_sensitivity.FD_NOISE, _check.DRIFT_FACTOR)
-    assert _check.SENSITIVITY == ("sensitivity", "sensitivity_fd")
+    assert _check.SENSITIVITY == ("sensitivity", "sensitivity_fd", "sensitivity_second_engine")

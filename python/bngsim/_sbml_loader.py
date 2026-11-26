@@ -3945,16 +3945,25 @@ def _antimony_main_module_sbml(ant, what: str) -> str:
     return ant.getSBMLString(chosen)
 
 
-def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = None):
-    """Load an Antimony .ant file by converting to SBML first."""
+def antimony_file_sbml(path: str | Path, *, warn: bool = True) -> str:
+    """The SBML an Antimony file loads as: Antimony's reading of the file by
+    its path (an import resolves against its directory), under a "C"
+    ``LC_NUMERIC`` (issue #1235), of the module the loader takes for main
+    (issue #1508). :meth:`bngsim.Result.check`'s second engines read the file
+    again through this, so they read the model the load read, with *warn*
+    False: the load warned of what it left out already."""
+    import warnings
+
+    from bngsim._exceptions import ConversionWarning
+
     ant = _import_antimony()
-
-    path = Path(path)
-    if not path.exists():
-        raise MissingFileError(f"Antimony file not found: {path}", path)
-
     ant.clearPreviousLoads()
-    with _antimony_numbers_in_c_locale():
+    # Only a re-read enters catch_warnings(): entering it resets every
+    # module's once-per-location record, which the load leaves alone.
+    quiet = contextlib.nullcontext() if warn else warnings.catch_warnings()
+    with _antimony_numbers_in_c_locale(), quiet:
+        if not warn:
+            warnings.simplefilter("ignore", ConversionWarning)
         ret = ant.loadFile(str(path))
         if ret == -1:
             err = ant.getLastError()
@@ -3969,7 +3978,16 @@ def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = No
         from bngsim._exceptions import ModelError
 
         raise ModelError(f"Antimony produced empty SBML for {path}", code="model.unreadable_file")
+    return str(sbml_str)
 
+
+def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = None):
+    """Load an Antimony .ant file by converting to SBML first."""
+    path = Path(path)
+    if not path.exists():
+        _import_antimony()
+        raise MissingFileError(f"Antimony file not found: {path}", path)
+    sbml_str = antimony_file_sbml(path)
     model = load_sbml_string(sbml_str, compartment_sizes)
     _record_source(model, "antimony", path=path, compartment_sizes=_sizes_set(compartment_sizes))
     return model

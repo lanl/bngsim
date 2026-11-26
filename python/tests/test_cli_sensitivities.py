@@ -325,7 +325,7 @@ def test_check_skips_the_difference_quotient_of_a_parameter_at_zero():
     assert by_name == {"sensitivity": "pass", "sensitivity_fd": "skip"}, d["check"]
 
 
-def test_check_all_of_a_sensitivity_run_adds_both_sensitivity_checks():
+def test_check_all_of_a_sensitivity_run_adds_the_sensitivity_checks():
     d = _json(
         _bngsim(
             "check", DECAY, *_WINDOW, "--sensitivity-params", "k", "--checks", "all", "--json"
@@ -335,6 +335,8 @@ def test_check_all_of_a_sensitivity_run_adds_both_sensitivity_checks():
     assert names[-len(_check.SENSITIVITY) :] == list(_check.SENSITIVITY)
     by_name = {c["name"]: c["status"] for c in d["check"]["checks"]}
     assert by_name["sensitivity"] == by_name["sensitivity_fd"] == "pass"
+    # AMICI reads SBML: a .net model is not its to compare, with AMICI or without.
+    assert by_name["sensitivity_second_engine"] == "unsupported"
 
 
 def test_check_exits_6_on_a_difference_quotient_diff():
@@ -384,10 +386,11 @@ def test_check_help_lists_every_check_by_its_name():
 
 def test_check_help_is_made_from_the_check_tuples(monkeypatch):
     # So a check added to bngsim._check is in --help without an edit here.
+    last = _check.SENSITIVITY[-1]
     monkeypatch.setattr(_check, "SENSITIVITY", (*_check.SENSITIVITY, "sensitivity_new"))
     monkeypatch.setattr(_check, "DEFAULT_SENSITIVITY", ("sensitivity_new",))
     text = _option_help("check", "--checks")
-    assert "sensitivity_fd, sensitivity_new); default" in text
+    assert f"{last}, sensitivity_new); default" in text
     assert "and sensitivity_new too for a run with sensitivities" in text
 
 
