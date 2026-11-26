@@ -176,16 +176,17 @@ def test_out_naming_a_folder_is_a_usage_error_that_writes_nothing(command, name,
 
 
 @pytest.mark.parametrize(
-    "out",
+    ("out", "why"),
     [
-        "",
-        "-",
-        "new" + os.sep,  # abspath would drop the separator and make a file "new"
-        "a_file" + os.sep + "SKILL.md",  # a parent that is a file
-        "~nosuchuser" + os.sep + "SKILL.md",  # a ~ that names no home folder
+        ("", "an empty path names no file"),
+        ("-", "this writes a file named '-'"),
+        # abspath would drop the separator and make a file "new".
+        ("new" + os.sep, "a path ending in a separator is a folder"),
+        ("a_file" + os.sep + "SKILL.md", "cannot write"),  # a parent that is a file
+        ("~nosuchuser" + os.sep + "SKILL.md", "~nosuchuser is not a home folder"),
     ],
 )
-def test_out_a_file_cannot_be_written_to_is_a_usage_error_that_writes_nothing(out, tmp_path):
+def test_out_a_file_cannot_be_written_to_is_a_usage_error_that_writes_nothing(out, why, tmp_path):
     (tmp_path / "a_file").write_text("a file", encoding="utf-8")
     # Where ~user names a folder whatever the user (Windows guesses one beside
     # the home folder), expanduser is held to what it does on POSIX.
@@ -194,7 +195,7 @@ def test_out_a_file_cannot_be_written_to_is_a_usage_error_that_writes_nothing(ou
     run = _bngsim("skill", "--out", out, "--json", script=script, cwd=tmp_path)
     error = _json_error(run, 2, "usage.invalid_argument")
     assert error["details"] == {"argument": "--out", "value": out}
-    assert error["message"].startswith(f"--out {out or repr(out)}: ")
+    assert error["message"].startswith(f"--out {out or repr(out)}: {why}")
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a_file"]
     assert (tmp_path / "a_file").read_text(encoding="utf-8") == "a file"
 
