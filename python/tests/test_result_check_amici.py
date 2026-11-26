@@ -1019,14 +1019,22 @@ def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, mon
     assert entries and all(e.startswith("bngsim_amici_") for e in entries), entries
     # A column the run alone has wrong.
     assert _verdict(_scaled(r, 0, 1.01))["status"] == "diff"
-    # AMICI's own failure is a skip, and its log stays off the terminal.
+    # AMICI's own failure is a skip, and its log stays off the terminal: what
+    # AMICI's console handler would have printed is in the note instead.
+    import logging
+
+    printed: list[logging.LogRecord] = []
+    console = logging.Handler()
+    console.emit = printed.append  # type: ignore[method-assign]
+    monkeypatch.setattr(logging.getLogger("amici"), "handlers", [console])
     monkeypatch.setattr(_check_amici, "MAX_STEPS", 3)
     capfd.readouterr()
     v = _verdict(r)
     assert v["status"] == "skip" and "AMICI could not run it" in v["note"], v
-    assert "TOO_MUCH_WORK" in v["note"]
+    assert "TOO_MUCH_WORK" in v["note"] and "AMICI's first error:" in v["note"]
+    assert not [rec for rec in printed if rec.levelno >= logging.ERROR], printed
     out, err = capfd.readouterr()
-    assert "FORWARD_FAILURE" not in out + err and "TOO_MUCH_WORK" not in out + err
+    assert "FORWARD_FAILURE" not in out + err
     monkeypatch.setattr(_check_amici, "MAX_STEPS", 100_000)
     # A defect the loader and the sensitivity code share: only AMICI sees it.
     _loader_moves_k_twice(monkeypatch)
