@@ -34,9 +34,13 @@ the two.
   move is the tolerance's, however it shrinks (issue #1962). Such a series is
   named (``n_floor_held``), not failed: its move is read on its column's
   largest peak, and the quotient check allows it ten times that move. An error
-  in such a series that is a few of its floors therefore passes both checks;
-  the name is the only sign of it. No model is known that has one: the tests
-  make one.
+  in such a series that is a few of its floors therefore passes both checks,
+  whatever its cause (a series between 100 and 1e5 floors high can be held
+  with an error the tolerance would shrink); the name is the only sign of it.
+  No model is known whose series a floor holds: the tests make one. The floor
+  the solver raises a series to during the run, where its right-hand side's
+  terms cancel (issue #177), is not known here, so a series held by one more
+  than 100 of its base floors up is judged on its own peak.
 - ``"sensitivity_fd"``: a central difference quotient. Each ``θ`` is moved by
   :data:`FD_STEP` of its value, and by twice that, both ways (an initial
   amount through the start state, a parameter through
