@@ -764,11 +764,12 @@ def test_an_amount_amici_holds_is_compared_as_a_concentration(tmp_path, engine, 
     assert v["status"] == "pass" and v["species_not_compared"] == {}, v
     # AMICI is held on its own scale as tight as bngsim holds the
     # concentration: an amount's tolerance is the concentration's times the
-    # size, or a small compartment would hold AMICI that many times looser.
+    # size, or a small compartment would hold AMICI that many times looser;
+    # and in a large one, no looser than the run's own.
     ctx = _check._Context(r, r.record, None)
     cols = _check_sensitivity._Columns(ctx)
-    assert fake.asked["atol"] == pytest.approx(float(ctx.atols[0]) * size)
-    assert fake.asked["atol_sens"] == pytest.approx(float(cols.atol[0, 0]) * size)
+    assert fake.asked["atol"] == pytest.approx(float(ctx.atols[0]) * min(size, 1.0))
+    assert fake.asked["atol_sens"] == pytest.approx(float(cols.atol[0, 0]) * min(size, 1.0))
 
 
 def test_an_amount_in_a_compartment_an_initial_assignment_sizes_is_not_compared(tmp_path, engine):
@@ -944,22 +945,32 @@ def test_a_build_that_fails_is_a_skip_and_leaves_nothing(monkeypatch, tmp_path, 
     handler = logging.StreamHandler()
     monkeypatch.setattr(log, "handlers", [handler])
     fake = _FakeAmici(RuntimeError("SBML Document failed to load (see error messages above)"))
-    fake.log = "libSBML: the species S is not a modifier of J1\nline two"
+    fake.log = "libSBML: a rule's general text\n\nThe species 'S' is not a modifier of 'J1'\n"
     why = _check_amici.build_engine(fake, "<sbml/>")
-    assert why.endswith("(AMICI's first error: libSBML: the species S is not a modifier of J1)")
+    assert why.endswith(
+        "(AMICI's first error: libSBML: a rule's general text ... "
+        "The species 'S' is not a modifier of 'J1')"
+    ), why
     assert log.handlers == [handler]
     out, err = capfd.readouterr()
     assert "not a modifier" not in out + err
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific: os.kill(pid, 0) probes a pid")
 def test_a_killed_builds_staging_directory_is_removed(monkeypatch, tmp_path):
     monkeypatch.setattr(_check_amici, "CACHE_DIR", tmp_path / "amici")
+    old = os.path.getmtime(tmp_path) - 2 * _check_amici._STALE_STAGING_SECONDS
     dead = tmp_path / "amici" / ".building_bngsim_amici_0123_999999999"
     alive = tmp_path / "amici" / f".building_bngsim_amici_4567_{os.getppid()}"
-    for d in (dead, alive):
+    young = tmp_path / "amici" / ".building_bngsim_amici_89ab_999999998"
+    for d in (dead, alive, young):
         d.mkdir(parents=True)
+    for d in (dead, alive):
+        os.utime(d, (old, old))
     assert isinstance(_check_amici.build_engine(_FakeAmici(), "<sbml/>"), _check_amici.Engine)
-    assert not dead.exists() and alive.exists()
+    # Gone and old: removed. Alive, or touched lately (a build in another
+    # container, whose pid this host does not know): left alone.
+    assert not dead.exists() and alive.exists() and young.exists()
 
 
 def test_the_build_cache_is_the_suites_own():
@@ -976,7 +987,7 @@ def _amici():
     return pytest.importorskip("amici.sim.sundials")
 
 
-def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, monkeypatch):
+def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, monkeypatch, capfd):
     import amici
 
     r = _decay()
@@ -1008,6 +1019,15 @@ def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, mon
     assert entries and all(e.startswith("bngsim_amici_") for e in entries), entries
     # A column the run alone has wrong.
     assert _verdict(_scaled(r, 0, 1.01))["status"] == "diff"
+    # AMICI's own failure is a skip, and its log stays off the terminal.
+    monkeypatch.setattr(_check_amici, "MAX_STEPS", 3)
+    capfd.readouterr()
+    v = _verdict(r)
+    assert v["status"] == "skip" and "AMICI could not run it" in v["note"], v
+    assert "TOO_MUCH_WORK" in v["note"]
+    out, err = capfd.readouterr()
+    assert "FORWARD_FAILURE" not in out + err and "TOO_MUCH_WORK" not in out + err
+    monkeypatch.setattr(_check_amici, "MAX_STEPS", 100_000)
     # A defect the loader and the sensitivity code share: only AMICI sees it.
     _loader_moves_k_twice(monkeypatch)
     by = _by_name(_decay().check(["sensitivity", "sensitivity_fd", NAME]))

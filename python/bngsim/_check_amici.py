@@ -63,8 +63,8 @@ cannot import, and only what the check needs:
   AMICI's known misreadings of it as bngsim's. So is a model whose function
   definition names an argument twice, which defines no one model
   (MODEL2003040001: AMICI binds the first, bngsim the last). The event and
-  switch cases are left to a follow-up, which would carry over the parity
-  suite's event instants and onset rows.
+  switch cases are left to #1960, which would carry over the parity suite's
+  event instants and onset rows.
 
 **The rule** is the ``"sensitivity"`` tier's, series by series
 (:class:`bngsim._check_sensitivity._Columns`): one species and one parameter,
@@ -87,8 +87,10 @@ trajectories say nothing, and a disagreement there is reported as one about
 the trajectory (``state_diff``). AMICI runs at the run's ``rtol``, at the
 smallest of the compared species' atols for the states, and for the
 sensitivities at the smallest of the judged series' absolute tolerances, each
-on AMICI's scale (an amount's times its compartment's size), so it is held at
-least as tight as bngsim on every species and series. A run with no species
+on AMICI's scale (an amount's times its compartment's size), and never looser
+than the run's smallest (AMICI's are scalars, over the states it does not
+compare too), so it is held at least as tight as bngsim on every species and
+series. A run with no species
 converged at its own tolerance is ``no_base`` before AMICI builds anything.
 
 The report names AMICI's version and, from the install's PEP 610 record, its
@@ -476,7 +478,8 @@ class Engine:
         solver = self.solver(rtol=rtol, atol=atol, atol_sens=atol_sens, method=method)
         m.set_t0(float(t0))
         m.set_timepoints([float(t) for t in times])
-        with warnings.catch_warnings():
+        errors: list[str] = []
+        with _amici_log_to(errors), warnings.catch_warnings():
             warnings.simplefilter("ignore")
             rdata = m.simulate(solver=solver)
         status = int(rdata.status)
@@ -485,7 +488,10 @@ class Engine:
                 text = str(ss.simulation_status_to_str(status))
             except Exception:  # noqa: BLE001
                 text = str(status)
-            return f"status {status} ({text})", np.empty((0, 0)), np.empty((0, 0, 0))
+            why = f"status {status} ({text})"
+            if errors:
+                why += f"; AMICI's first error: {errors[0]}"
+            return why, np.empty((0, 0)), np.empty((0, 0, 0))
         x = np.asarray(rdata.x, dtype=float)
         sx = np.transpose(np.asarray(rdata.sx, dtype=float), (0, 2, 1))
         return "", x, sx
@@ -493,16 +499,22 @@ class Engine:
 
 @contextmanager
 def _amici_log_to(errors: list[str]) -> Iterator[None]:
-    """AMICI's log records kept from stderr while it builds: AMICI's own
-    console handler is set aside, and the first line of each error collected
-    into *errors*, for the verdict's note."""
+    """AMICI's log records kept from stderr while it builds or runs: AMICI's
+    own console handler is set aside, and each error's first and last lines
+    collected into *errors*, for the verdict's note."""
     import logging
 
     class _Keep(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
             if record.levelno >= logging.ERROR:
-                text = record.getMessage().strip()
-                errors.append(text.splitlines()[0][:300] if text else record.levelname)
+                # The first line says what kind of error; libSBML's names the
+                # element in its last.
+                lines = [ln.strip() for ln in record.getMessage().splitlines() if ln.strip()]
+                if not lines:
+                    errors.append(record.levelname)
+                    return
+                text = lines[0] if len(lines) == 1 else f"{lines[0]} ... {lines[-1]}"
+                errors.append(text[:400])
 
     log = logging.getLogger("amici")
     held, propagate = list(log.handlers), log.propagate
@@ -514,18 +526,31 @@ def _amici_log_to(errors: list[str]) -> Iterator[None]:
         log.handlers, log.propagate = held, propagate
 
 
+#: How old a staging directory of a process that is gone must be before it is
+#: removed: a cold build of a large model takes minutes, and a cache shared
+#: across hosts or containers sees another's live build as a pid that is gone.
+_STALE_STAGING_SECONDS = 6 * 3600
+
+
 def _remove_dead_staging(root: Path) -> None:
     """Remove the staging directories of builds whose process is gone (one
-    killed mid-build leaves its own behind); a live build's is left alone."""
+    killed mid-build leaves its own behind) and that no build has touched for
+    :data:`_STALE_STAGING_SECONDS`; any other is left alone. Not on Windows,
+    where ``os.kill(pid, 0)`` is no test of a process."""
+    if os.name == "nt":
+        return
+    now = time.time()
     for d in root.glob(".building_*"):
         pid = d.name.rsplit("_", 1)[-1]
         if not pid.isdigit():
             continue
         try:
+            if now - d.stat().st_mtime < _STALE_STAGING_SECONDS:
+                continue
             os.kill(int(pid), 0)
         except ProcessLookupError:
             shutil.rmtree(d, ignore_errors=True)
-        except OSError:  # another user's process, or no permission: alive
+        except OSError:  # gone already, another user's process, no permission
             continue
 
 
@@ -781,15 +806,25 @@ def compare(
     # AMICI held at least as tight as bngsim on every species and series it
     # gives, on its own scale: an amount is its concentration times the size,
     # and so is the absolute tolerance that resolves it as finely.
+    # AMICI's atols are scalars, over states it compares and states it does
+    # not alike: never looser than the run's smallest, either.
     rtol = float(ctx.rtol or 0.0)
     order = sorted(rows)
     size_of = np.asarray([rows[i][1] for i in order], dtype=float)
-    atols = np.asarray(ctx.atols, dtype=float)[order] * size_of
-    atols = atols[np.isfinite(atols) & (atols > 0)]
-    atol = float(atols.min()) if atols.size else float(ctx.atol or 0.0)
-    floors = cols.atol[np.ix_(order, use)] * size_of[:, None]
-    floors = floors[np.isfinite(floors) & (floors > 0)]
-    atol_sens = float(floors.min()) if floors.size else atol
+
+    def smallest(*arrays: NDArray[np.float64]) -> float | None:
+        vals = np.concatenate([np.ravel(a) for a in arrays])
+        vals = vals[np.isfinite(vals) & (vals > 0)]
+        return float(vals.min()) if vals.size else None
+
+    run_atols = np.asarray(ctx.atols, dtype=float)
+    atol = smallest(run_atols[order] * size_of, run_atols)
+    if atol is None:
+        atol = float(ctx.atol or 0.0)
+    floors = cols.atol[:, use]
+    atol_sens = smallest(floors[order] * size_of[:, None], floors[order])
+    if atol_sens is None:
+        atol_sens = atol
     times = np.asarray(ctx.result._time, dtype=float)
     failure, x_am, sx_am = engine.simulate(
         am_ids,
