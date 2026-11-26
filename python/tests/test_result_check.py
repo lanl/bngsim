@@ -227,10 +227,14 @@ def test_a_loose_tolerance_moves_the_answer():
     (c,) = rep["checks"]
     tight = r.rerun(rtol=1e-3, atol=1e-3)
     d, peak = _check.differences(np.asarray(tight.species), np.asarray(r.species))
-    # A column past the bound is read on its peak between the points too, from
-    # the grid check's run (issue #1926): B's peak falls between two of them.
+    # A column past the bound is read at each point on the values beside it
+    # too, from the grid check's run (issue #1926): B's peak falls between two.
     fine = np.asarray(r.rerun(n_points=(len(r.time) - 1) * _check.GRID_FACTOR + 1).species)
-    expected = _check.moves(d, np.maximum(peak, np.abs(fine).max(axis=0)), np.full(3, 1e-2))
+    local = _check.local_peaks(fine, len(r.time))
+    plain = _check.moves(d, peak, np.full(3, 1e-2))
+    atol = np.full(3, 1e-2)
+    near = _check.local_moves(np.asarray(tight.species), np.asarray(r.species), atol, peak, local)
+    expected = np.where(plain > _check.TOLERANCE_MOVE, near, plain)
     assert c["value"] == pytest.approx(expected.max(), rel=1e-12)
     assert c["status"] == "diff" and c["bound"] == _check.TOLERANCE_MOVE
     assert c["worst_column"] == r.species_names[int(np.argmax(expected))]
@@ -820,15 +824,15 @@ def _tol(r: Result, *others: str) -> dict:
     return next(c for c in r.check(["tolerance", *others])["checks"] if c["name"] == "tolerance")
 
 
-def test_a_column_sampled_at_its_zeros_is_judged_on_its_peak_between_the_points():
+def test_a_column_sampled_at_its_zeros_is_judged_on_the_values_beside_each_point():
     # y's peak at the run's points is its integration error, and its move
-    # there 0.84 of it; between the points its peak is 1, and the run is right
+    # there 0.84 of it; beside every point it reaches 1, and the run is right
     # to 2e-5 of that.
     v = _tol(_osc())
     assert v["status"] == "pass", v
     assert v["n_between"] == 1, v
     assert v["value_100"] < _check.TOLERANCE_MOVE, v
-    assert "between them" in v["note"]
+    assert "beside each point" in v["note"]
 
 
 def test_the_verdict_on_such_a_column_is_the_same_beside_the_grid_check():
@@ -868,3 +872,63 @@ def test_where_the_denser_run_raises_the_peak_at_the_points_stands(monkeypatch):
     monkeypatch.setattr(Result, "rerun", rerun)
     v = _tol(_osc())
     assert v["status"] == "diff" and v["n_between"] == 0, v
+
+
+SPIKE = """
+model spike
+  J1: -> x; w*y
+  J2: -> y; -w*x
+  w = 3.3
+  x = 1; y = 0
+  E1: at (time > 0.5): x = x*1000, y = y*1000
+  E2: at (time > 0.75): x = x/1000, y = y/1000
+end
+"""
+
+
+def test_a_spike_between_two_points_excuses_no_other_point():
+    # Between t = 0 and 1 the columns are a thousand times their size at any
+    # point; at every point the run is 22% off at rtol 1e-4. Judged on the
+    # largest value beside each point, the points far from the spike are
+    # judged on their own scale, and the run is a diff, as on main.
+    model = bngsim.Model.from_antimony_string(SPIKE)
+    r = Simulator(model).run(t_span=(0, 1000), n_points=1001, rtol=1e-4)
+    v = _tol(r)
+    assert v["status"] == "diff" and v["value"] > 0.1 and v["n_between"] == 0, v
+
+
+def test_a_budget_out_before_the_denser_run_is_a_timeout(monkeypatch):
+    # Without it a column past the bound cannot be told from one sampled at its
+    # zeros: the check does not say "tighten the tolerance" on a guess.
+    def out(self):
+        raise _check._Out
+
+    monkeypatch.setattr(_check._Context, "fine_run", out)
+    v = _tol(_osc())
+    assert v["status"] == "timeout" and "8x the points" in v["note"], v
+    assert _tol(_osc(t_span=(0, 10), n_points=11))["status"] == "pass"
+
+
+def test_a_denser_run_that_raises_is_made_once_and_named(monkeypatch):
+    tried = []
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        if "n_points" in changes:
+            tried.append(changes["n_points"])
+            from bngsim._exceptions import SimulationError
+
+            raise SimulationError("did not converge", code="sim.failed")
+        return real(self, **changes)
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    rep = _osc().check(["tolerance", "grid"])
+    by = {c["name"]: c for c in rep["checks"]}
+    assert len(tried) == 1, tried
+    assert by["tolerance"]["status"] == "diff" and "did not converge" in by["tolerance"]["note"]
+    assert by["grid"]["status"] == "exception"
+
+
+def test_the_grid_check_reads_a_column_judged_beside_its_points_on_that_scale():
+    rep = _osc().check(["tolerance", "grid"])
+    assert all(c["status"] == "pass" for c in rep["checks"]), rep["checks"]

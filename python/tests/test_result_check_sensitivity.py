@@ -1016,9 +1016,9 @@ def test_a_budget_that_runs_out_telling_a_floor_from_the_tolerance_is_a_timeout(
         m.setattr(Result, "rerun", count)
         v = _scaled(_decay(), 0, 1.01).check(["sensitivity"], budget=600)["checks"][0]
     assert v["status"] == "diff", v
-    # And the grid check's run, to read a series past the bound on its peak
-    # between the points (issue #1926).
-    assert rtols == [pytest.approx(1e-9), pytest.approx(1e-10), None], rtols
+    # And the grid check's run, before it, to read a series past the bound on
+    # the values beside each point (issue #1926).
+    assert rtols == [pytest.approx(1e-9), None, pytest.approx(1e-10)], rtols
     # dB/dk past the bound at rtol/10 by a few of its floor (the case the floor
     # test holds): the rtol/100 run that would tell a floor from the tolerance
     # runs out of budget, so the move is not reported as a diff it may not be.
@@ -1105,3 +1105,24 @@ def test_a_series_sampled_at_its_zeros_is_judged_on_its_peak_between_the_points(
     assert v["status"] == "pass" and v["n_between"] >= 1, v
     beside = _by_name(r.check(["tolerance", "grid", "sensitivity"]))["sensitivity"]
     assert beside["value"] == v["value"] and beside["n_between"] == v["n_between"]
+
+
+def test_a_budget_out_before_the_denser_run_makes_the_sensitivity_check_a_timeout(monkeypatch):
+    ant = """
+    model osc
+      J1: -> x; w*y
+      J2: -> y; -w*x
+      w = 3.141592653589793
+      x = 1; y = 0
+    end
+    """
+    r = Simulator(Model.from_antimony_string(ant), sensitivity_params=["w"]).run(
+        t_span=(0, 10), n_points=11
+    )
+
+    def out(self):
+        raise _check._Out
+
+    monkeypatch.setattr(_check._Context, "fine_run", out)
+    v = _by_name(r.check(["sensitivity"]))["sensitivity"]
+    assert v["status"] == "timeout" and "8x the points" in v["note"], v

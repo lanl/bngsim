@@ -88,7 +88,7 @@ switch or of a step too wide for it is not judged, and says why.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -103,6 +103,7 @@ from bngsim._check import (
     _verdict,
     allowance,
     differences,
+    local_moves,
     moves,
     resolved,
     spread,
@@ -273,15 +274,15 @@ def _skip(ctx: _Context, name: str) -> dict[str, Any] | None:
 
 
 def _moves(
-    cols: _Columns, x: NDArray[np.float64], between: NDArray[np.float64] | None = None
+    cols: _Columns, x: NDArray[np.float64], local: NDArray[np.float64] | None = None
 ) -> tuple[NDArray[np.float64], NDArray[np.bool_], NDArray[np.float64]]:
     """Each series' move from the run's in *x* (as :func:`bngsim._check.moves`
     on its own peak and floor, or for a series the run does not resolve, its
     move past :data:`TRACE_ATOLS` floors on its column's largest peak), which
     series the run resolves, and each series' largest difference. With
-    *between*, each series' peak between the run's points, a resolved series'
-    move is read on the larger of that and its peak at the points (issue
-    #1926)."""
+    *local*, each series' :func:`bngsim._check.local_peaks`, a resolved
+    series' move is read at each point on the larger of its peak and the
+    values beside that point (issue #1926)."""
     n_sp, n_cols = cols.atol.shape
     d, peak = differences(cols.flat(x), cols.flat(cols.S))
     atol = cols.atol.reshape(-1)
@@ -293,8 +294,12 @@ def _moves(
         trace = np.where(
             scale > 0, over / np.where(scale > 0, scale, 1.0), np.where(over > 0, np.inf, 0.0)
         )
-    own = peak if between is None else np.maximum(peak, between)
-    move = np.where(keep, moves(d, own, atol), np.where(np.isinf(d), np.inf, trace))
+    own = (
+        moves(d, peak, atol)
+        if local is None
+        else local_moves(cols.flat(x), cols.flat(cols.S), atol, peak, local)
+    )
+    move = np.where(keep, own, np.where(np.isinf(d), np.inf, trace))
     # A value the run gives as not finite is a finding, wherever the rerun
     # agrees with it, unless the run refuses the row by design.
     nonfinite = (
@@ -381,6 +386,21 @@ def _on_column(cols: _Columns, d: NDArray[np.float64]) -> NDArray[np.float64]:
     return out
 
 
+def _sens_local(ctx: _Context, cols: _Columns, hundredfold: bool) -> NDArray[np.float64] | None:
+    """Each series' :func:`bngsim._check.local_peaks`, made once, or None (the
+    budget out before the grid check's run, which with *hundredfold* makes the
+    ``"sensitivity"`` check a timeout; or that run raised)."""
+    if ctx.sens_local is None:
+        n_t = cols.flat(cols.S).shape
+        made = ctx.local_between(lambda r: cols.flat(_block(r)), n_t)
+        ctx.sens_local = False if made is None else made
+        if made is None and ctx.fine_out and hundredfold:
+            ctx.sens_fine_out = True
+    if ctx.sens_local is False:
+        return None
+    return cast("NDArray[np.float64]", ctx.sens_local)
+
+
 def _tier1(
     ctx: _Context, cols: _Columns, *, hundredfold: bool = False
 ) -> tuple[NDArray[np.float64], NDArray[np.bool_], NDArray[np.float64], NDArray[np.bool_]]:
@@ -411,6 +431,16 @@ def _tier1(
     assert ctx.tight is not None
     move10, keep, d10 = _moves(cols, _block(ctx.tight))
     live = ~cols.refused.reshape(-1)
+    # A series whose points all fall on or near its zeros has a peak there
+    # about its integration error, and moves past the bound on it however right
+    # the run is (issue #1926): each of its points is judged on the values the
+    # series reaches beside it too, on the grid check's run at GRID_FACTOR times
+    # the points. Made before the floor screen, which reads the move.
+    plain10 = move10
+    past = live & keep & (move10 > TOLERANCE_MOVE)
+    local = _sens_local(ctx, cols, hundredfold) if past.any() else None
+    if local is not None:
+        move10 = np.where(past, _moves(cols, _block(ctx.tight), local)[0], move10)
     # Past the bound at rtol/10, by about a floor: a series a floor may hold.
     maybe_floor = (
         live
@@ -439,22 +469,24 @@ def _tier1(
         except ValueError:
             ctx.tight100_error = "its sensitivities do not line up with the run's"
             move100 = d100 = None
-    # A series whose points all fall on or near its zeros has a peak there
-    # about its integration error, and moves past the bound on it however right
-    # the run is (issue #1926): it is judged on its peak between the points
-    # too, on the grid check's run at GRID_FACTOR times the points.
-    past = (live & keep) & (
-        (move10 > TOLERANCE_MOVE) | (move100 is not None and (move100 > TOLERANCE_MOVE))
-    )
+    if move100 is not None and tight100 is not None:
+        past100 = live & keep & (move100 > TOLERANCE_MOVE)
+        if (past100 & ~past).any() and local is None:
+            local = _sens_local(ctx, cols, hundredfold)
+        past = past | past100
+        if local is not None:
+            move10 = np.where(past, _moves(cols, _block(ctx.tight), local)[0], plain10)
+            move100 = np.where(past, _moves(cols, _block(tight100), local)[0], move100)
     n_between = 0
-    if past.any():
-        between = ctx.peak_between(lambda r: cols.flat(_block(r)))
-        if between is not None and between.shape == move10.shape:
-            move10, _, _ = _moves(cols, _block(ctx.tight), between)
-            if move100 is not None and tight100 is not None:
-                move100, _, _ = _moves(cols, _block(tight100), between)
-            later = move10 if move100 is None else np.maximum(move10, move100)
-            n_between = int((past & (later <= TOLERANCE_MOVE)).sum())
+    ctx.sens_scale = None
+    if local is not None:
+        later = move10 if move100 is None else np.maximum(move10, move100)
+        passed = past & (later <= TOLERANCE_MOVE)
+        n_between = int(passed.sum())
+        peak = np.where(np.isfinite(cols.flat(cols.S)), np.abs(cols.flat(cols.S)), 0.0).max(axis=0)
+        # A series passed this way is held by the quotient to the allowance of
+        # the scale it moves on at every point.
+        ctx.sens_scale = np.where(passed, np.maximum(peak, local.min(axis=0)), peak)
     ctx.sens_between = n_between
     # An error about the same at rtol and at rtol/10 moves little between
     # them, and is seen at rtol/100 (issue #1967).
@@ -494,15 +526,20 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
     cols = _context(ctx)
     try:
         move, keep, _, held = _tier1(ctx, cols, hundredfold=True)
-        if ctx.sens_100_out:
+        if ctx.sens_100_out or ctx.sens_fine_out:
             raise _Out
     except _Out:
+        missing = (
+            "the run at 8x the points, which judges a series past the bound on its peak at "
+            "the run's points on the values beside each of them"
+            if ctx.sens_fine_out and not ctx.sens_100_out
+            else "the run at rtol/100, which sees an error about the same at rtol and rtol/10 "
+            "and tells a floor the arithmetic sets from the tolerance"
+        )
         return _verdict(
             name,
             "timeout",
-            note="the budget ran out before the run at rtol/100, which sees an error about "
-            "the same at rtol and rtol/10 and tells a floor the arithmetic sets from the "
-            "tolerance",
+            note=f"the budget ran out before {missing}",
             changed=changed,
         )
     live = ~cols.refused.reshape(-1)
@@ -547,7 +584,13 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
     if ctx.sens_between:
         note += (
             f"; {ctx.sens_between} series past the bound on their peak at the run's points, "
-            "within it on their peak between them (the grid check's run)"
+            "within it on the values beside each point (the grid check's run)"
+        )
+    if ctx.sens_local is False and ctx.fine_exc is not None and value > TOLERANCE_MOVE:
+        note += (
+            f"; the run at 8x the points raised ({type(ctx.fine_exc).__name__}: "
+            f"{_first_line(ctx.fine_exc)}), so a series past the bound is judged on its peak "
+            "at the run's points alone"
         )
     named = _named(cols, trace | held)
     extra: dict[str, Any] = {
@@ -671,6 +714,8 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
         if cols.S.size
         else np.zeros((n_sp, n_cols))
     )
+    if ctx.sens_scale is not None and ctx.sens_scale.size == peak.size:
+        peak = np.maximum(peak, ctx.sens_scale.reshape(n_sp, n_cols))
     drift = d_tight.reshape(n_sp, n_cols)
     ctx._ensure_spread()
     if ctx.loose is not None:
