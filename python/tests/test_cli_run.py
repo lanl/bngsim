@@ -298,14 +298,18 @@ def test_check_takes_named_checks_and_a_budget():
     assert "tighter" in error["message"]
 
 
-def test_check_all_on_a_stochastic_run_reports_replicates():
+def test_check_all_on_a_stochastic_run_reports_replicates_and_is_not_ok():
+    # Its one check reports and judges nothing, so the run is not checked: the
+    # report is not ok, and the command exits 6.
     d = _json(
         _bngsim(
             "check", BIRTH_DEATH, "--method", "ssa", "--t-end", "5", "--n-points", "6",
             "--seed", "2", "--checks", "all", "--json",
-        )
+        ),
+        exit_code=6,
     )  # fmt: skip
-    assert [c["name"] for c in d["check"]["checks"]] == ["replicates"]
+    assert [(c["name"], c["status"]) for c in d["check"]["checks"]] == [("replicates", "info")]
+    assert d["check"]["ok"] is False
 
 
 def test_help_lists_run_and_check_and_exit_6():

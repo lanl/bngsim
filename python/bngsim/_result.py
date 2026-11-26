@@ -3593,9 +3593,15 @@ class Result:
               ``~/.cache/bngsim/amici`` (or ``$BNGSIM_AMICI_CACHE_DIR``).
             - ``"replicates"``: a stochastic run made again at ``replicates``
               other seeds; for each observable at the last time, the mean
-              over them, its standard error, and how many standard errors this
-              run is from it. It reports, and judges nothing: it passes when
-              its reruns complete.
+              over them (``mean_last``), their standard deviation
+              (``sd_last``), the mean's standard error (``se_last``), and
+              ``z``, how far this run is from the mean in standard deviations
+              of one draw, ``sd·sqrt(1 + 1/n)`` (the run is a draw like each
+              rerun, so a correct run is roughly a t-statistic on ``n - 1``
+              degrees of freedom: past 2.3 about one run in twenty, at
+              ``n = 10``). It reports, and judges nothing: its status is
+              ``"info"``, neither a pass nor a failure, so a stochastic run's
+              report is never ``ok``.
         budget : float, optional
             Seconds of wall time for all the bngsim reruns (a run's own
             recorded ``timeout`` still applies where it is shorter). A check
@@ -3609,8 +3615,9 @@ class Result:
         -------
         dict
             JSON-ready; ``str()`` of it is a plain-text form. ``check_version``
-            (1), ``ok`` (a check passed, and none moved the answer past its
-            bound, raised or ran out of budget), ``method``, ``stochastic``,
+            (2), ``ok`` (a check passed, and none moved the answer past its
+            bound, raised or ran out of budget; never of a stochastic run,
+            whose check judges nothing), ``method``, ``stochastic``,
             ``rtol``, ``atol``, ``drift`` (the largest move of a species at
             the tighter tolerance), ``bound`` (1e-3) and ``converged``
             (whether every species is under it; a report on a run that is
@@ -3626,7 +3633,11 @@ class Result:
             answer moved past the bound), ``"skip"`` (with the reason),
             ``"unsupported"``, ``"exception"`` (the changed run raised),
             ``"no_base"`` (no species is converged at the run's own
-            tolerance, so no path is judged) or ``"timeout"``. A path's
+            tolerance, so no path is judged), ``"timeout"`` or ``"info"``
+            (the check reports numbers and judges nothing: ``"replicates"``,
+            whose verdict also gives ``n_replicates``, ``seeds`` and
+            ``columns``, each observable's ``name``, ``run_last``,
+            ``mean_last``, ``sd_last``, ``se_last`` and ``z``). A path's
             verdict also gives ``margin`` (its largest difference over the
             allowance; at most 1 passes), ``n_not_judged`` and ``n_trace``.
             A sensitivity check's verdict names its worst series as
