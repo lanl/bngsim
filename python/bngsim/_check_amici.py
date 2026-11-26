@@ -143,6 +143,7 @@ event, but the version is still part of what was compared against.
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import math
@@ -234,28 +235,69 @@ CACHE_DIR = _default_cache_dir()
 def _sbml_text(path: str, fmt: str, sha256: str | None) -> tuple[str | None, str]:
     """The model file as SBML text, and why not where it cannot be had (the
     file is gone, its bytes are not the ones bngsim read, Antimony cannot
-    convert it). The bytes are read once, and checked against the sha256 the
-    record holds, so AMICI reads what bngsim read."""
+    convert it). The bytes are read and checked against the sha256 the record
+    holds. An SBML file is then those bytes, as libSBML reads them (in the
+    encoding its XML declaration names) and writes them again; an Antimony
+    file is read by its path as the load read it
+    (:func:`bngsim._sbml_loader.antimony_file_sbml`), the files it imports
+    with it, which the sha256 does not cover."""
     try:
         data = Path(path).read_bytes()
     except OSError as e:
         return None, f"the model file could not be read again: {_first_line(e)}"
     if sha256 is not None and hashlib.sha256(data).hexdigest() != sha256:
         return None, _check.FILE_CHANGED
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as e:
-        return None, f"the model file is not UTF-8 text: {_first_line(e)}"
     if fmt == "sbml":
-        return text, ""
+        import libsbml
+
+        text = _xml_text(data)
+        if text is None:
+            return None, "the model file's bytes are not text in the encoding it declares"
+        doc = libsbml.readSBMLFromString(text)
+        if doc.getModel() is None:
+            return None, "libSBML read no model from the file"
+        return str(libsbml.writeSBMLToString(doc)), ""
+    from bngsim._sbml_loader import antimony_file_sbml
+
     try:
-        import antimony
+        with warnings.catch_warnings():
+            # The load warned of what it left out already.
+            warnings.simplefilter("ignore")
+            return antimony_file_sbml(path), ""
     except ImportError:
         return None, "Antimony is not installed, so the model cannot be read again as SBML"
-    # By the file, so an import in it resolves against its own directory.
-    if antimony.loadAntimonyFile(path) < 0:
-        return None, f"Antimony could not read the model again: {antimony.getLastError()}"
-    return str(antimony.getSBMLString(antimony.getMainModuleName())), ""
+    except Exception as e:  # noqa: BLE001 - a file the load read and this cannot is a skip
+        return None, f"Antimony could not read the model again: {_first_line(e)}"
+
+
+_XML_ENCODING = re.compile(rb"""\A\s*<\?xml[^>]*?encoding\s*=\s*["']([A-Za-z0-9._-]+)["']""")
+
+
+def _xml_text(data: bytes) -> str | None:
+    """An XML file's bytes as text, decoded as its byte-order mark or its XML
+    declaration says (UTF-8 where neither does), the declaration then naming
+    UTF-8, as the text libSBML is handed is; None where they do not decode."""
+    for bom, codec in (
+        (codecs.BOM_UTF8, "utf-8-sig"),
+        (codecs.BOM_UTF16_LE, "utf-16"),
+        (codecs.BOM_UTF16_BE, "utf-16"),
+    ):
+        if data.startswith(bom):
+            try:
+                return data.decode(codec)
+            except UnicodeDecodeError:
+                return None
+    m = _XML_ENCODING.match(data)
+    codec = m.group(1).decode("ascii") if m else "utf-8"
+    try:
+        text = data.decode(codec)
+    except (LookupError, UnicodeDecodeError):
+        return None
+    if m:
+        # The declaration is ASCII, so its offsets in the text are its own.
+        start, end = m.span(1)
+        text = text[:start] + "UTF-8" + text[end:]
+    return text
 
 
 def _switch_types() -> dict[int, str]:
@@ -446,8 +488,10 @@ def _import_amici() -> Any:
 
 
 def amici_version(amici: Any) -> tuple[str, str | None]:
-    """AMICI's version and, where the install records one (PEP 610's
-    ``direct_url.json``, as an install from a git commit has), its commit."""
+    """AMICI's version and, where the install records one, its commit: PEP
+    610's ``direct_url.json`` names it for an install from a git commit, and
+    for an editable install (``AMICI_PIN.json``'s ``reproduce`` route) names
+    the source directory, whose git checkout gives it."""
     version = str(getattr(amici, "__version__", "unknown"))
     commit = None
     try:
@@ -457,9 +501,48 @@ def amici_version(amici: Any) -> tuple[str, str | None]:
         if raw:
             info = json.loads(raw)
             commit = (info.get("vcs_info") or {}).get("commit_id") or None
+            url = str(info.get("url") or "")
+            editable = bool((info.get("dir_info") or {}).get("editable"))
+            if commit is None and editable and url.startswith("file://"):
+                from urllib.parse import unquote, urlparse
+
+                commit = _checkout_commit(Path(unquote(urlparse(url).path)))
     except Exception:  # noqa: BLE001 - no record is no commit
         commit = None
     return version, commit
+
+
+def _checkout_commit(where: Path) -> str | None:
+    """The commit checked out in the git repository holding *where*, read from
+    its files (no ``git`` run), or None."""
+    for d in (where, *where.parents):
+        git = d / ".git"
+        if git.is_file():  # a worktree or submodule: "gitdir: <path>"
+            text = git.read_text(encoding="utf-8").strip()
+            if not text.startswith("gitdir:"):
+                return None
+            git = (d / text.split(":", 1)[1].strip()).resolve()
+        if not git.is_dir():
+            continue
+        head = (git / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref:"):
+            return head if re.fullmatch(r"[0-9a-f]{40}", head) else None
+        ref = head.split(":", 1)[1].strip()
+        common = git
+        if (git / "commondir").is_file():
+            common = (git / (git / "commondir").read_text(encoding="utf-8").strip()).resolve()
+        for base in (git, common):
+            if (base / ref).is_file():
+                sha = (base / ref).read_text(encoding="utf-8").strip()
+                return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
+        packed = common / "packed-refs"
+        if packed.is_file():
+            for line in packed.read_text(encoding="utf-8").splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[1] == ref and re.fullmatch(r"[0-9a-f]{40}", parts[0]):
+                    return parts[0]
+        return None
+    return None
 
 
 @contextmanager
@@ -1308,6 +1391,7 @@ def _judge(
     # (each one's own move can understate it: BIOMD0000000810 at rtol 1e-8),
     # does not.
     confirmed: bool | None = None
+    confirmed_in: list[str] = []
     unconfirmed = ""
     if lv.diff:
         why, deeper = deeper_answer()
@@ -1367,6 +1451,9 @@ def _judge(
             tolerance_x = lv.failing_x & ~lv1.failing_x
             if reading.any() or reading_x.any():
                 confirmed = True
+                confirmed_in = ["sensitivities"] * bool(reading.any()) + ["states"] * bool(
+                    reading_x.any()
+                )
             elif (tolerance == lv.failing).all() and (tolerance_x == lv.failing_x).all():
                 confirmed = False
             else:
@@ -1389,12 +1476,21 @@ def _judge(
         head = f"{n_nonfinite} series not finite in the run where AMICI's are"
     else:
         head = f"{value:.2e} of a series' scale at most, {_times(margin)} of the allowance"
-    note = (
-        f"bngsim's forward sensitivities against {_engine_label(engine)}'s at a tenth of the "
-        f"run's tolerance, from the model file: {head}, over {int(use.sum())} series of "
-        f"{n_judged} of {n_cols} column(s); the states "
-        f"{'disagree' if state_diff else 'agree'}, {_times(state_margin)} of their allowance"
+    states = (
+        f"the states {'disagree' if state_diff else 'agree'}, {_times(state_margin)} of their "
+        "allowance"
     )
+    if use.any():
+        note = (
+            f"bngsim's forward sensitivities against {_engine_label(engine)}'s at a tenth of "
+            f"the run's tolerance, from the model file: {head}, over {int(use.sum())} series "
+            f"of {n_judged} of {n_cols} column(s); {states}"
+        )
+    else:
+        note = (
+            f"no series of bngsim's forward sensitivities judged against "
+            f"{_engine_label(engine)}'s, from the model file; {states}"
+        )
     if state_diff and state_worst:
         note += f" (most in {state_worst})"
     if lv.diff and confirmed:
@@ -1496,6 +1592,7 @@ def _judge(
         "n_no_reference": len(no_reference),
         "no_reference": no_reference[:MAX_NAMED],
         "confirmed_tighter": confirmed,
+        "confirmed_in": confirmed_in,
         "diff_not_converged": tolerance_only,
         "n_not_resolved": int(trace.sum()),
         "not_resolved": _check_sensitivity._named(cols, trace)[:MAX_NAMED],
@@ -1514,12 +1611,8 @@ def _judge(
     worst = _check_sensitivity._worst(cols, score)
     if state_diff and not margin > 1.0:
         worst = state_worst
-    if status == "skip":
-        note = (
-            "AMICI moves past "
-            f"{TOLERANCE_MOVE:g} of the peak of every series it gives between its two runs: it "
-            "is no reference at the run's tolerance (rerun at a tighter one); " + note
-        )
+    if status == "skip" and no_reference:
+        note += "; rerun at a tighter tolerance, where AMICI may converge them"
     return _verdict(
         NAME,
         status,

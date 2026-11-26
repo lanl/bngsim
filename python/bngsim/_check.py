@@ -453,7 +453,19 @@ def _next(out: Report, roundoff: bool = False) -> str:
                 "better at a tenth of it: rerun at a tighter rtol and atol "
                 "(result.rerun(rtol=..., atol=...)) and check that run."
             )
-        what = "trajectory" if diffs[0].get("state_diff") else "forward sensitivities"
+        d0 = diffs[0]
+        if d0.get("confirmed_tighter"):
+            # What holds a decade tighter, not all that disagreed at the run's.
+            held = d0.get("confirmed_in") or []
+            sens, states = "sensitivities" in held, "states" in held
+        else:
+            margin = d0.get("margin")
+            sens, states = margin is None or margin > 1.0, bool(d0.get("state_diff"))
+        what = (
+            "trajectory and forward sensitivities"
+            if sens and states
+            else ("trajectory" if states else "forward sensitivities")
+        )
         if diffs[0].get("confirmed_tighter") is None:
             return (
                 f"bngsim and AMICI disagree on this model's {what} at the run's tolerance, and a "
@@ -1116,11 +1128,14 @@ def _second_engine(ctx: _Context) -> dict[str, Any]:
     path = model.get("path")
     try:
         if fmt == "antimony":
-            import antimony
+            import warnings
 
-            if antimony.loadAntimonyFile(path) < 0:
-                raise RuntimeError(antimony.getLastError())
-            sbml = antimony.getSBMLString(antimony.getMainModuleName())
+            from bngsim._sbml_loader import antimony_file_sbml
+
+            with warnings.catch_warnings():
+                # The load warned of what it left out already.
+                warnings.simplefilter("ignore")
+                sbml = antimony_file_sbml(str(path))
             rr = roadrunner.RoadRunner(sbml)
         else:
             rr = roadrunner.RoadRunner(path)

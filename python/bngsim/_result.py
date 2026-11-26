@@ -3629,7 +3629,9 @@ class Result:
             ``n_judged``, ``not_judged``, ``n_not_converged`` and
             ``diff_not_converged`` too, ``not_converged``,
             ``no_reference`` and ``floor_held`` (series names),
-            ``n_judged_deeper``, ``confirmed_tighter``, and ``state_margin`` and
+            ``n_judged_deeper``, ``confirmed_tighter`` and ``confirmed_in``
+            (``"sensitivities"`` and/or ``"states"``: what held a decade
+            tighter), and ``state_margin`` and
             ``state_diff`` (the states against AMICI's),
             ``species_not_compared`` (with the reason) and ``engine``
             (AMICI's ``version``, its ``commit`` where the install records

@@ -23,17 +23,20 @@ A wrong sensitivity is made to order three ways:
 
 from __future__ import annotations
 
+import codecs
 import copy
 import json
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from bngsim import Model, Result, Simulator, _check, _check_amici, _check_sensitivity, examples
+from bngsim._exceptions import ConversionWarning
 
 NAME = "sensitivity_second_engine"
 K0, A0 = 0.5, 100.0
@@ -402,6 +405,106 @@ def test_an_antimony_file_that_imports_another_is_read_from_its_own_directory(tm
     assert out.stdout.strip().splitlines()[-1:] == ["read"], (out.stdout, out.stderr)
 
 
+def _comma_locale() -> str | None:
+    import locale
+
+    saved = locale.setlocale(locale.LC_NUMERIC)
+    try:
+        for name in ("de_DE.UTF-8", "de_DE.utf8", "fr_FR.UTF-8", "fr_FR.utf8", "nl_NL.UTF-8"):
+            try:
+                locale.setlocale(locale.LC_NUMERIC, name)
+            except locale.Error:
+                continue
+            if locale.localeconv()["decimal_point"] == ",":
+                return name
+        return None
+    finally:
+        locale.setlocale(locale.LC_NUMERIC, saved)
+
+
+def _parameter(sbml: str, pid: str) -> float:
+    import libsbml
+
+    doc = libsbml.readSBMLFromString(sbml)  # held: the model is the document's
+    return float(doc.getModel().getParameter(pid).getValue())
+
+
+@pytest.mark.skipif(_comma_locale() is None, reason="no decimal-comma locale is installed")
+def test_an_antimony_file_is_read_again_as_the_load_read_it_under_a_comma_locale(tmp_path):
+    # libantimony writes numbers in the locale: under a decimal comma k2 = 0.5
+    # reached the SBML as 0, which the load guards against (issue #1235).
+    import locale
+
+    pytest.importorskip("antimony")
+    path = tmp_path / "plain.ant"
+    path.write_text(
+        "model m()\n  J1: A -> B; k*A\n  J2: B -> ; k2*B\n"
+        "  A = 100; B = 0; k = 2; k2 = 0.5\nend\n",
+        encoding="utf-8",
+    )
+    saved = locale.setlocale(locale.LC_NUMERIC)
+    try:
+        locale.setlocale(locale.LC_NUMERIC, _comma_locale())
+        sbml, why = _check_amici._sbml_text(str(path), "antimony", None)
+    finally:
+        locale.setlocale(locale.LC_NUMERIC, saved)
+    assert sbml is not None, why
+    assert _parameter(sbml, "k2") == 0.5
+
+
+def test_an_antimony_file_with_a_stray_top_level_line_is_read_as_the_load_read_it(tmp_path):
+    # Antimony names the top level, `__main`, its main module; the load takes
+    # module m, which is what moves (issue #1508), and so does the check.
+    pytest.importorskip("antimony")
+    path = tmp_path / "stray.ant"
+    path.write_text("y = 2;\nmodel m()\n  J1: A -> ; k*A\n  A = 100; k = 0.5\nend\n")
+    sbml, why = _check_amici._sbml_text(str(path), "antimony", None)
+    assert sbml is not None, why
+    assert _parameter(sbml, "k") == 0.5
+
+
+def test_second_engine_reads_an_antimony_file_as_the_load_read_it(tmp_path):
+    pytest.importorskip("roadrunner")
+    pytest.importorskip("antimony")
+    path = tmp_path / "stray.ant"
+    path.write_text("y = 2;\nmodel m()\n  J1: A -> ; k*A\n  A = 100; k = 0.5\nend\n")
+    with pytest.warns(ConversionWarning):
+        model = Model.load(str(path))
+    r = Simulator(model, method="ode").run(t_span=(0, 10), n_points=11)
+    with warnings.catch_warnings():
+        # Each rerun loads the file again, and warns again.
+        warnings.simplefilter("ignore", ConversionWarning)
+        (v,) = r.check(["second_engine"])["checks"]
+    assert v["status"] == "pass", v
+
+
+def _decay_bytes(tmp_path, data: bytes) -> Path:
+    path = tmp_path / "decay.xml"
+    path.write_bytes(data)
+    return path
+
+
+def test_an_sbml_file_is_read_in_the_encoding_it_declares(tmp_path, engine):
+    text = Path(examples.path("decay", format="sbml")).read_text(encoding="utf-8")
+    assert text.startswith('<?xml version="1.0" encoding="UTF-8"?>')
+    body = text.split("?>", 1)[1]
+    # A byte-order mark, and Latin-1 declared with a Latin-1 comment in it.
+    for data in (
+        codecs.BOM_UTF8 + text.encode("utf-8"),
+        ('<?xml version="1.0" encoding="ISO-8859-1"?>\n<!-- caf\xe9 -->' + body).encode("latin-1"),
+    ):
+        path = _decay_bytes(tmp_path, data)
+        v = _verdict(_decay(path))
+        assert v["status"] == "pass", v
+    # Bytes that are not text in the encoding declared: a skip that says so.
+    path = _decay_bytes(tmp_path, text.encode("utf-8").replace(b"<sbml", b"<!-- \xff -->\n<sbml"))
+    sbml, why = _check_amici._sbml_text(str(path), "sbml", None)
+    assert (
+        sbml is None and why == "the model file's bytes are not text in the encoding it declares"
+    )
+    assert _check_amici._xml_text(b'<?xml version="1.0" encoding="no-such"?><a/>') is None
+
+
 def test_a_model_with_an_event_or_a_switch_is_not_compared(tmp_path, engine):
     base = dict(species=[("A", A0, False)], params={"k": K0, "ton": 5.0})
     cases = {
@@ -453,6 +556,16 @@ def test_the_scan_reads_an_l2_stoichiometry():
     ("where", "formula", "what"),
     [
         ("rule", "k*(ton > 1)", "a comparison"),
+        ("rule", "k*(ton >= 1)", "a comparison"),
+        ("rule", "k*(ton < 1)", "a comparison"),
+        ("rule", "k*(ton <= 1)", "a comparison"),
+        ("rule", "k*(ton == 1)", "a comparison"),
+        ("rule", "k*(ton != 1)", "a comparison"),
+        ("rule", "k*((ton > 1) && (ton < 9))", "a logical operator"),
+        ("rule", "k*((ton > 1) || (ton < 9))", "a logical operator"),
+        ("rule", "k*!(ton > 1)", "a logical operator"),
+        ("rule", "k*xor(ton > 1, ton < 9)", "a logical operator"),
+        ("rule", "k*implies(ton > 1, ton < 9)", "a logical operator"),
         ("rule", "k*piecewise(1, (ton > 1) && (ton < 9), 0)", "a piecewise"),
         ("initial", "k*floor(ton)", "floor"),
         ("initial", "ceil(ton)", "ceiling"),
@@ -681,6 +794,8 @@ def test_a_series_amici_moves_by_more_than_a_thousandth_of_has_no_reference(monk
         assert v["status"] == "skip", (factor, v)
         assert v["no_reference"] == ["dA/dk"] and v["n_no_reference"] == 1
         assert "no reference, not judged" in v["note"]
+        assert v["note"].startswith("no series of bngsim's forward sensitivities judged")
+        assert "0.00e+00" not in v["note"] and "rerun at a tighter tolerance" in v["note"]
         assert v["columns"] == []
         assert rep["ok"] is False
 
@@ -1823,6 +1938,79 @@ def test_a_species_amici_holds_no_state_for_is_named(tmp_path, engine):
     assert fake.asked["atol"] == pytest.approx(float(np.min(ctx.atols)))
 
 
+def test_next_names_what_holds_a_decade_tighter(monkeypatch, engine):
+    # dA/dk doubled in every solve, and AMICI's states 1e-3 off at the run's
+    # tolerance and a tenth of it but exact at a hundredth: both disagree at
+    # the run's tolerance, and only the sensitivities a decade tighter.
+    fake = _ClosedForm({"A": A0})
+    fake.edit = lambda x, sx: (x * (1 + (1e-3 if len(fake.calls) < 3 else 0.0)), sx)
+    engine(fake)
+    _loader_moves_k_twice(monkeypatch)
+    rep = _decay().check([NAME])
+    (v,) = rep["checks"]
+    assert v["confirmed_tighter"] is True and v["state_diff"] is True, v
+    assert v["confirmed_in"] == ["sensitivities"]
+    assert "this model's forward sensitivities, and still do" in rep["next"], rep["next"]
+
+
+def test_a_state_diff_with_no_series_judged_is_a_diff(engine):
+    # AMICI moves 10% and then 5% on dA/dk (no reference at either), and its
+    # state is 5% off at every tolerance: no series is judged, the states are.
+    fake = _ClosedForm({"A": A0})
+    offs = (0.1, 0.05, 0.0)
+    fake.edit = lambda x, sx: (x * 1.05, sx * (1 + offs[min(len(fake.calls), 3) - 1]))
+    engine(fake)
+    v = _verdict(_decay())
+    assert v["status"] == "diff" and v["state_diff"] is True, v
+    assert v["no_reference"] == ["dA/dk"]
+    assert v["note"].startswith("no series of bngsim's forward sensitivities judged")
+
+
+def test_a_tighter_run_that_raises_is_no_base(monkeypatch, engine):
+    monkeypatch.setattr(_check._Context, "_ensure_drift", lambda self: "RuntimeError: gave up")
+    v = _verdict(_decay())
+    assert v["status"] == "no_base", v
+    assert v["note"] == "the run at a tenfold tighter tolerance raised (RuntimeError: gave up)"
+
+
+def test_a_column_the_run_records_no_value_for_is_not_judged(engine):
+    r = _decay()
+    record = copy.deepcopy(r.record)
+    del record["run"]["parameters"]["k"]
+    ctx = _check._Context(r, record, None)
+    v = _check_amici.check(ctx)
+    assert v["status"] == "skip", v
+    assert "k: the run records no value for it" in v["note"]
+
+
+def test_an_amount_in_a_compartment_of_no_size_is_not_compared(tmp_path, monkeypatch, engine):
+    path = _write_sbml(
+        tmp_path / "amount.xml",
+        species=[("A", A0 * 2.0, True), ("B", 1.0, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
+        size=2.0,
+    )
+    engine(_ClosedForm({"A": A0 * 2.0, "B": 1.0}))
+    for size in (0.0, float("nan"), float("inf")):
+        monkeypatch.setattr(
+            _check_amici, "compartment_sizes", lambda model, size=size: {"C": size}
+        )
+        v = _verdict(_decay(path))
+        assert list(v["species_not_compared"]) == ["A"], (size, v)
+        assert "does not give as a constant" in v["species_not_compared"]["A"]
+
+
+def test_the_note_says_whether_the_build_was_cached(engine):
+    v = _verdict(_decay())
+    assert "AMICI's build of the model was cached; budget= bounds neither" in v["note"]
+    fake = engine(_ClosedForm({"A": A0}))
+    fake.cached, fake.build_seconds = False, 12.4
+    v = _verdict(_decay())
+    assert "AMICI built the model in 12 s; budget= bounds neither" in v["note"]
+    assert v["engine"]["cached"] is False and v["engine"]["build_seconds"] == 12.4
+
+
 def test_the_report_names_an_install_the_parity_suite_does_not_pin(monkeypatch, engine):
     engine(_ClosedForm({"A": A0}, commit="0123456789abcdef"))
     v = _verdict(_decay())
@@ -1858,6 +2046,9 @@ def test_the_report_names_an_install_the_parity_suite_does_not_pin(monkeypatch, 
     rep = _decay().check([NAME])
     assert rep["checks"][0]["confirmed_tighter"] is True
     assert "check with that commit before reporting" in rep["next"]
+    engine(_ClosedForm({"A": A0}, commit="0123456789abcdef"))
+    rep = _decay().check([NAME])
+    assert "This AMICI is not the commit bngsim's AMICI parity suite pins" in rep["next"]
     engine(_ClosedForm({"A": A0}, commit=_check_amici.PINNED_COMMIT))
     rep = _decay().check([NAME])
     assert "check with that commit" not in rep["next"] and "Report it" in rep["next"]
@@ -1878,6 +2069,46 @@ def test_the_version_and_commit_come_from_the_install_record(monkeypatch):
     dist = SimpleNamespace(read_text=lambda name: None)
     monkeypatch.setattr(md, "distribution", lambda name: dist)
     assert _check_amici.amici_version(SimpleNamespace(__version__="9.9")) == ("9.9", None)
+
+
+def test_an_editable_installs_commit_comes_from_its_checkout(monkeypatch, tmp_path):
+    # AMICI_PIN.json's route installs AMICI editable from a checkout, whose
+    # record names the source directory and no commit.
+    import importlib.metadata as md
+
+    sha, other = "a" * 40, "b" * 40
+    repo = tmp_path / "AMICI"
+    src = repo / "python" / "sdist"
+    src.mkdir(parents=True)
+    git = repo / ".git"
+    (git / "refs" / "heads").mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n")
+    (git / "refs" / "heads" / "main").write_text(sha + "\n")
+    record = json.dumps({"url": src.as_uri(), "dir_info": {"editable": True}})
+    dist = SimpleNamespace(read_text=lambda name: record if name == "direct_url.json" else None)
+    monkeypatch.setattr(md, "distribution", lambda name: dist)
+    amici = SimpleNamespace(__version__="1.0.1")
+    assert _check_amici.amici_version(amici) == ("1.0.1", sha)
+    # A ref packed, a detached HEAD, a worktree's .git file.
+    (git / "refs" / "heads" / "main").unlink()
+    (git / "packed-refs").write_text(f"# pack-refs\n{other} refs/heads/main\n")
+    assert _check_amici.amici_version(amici) == ("1.0.1", other)
+    (git / "HEAD").write_text(sha + "\n")
+    assert _check_amici.amici_version(amici) == ("1.0.1", sha)
+    wt = tmp_path / "wt"
+    (wt / "python" / "sdist").mkdir(parents=True)
+    meta = git / "worktrees" / "wt"
+    meta.mkdir(parents=True)
+    (meta / "HEAD").write_text("ref: refs/heads/main\n")
+    (meta / "commondir").write_text("../..\n")
+    (wt / ".git").write_text(f"gitdir: {meta}\n")
+    record = json.dumps(
+        {"url": (wt / "python" / "sdist").as_uri(), "dir_info": {"editable": True}}
+    )
+    assert _check_amici.amici_version(amici) == ("1.0.1", other)
+    # No checkout: no commit.
+    record = json.dumps({"url": (tmp_path / "nowhere").as_uri(), "dir_info": {"editable": True}})
+    assert _check_amici.amici_version(amici) == ("1.0.1", None)
 
 
 # ─── The build ───────────────────────────────────────────────────────────────
@@ -2093,6 +2324,17 @@ def test_a_killed_builds_staging_directory_is_removed(monkeypatch, tmp_path):
     # Gone and old: removed. Alive, or touched lately (a build in another
     # container, whose pid this host does not know): left alone.
     assert not dead.exists() and not dead_log.exists() and alive.exists() and young.exists()
+    # A pid that is another user's process: alive, so left alone.
+    other = tmp_path / "amici" / ".building_bngsim_amici_cdef_999999997"
+    other.mkdir()
+    os.utime(other, (old, old))
+
+    def kill(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "kill", kill)
+    _check_amici._remove_dead_staging(tmp_path / "amici")
+    assert other.exists()
 
 
 def test_the_build_cache_is_the_suites_own():
@@ -2131,7 +2373,8 @@ def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, mon
     assert rep["ok"] is True
     # The solver is set as the run was: forward sensitivities, the run's
     # corrector method and rtol, at least as tight as bngsim on every series.
-    engine = _check_amici.build_engine(amici, examples.path("decay", format="sbml").read_text())
+    sbml, _ = _check_amici._sbml_text(str(examples.path("decay", format="sbml")), "sbml", None)
+    engine = _check_amici.build_engine(amici, sbml)
     assert engine.cached is True and engine.free_ids == ["amici_k"]
     s = engine.solver(rtol=1e-7, atol=1e-11, atol_sens=1e-13, method="simultaneous")
     assert (s.get_relative_tolerance(), s.get_absolute_tolerance()) == (1e-7, 1e-11)
