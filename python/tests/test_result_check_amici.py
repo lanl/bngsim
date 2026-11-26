@@ -118,8 +118,9 @@ def _decay(path: Path | None = None, **kw) -> Result:
     """``A' = -kA`` from ``A(0) = 100`` with ``k = 0.5`` (bngsim's bundled
     SBML), sensitivities to ``k``."""
     model = Model.load(str(path or examples.path("decay", format="sbml")))
+    run = {k: kw.pop(k) for k in ("rtol",) if k in kw}
     sim = Simulator(model, method="ode", sensitivity_params=kw.pop("params", ["k"]), **kw)
-    return sim.run(t_span=(0, 10), n_points=11)
+    return sim.run(t_span=(0, 10), n_points=11, **run)
 
 
 def _by_name(report: dict) -> dict[str, dict]:
@@ -461,6 +462,30 @@ def test_a_small_error_in_every_solve_is_past_the_allowance(monkeypatch, engine)
 def test_a_column_the_run_gives_as_zero_is_judged_on_amicis_scale(engine):
     v = _verdict(_scaled(_decay(), 0, 0.0))
     assert v["status"] == "diff" and v["margin"] > 100, v
+    # Off by the whole of AMICI's peak, not by nothing on bngsim's.
+    assert v["value"] == pytest.approx(1.0, rel=1e-6)
+
+
+def test_the_looser_runs_move_widens_a_series_drift(monkeypatch, engine):
+    # AMICI off by 5e-4 of the series: past what the tighter run's move
+    # allows, and within ten times half the move at twice the tolerance.
+    def off(x, sx):
+        return x, sx * (1 + 5e-4)
+
+    engine(_ClosedForm({"A": A0}, edit=off))
+    r = _decay()
+    assert _verdict(r)["status"] == "diff"
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("rtol", 0) > self.record["run"]["rtol"]:
+            out = _scaled(out, 0, 1 + 2e-4)
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    v = _verdict(r)
+    assert v["status"] == "pass" and v["margin"] > 0.1, v
 
 
 def test_a_small_series_beside_a_large_one_is_judged_on_its_own_peak(tmp_path, engine):
@@ -594,11 +619,38 @@ def test_a_budget_spent_on_bngsims_reruns_builds_nothing(monkeypatch, engine):
     assert v["status"] == "timeout" and built == [], v
 
 
+def test_a_run_with_no_converged_species_judges_nothing(engine):
+    r = _decay(rtol=0.1)
+    assert r.check(["tolerance"])["converged"] is False
+    v = _verdict(r)
+    assert v["status"] == "no_base", v
+
+
+def test_a_load_with_compartment_sizes_is_skipped(tmp_path, engine):
+    path = _write_sbml(
+        tmp_path / "sized.xml",
+        species=[("A", A0, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {})],
+    )
+    m = Model.load(str(path), compartment_sizes={"C": 1.0})
+    r = Simulator(m, method="ode", sensitivity_params=["k"]).run(t_span=(0, 10), n_points=11)
+    v = _verdict(r)
+    assert v["status"] == "skip" and "compartment_sizes=" in v["note"], v
+
+
 def test_amicis_failures_are_skips_not_findings(engine):
     engine(_ClosedForm({"A": A0}, fail="status -1 (AMICI_TOO_MUCH_WORK)"))
     v = _verdict(_decay())
     assert v["status"] == "skip" and "AMICI could not run it" in v["note"]
     assert "TOO_MUCH_WORK" in v["note"]
+
+    def short(x, sx):
+        return x[:-1], sx[:-1]
+
+    engine(_ClosedForm({"A": A0}, edit=short))
+    v = _verdict(_decay())
+    assert v["status"] == "skip" and "AMICI returned" in v["note"], v
 
 
 # ─── What AMICI names, and what it holds ─────────────────────────────────────
@@ -662,6 +714,17 @@ def test_an_amount_in_a_compartment_an_initial_assignment_sizes_is_not_compared(
     v = _verdict(r)
     assert v["status"] == "skip" and "no species AMICI integrates is bngsim's" in v["note"], v
     assert "whose size the file does not give as a constant" in v["note"]
+    # And one a rule sets.
+    path = _write_sbml(
+        tmp_path / "ruled.xml",
+        species=[("A", A0, True)],
+        params={"k": K0, "s": 1.0},
+        reactions=[("J1", ["A"], [], "k*A", {})],
+        size=1.0,
+        rules={"C": "2*s"},
+    )
+    v = _verdict(_decay(path))
+    assert v["status"] == "skip" and "whose size the file does not give" in v["note"], v
 
 
 def test_a_species_amici_holds_no_state_for_is_named(tmp_path, engine):
@@ -811,6 +874,18 @@ def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, mon
     assert v["engine"]["pinned"] is pinned
     assert ("parity suite pins" in v["note"]) is not pinned
     assert rep["ok"] is True
+    # The solver is set as the run was: forward sensitivities, the run's
+    # corrector method and rtol, at least as tight as bngsim on every series.
+    engine = _check_amici.build_engine(amici, examples.path("decay", format="sbml").read_text())
+    assert engine.cached is True and engine.free_ids == ["amici_k"]
+    s = engine.solver(rtol=1e-7, atol=1e-11, atol_sens=1e-13, method="simultaneous")
+    assert (s.get_relative_tolerance(), s.get_absolute_tolerance()) == (1e-7, 1e-11)
+    assert (s.get_relative_tolerance_fsa(), s.get_absolute_tolerance_fsa()) == (1e-7, 1e-13)
+    assert s.get_max_steps() == _check_amici.MAX_STEPS
+    assert s.get_internal_sensitivity_method() == _amici.InternalSensitivityMethod_simultaneous
+    assert s.get_sensitivity_method() == _amici.SensitivityMethod_forward
+    s = engine.solver(rtol=1e-7, atol=1e-11, atol_sens=1e-13, method="staggered")
+    assert s.get_internal_sensitivity_method() == _amici.InternalSensitivityMethod_staggered
     # The build is kept whole, and the next check reads it.
     assert _verdict(r)["engine"]["cached"] is True
     entries = [p.name for p in Path(_check_amici.CACHE_DIR).iterdir()]

@@ -422,6 +422,26 @@ class Engine:
         self.free_values = [float(v) for v in model.get_unscaled_parameters()]
         self.state_ids = [str(i) for i in model.get_state_ids()]
 
+    def solver(self, *, rtol: float, atol: float, atol_sens: float, method: str) -> Any:
+        """AMICI's solver for the run: forward sensitivities, by the run's
+        corrector method, at the given tolerances and :data:`MAX_STEPS`."""
+        import amici.sim.sundials as ss
+
+        solver = self.model.create_solver()
+        solver.set_relative_tolerance(float(rtol))
+        solver.set_absolute_tolerance(float(atol))
+        solver.set_relative_tolerance_fsa(float(rtol))
+        solver.set_absolute_tolerance_fsa(float(atol_sens))
+        solver.set_max_steps(MAX_STEPS)
+        solver.set_sensitivity_order(ss.SensitivityOrder_first)
+        solver.set_sensitivity_method(ss.SensitivityMethod_forward)
+        solver.set_internal_sensitivity_method(
+            ss.InternalSensitivityMethod_simultaneous
+            if method == "simultaneous"
+            else ss.InternalSensitivityMethod_staggered
+        )
+        return solver
+
     def simulate(
         self,
         ids: list[str],
@@ -441,19 +461,7 @@ class Engine:
         m = self.model
         m.set_parameter_scale([ss.ParameterScaling_none] * len(self.free_ids))
         m.set_parameter_list([self.free_ids.index(p) for p in ids])
-        solver = m.create_solver()
-        solver.set_relative_tolerance(float(rtol))
-        solver.set_absolute_tolerance(float(atol))
-        solver.set_relative_tolerance_fsa(float(rtol))
-        solver.set_absolute_tolerance_fsa(float(atol_sens))
-        solver.set_max_steps(MAX_STEPS)
-        solver.set_sensitivity_order(ss.SensitivityOrder_first)
-        solver.set_sensitivity_method(ss.SensitivityMethod_forward)
-        solver.set_internal_sensitivity_method(
-            ss.InternalSensitivityMethod_simultaneous
-            if method == "simultaneous"
-            else ss.InternalSensitivityMethod_staggered
-        )
+        solver = self.solver(rtol=rtol, atol=atol, atol_sens=atol_sens, method=method)
         m.set_t0(float(t0))
         m.set_timepoints([float(t) for t in times])
         with warnings.catch_warnings():
