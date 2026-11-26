@@ -202,6 +202,9 @@ end
         # much at every tolerance, 2e-3 of its peak or 18 of that floor. A
         # floor holds it, and on its column's scale it is noise.
         (1e12, 1, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "pass", ["dB/dk"]),
+        # And one that moves past the bound to rtol/100 on its own scale too:
+        # read on its column, both moves are noise there.
+        (1e12, 1, {-8: 3e-3, -9: -2e-3, -10: 1e-3}, "pass", ["dB/dk"]),
         # At A = 1e11 the floor is ten times smaller and the same error about
         # 180 floors: past the 100 a floor's move is within.
         (1e11, 1, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "diff", []),
