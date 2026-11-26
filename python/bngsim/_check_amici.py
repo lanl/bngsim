@@ -91,10 +91,12 @@ move between the two is added to every series' and species' drift: it is how
 far a correct engine strays at the run's tolerance, which bngsim's own move can
 understate (BIOMD0000000810 at rtol 1e-7: both engines a few 1e-5 of a
 series' peak from the solution, apart by 2e-4, and in agreement once
-converged). A disagreement that bngsim's own run at a tenth of the tolerance
-shows at most :data:`SHRINK` as large, or that is in series not converged, is
-the tolerance's: the verdict is still ``diff``, with ``diff_not_converged``,
-which ``next`` reads as the tolerance's, not the reading's. The states AMICI
+converged). A disagreement in series and species not converged at the run's
+tolerance alone is the tolerance's: the verdict is still ``diff``, with
+``diff_not_converged``, which ``next`` reads as the tolerance's, not the
+reading's. (One in a converged series is one bngsim's own run at a tenth of the
+tolerance shows too: had that run halved the gap, the series' drift would be
+half the gap or more.) The states AMICI
 integrates are compared too, species by species, on every path's rule
 (:func:`bngsim._check.path_margins`, as :meth:`bngsim._check._Context.compare_x`
 uses it): sensitivities about two different
@@ -168,12 +170,6 @@ PINNED_COMMIT = "7fb8c571ac9e4d5aafb85d5da08982ea7c5a19dc"
 #: runs out of 100,000 at t = 983 of 1000, and takes 0.2 s with this many. A
 #: model AMICI cannot integrate pays the whole budget before it gives up.
 MAX_STEPS = 1_000_000
-
-#: A disagreement with AMICI is the tolerance's where bngsim's run at a tenth
-#: of the tolerance is at most this share as far from AMICI's tighter run as
-#: the run is (:func:`_shrinks`): tolerance error shrinks about tenfold, and a
-#: model read two ways differs as much at any tolerance.
-SHRINK = 0.5
 
 #: bngsim's prefix for a reaction's local parameter.
 LOCAL_PREFIX = "_lp_"
@@ -949,15 +945,6 @@ def compare(
     )
 
 
-def _shrinks(gap: NDArray[np.float64], tight_gap: NDArray[np.float64]) -> NDArray[np.bool_]:
-    """Where a disagreement with AMICI is the tolerance's: bngsim's run at a
-    tenth of the tolerance is at most :data:`SHRINK` as far from AMICI's
-    tighter run as the run is. A model read two ways differs as much at any
-    tolerance."""
-    with np.errstate(invalid="ignore"):
-        return np.isfinite(gap) & np.isfinite(tight_gap) & (tight_gap <= SHRINK * gap)
-
-
 def _judge(
     ctx: _Context,
     cols: _Columns,
@@ -1049,22 +1036,17 @@ def _judge(
     state_diff = state_margin > 1.0
     state_worst = ctx._worst(ratio_x)
 
-    # A disagreement that bngsim's run at a tenth of the tolerance does not
-    # show is the tolerance's, not the reading's.
+    # A disagreement in series and species not converged at the run's
+    # tolerance alone is the tolerance's. One in a converged series is not:
+    # its drift is its move at the tighter tolerance or more, so had the
+    # tighter run halved its gap to AMICI, the drift would be half the gap or
+    # more, and ten times that would allow it.
     failing = judged & (ratio > 1.0)
     failing_x = ratio_x > 1.0
-    assert ctx.tight is not None
-    try:
-        tight_S = _check_sensitivity._block(ctx.tight)
-    except ValueError:
-        tight_S = np.full(S.shape, np.nan)
-    shrinks = _shrinks(d, series_gap(tight_S, S_cmp))
-    d_x_tight, _ = differences(ctx._view(ctx.tight), x_cmp)
-    shrinks_x = _shrinks(d_x, d_x_tight)
     tolerance_only = bool(
         (failing.any() or failing_x.any())
-        and not (failing & converged & ~shrinks).any()
-        and not (failing_x & x_conv & ~shrinks_x).any()
+        and not (failing & converged).any()
+        and not (failing_x & x_conv).any()
     )
     status = "diff" if margin > 1.0 or state_diff else "pass"
     n_judged = int(judged.any(axis=0).sum())
@@ -1086,8 +1068,8 @@ def _judge(
         note += f" (most in {state_worst})"
     if status == "diff" and tolerance_only:
         note += (
-            "; each disagreement is one the run at a tenth of the tolerance does not show, or "
-            "in a series not converged at the run's tolerance: the tolerance's, not the reading's"
+            "; each disagreement is in a series or species not converged at the run's "
+            "tolerance: the tolerance's, not the reading's"
         )
     if n_out:
         note += (

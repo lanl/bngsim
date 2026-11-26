@@ -199,6 +199,7 @@ class _ClosedForm:
         #: Added to the sensitivities of the run at the run's own tolerance:
         #: AMICI's own error there, which its tighter run does not have.
         self.loose_error = 0.0
+        self.loose_state_error = 0.0
 
     @property
     def asked(self) -> dict:
@@ -223,6 +224,7 @@ class _ClosedForm:
             x, sx = self.edit(x, sx)
         if len(self.calls) == 1:
             sx = sx * (1 + self.loose_error)
+            x = x * (1 + self.loose_state_error)
         return "", x, sx
 
 
@@ -511,6 +513,33 @@ def test_a_disagreement_the_tighter_run_does_not_show_is_the_tolerances(engine):
     assert v["status"] == "diff" and v["diff_not_converged"] is True, v
     assert "the tolerance's, not the reading's" in v["note"]
     assert "not converged at the run's tolerance" in rep["next"]
+
+
+def test_the_reference_is_amicis_tighter_run(engine):
+    # AMICI at the run's tolerance errs by a thousandth of dA/dk, past what a
+    # path may differ by there; its run at a tenth of it is the one judged
+    # against, and a correct run passes.
+    fake = engine(_ClosedForm({"A": A0}))
+    fake.loose_error = 1e-3
+    v = _verdict(_decay())
+    assert v["status"] == "pass", v
+
+
+def test_amicis_own_move_widens_the_states_allowance_too(monkeypatch, engine):
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = copy.copy(real(self, *a, **kw))
+        out._species = np.asarray(out._species, dtype=float) * (1 + 1e-4)
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run)
+    v = _verdict(_decay())
+    assert v["status"] == "diff" and v["state_diff"] is True, v
+    fake = engine(_ClosedForm({"A": A0}))
+    fake.loose_state_error = 1e-4
+    v = _verdict(_decay())
+    assert v["status"] == "pass", v
 
 
 def test_amici_failing_at_the_tighter_tolerance_is_a_skip(engine):
