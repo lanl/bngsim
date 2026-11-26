@@ -532,11 +532,21 @@ def test_the_command_points_at_the_model_s_own_spelling_and_quotes_it(tmp_path):
     _json(_bngsim("run", net, "--t-end", "1", remedy["argument"], remedy["value"], "--json"))
 
 
-@pytest.mark.parametrize("names", [{"k1": 1.0}, 3, b"k1", np.array("k1")])
-def test_simulator_refuses_names_that_are_not_a_list(names):
+@pytest.mark.parametrize(
+    "names, says",
+    [
+        ({"k1": 1.0}, "not a dict"),
+        (3, "not a int"),
+        (b"k1", "not a bytes"),
+        (np.array("k1"), "iteration over a 0-d array"),
+    ],
+)
+def test_simulator_refuses_names_that_are_not_a_list(names, says):
     with pytest.raises(ArgumentTypeError) as e:
         Simulator(Model.load(CHAIN), sensitivity_params=names)
     assert e.value.details["argument"] == "sensitivity_params"
+    assert str(e.value).startswith("sensitivity_params takes a list of names, ")
+    assert says in str(e.value)
 
 
 @pytest.mark.parametrize("names", [{"k1"}, frozenset({"k1"})])
