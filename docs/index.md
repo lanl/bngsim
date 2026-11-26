@@ -73,6 +73,7 @@ user-guide/loading-models
 user-guide/simulation
 user-guide/network-free
 user-guide/results
+user-guide/checking
 user-guide/events
 user-guide/table-functions
 user-guide/solvers
@@ -93,6 +94,7 @@ reference/api
 reference/expressions
 reference/error-codes
 reference/command-line
+reference/compatibility
 ```
 
 ```{toctree}
@@ -102,6 +104,7 @@ reference/command-line
 about/why
 about/architecture
 about/benchmarks
+about/limitations
 development/building
 development/extending
 development/sensitivity-terms
