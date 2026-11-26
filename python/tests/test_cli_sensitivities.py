@@ -559,7 +559,9 @@ class _OldSequence:
 
 
 @pytest.mark.parametrize("names", [{"k1"}, frozenset({"k1"}), {"k1": 1.0}, _OldSequence()])
-def test_simulator_takes_what_main_took(names):
+def test_simulator_takes_any_iterable_of_names(names):
+    # A set ran on main. A dict (its keys) and a __getitem__ sequence with no
+    # __len__ met a raw TypeError there; steady_state took the dict.
     r = Simulator(Model.load(CHAIN), sensitivity_params=names).run(t_span=(0, 1), n_points=2)
     assert list(r.sensitivity_params) == ["k1"]
 
