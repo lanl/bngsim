@@ -123,6 +123,8 @@ bngsim run-bngl model.bngl --out runs/ --json
   Python's is not redirected; that is not tested there.
 - `--json` can come before or after the command: `bngsim --json doctor` and
   `bngsim doctor --json` are the same.
+- [Compatibility between releases](compatibility.md) says which keys and exit
+  codes stay the same from one release to the next.
 - An error prints nothing on standard output. With `--json`, it is one JSON
   object on standard error, the same as `BngsimError.to_dict()`:
 
