@@ -3524,9 +3524,11 @@ class Result:
               which); a ``budget=`` that runs out before the run at
               ``rtol/100`` makes it a ``timeout``, and where that run raises,
               the move to ``rtol/10`` is judged alone. The other sensitivity
-              checks read the run at ``rtol/100`` where it was made, and
-              ``"sensitivity_second_engine"`` judges a series' convergence on
-              its move to ``rtol/10`` alone. A series within 100 of
+              checks read the run at ``rtol/100`` only for a series a floor
+              may hold, and ``"sensitivity_fd"`` and
+              ``"sensitivity_second_engine"`` judge a series' convergence on
+              its move to ``rtol/10`` alone, so their verdicts do not depend
+              on which other checks were asked for. A series within 100 of
               those tolerances of zero is not resolved by the run, named in
               the verdict's ``not_resolved``, and judged on its column's
               largest peak. A series past the bound whose move from

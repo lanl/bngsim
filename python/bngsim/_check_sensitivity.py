@@ -100,7 +100,6 @@ from bngsim._check import (
     _first_line,
     _num,
     _Out,
-    _timed_out,
     _verdict,
     allowance,
     differences,
@@ -723,9 +722,10 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
             )
             continue
         except Exception as e:
-            # Past the run's own timeout, shorter than the budget: this column
-            # is not judged, and the others still are.
-            if not _timed_out(e):
+            # A quotient run past the run's own timeout (with no budget, or one
+            # longer than it): this column is not judged, and the others still
+            # are. Known by its code, not its message.
+            if "timeout" not in str(getattr(e, "code", "") or ""):
                 raise
             not_judged[label] = f"its quotient's runs passed the run's timeout ({_first_line(e)})"
             continue
