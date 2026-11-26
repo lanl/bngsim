@@ -201,6 +201,8 @@ class _ClosedForm:
         self.loose_error = 0.0
         self.loose_state_error = 0.0
         self.nan_in_reference = False
+        #: Applied to the run at the run's own tolerance only.
+        self.loose_edit = None
 
     @property
     def asked(self) -> dict:
@@ -226,6 +228,8 @@ class _ClosedForm:
         if len(self.calls) == 1:
             sx = sx * (1 + self.loose_error)
             x = x * (1 + self.loose_state_error)
+            if self.loose_edit is not None:
+                x, sx = self.loose_edit(x, sx)
         elif self.nan_in_reference:
             sx = sx.copy()
             sx[2, 0, 0] = np.nan
@@ -848,6 +852,12 @@ def test_noise_near_zero_is_judged_on_its_columns_scale(tmp_path, monkeypatch, e
     v = _verdict(noisy)
     assert v["status"] == "pass", v
     assert v["not_resolved"] == ["dB/dk"] and v["n_not_resolved"] == 1
+    # Nor is AMICI's own move there named as wide: a series neither engine
+    # resolves has no peak to read it on.
+    fake = engine(_ClosedForm({"A": A0, "B": 0.1}, edit=amici_says(0.0)))
+    fake.loose_edit = amici_says(50.0 * floor)
+    v = _verdict(noisy)
+    assert v["status"] == "pass" and v["amici_not_converged"] == [], v
     monkeypatch.setattr(Simulator, "run", real)
     # A value AMICI resolves where the run gives 0 is a finding, however small
     # beside the column's largest series: a dependency the loader dropped.

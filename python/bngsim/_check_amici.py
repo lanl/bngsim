@@ -95,9 +95,9 @@ It is not capped: on that model's gamma_C column both engines err by percent at
 the run's tolerance, which a cap would read as a misreading. So the series
 AMICI moves past :data:`bngsim._check.TOLERANCE_MOVE` of their peak on, whose
 allowance is that wide, are named (``amici_not_converged``). A disagreement is
-the tolerance's where it is in series and species not converged at the run's
-tolerance (``not_converged``) and bngsim's own run at a tenth of the tolerance
-is at most :data:`SHRINK` as far from AMICI's reference: the verdict is still
+the tolerance's where it is in series not converged at the run's tolerance
+(``not_converged``) and bngsim's own run at a tenth of the tolerance is at most
+:data:`SHRINK` as far from AMICI's reference: the verdict is still
 ``diff``, with ``diff_not_converged``, which ``next`` reads as the tolerance's,
 not the reading's. A series doubled in every solve differs as much at any
 tolerance, and reads as the reading's. The states AMICI integrates are compared
@@ -1052,13 +1052,15 @@ def _judge(
     state_diff = state_margin > 1.0
     state_worst = ctx._worst(ratio_x)
 
-    # A disagreement is the tolerance's where it is in a series (or species)
-    # not converged at the run's tolerance and bngsim's own run at a tenth of
-    # the tolerance is at most SHRINK as far from AMICI's reference: tolerance
-    # error shrinks with the tolerance, a model read two ways does not. (A
-    # converged series that fails never shrinks so: its drift is its move at
-    # the tighter tolerance or more, so had that run halved its gap to AMICI
-    # the drift would be half the gap, and ten times that would allow it.)
+    # A disagreement is the tolerance's where it is in a series not converged
+    # at the run's tolerance and bngsim's own run at a tenth of the tolerance
+    # is at most SHRINK as far from AMICI's reference: tolerance error shrinks
+    # with the tolerance, a model read two ways does not. Only such a series
+    # can fail and shrink so: one that keeps its drift (a converged series,
+    # and every species, as a path judges species) has a drift of at least
+    # its move at the tighter tolerance, half its gap or more had that run
+    # halved it, and ten times that allows it. So a failing species is never
+    # the tolerance's alone.
     failing = judged & (ratio > 1.0)
     failing_x = ratio_x > 1.0
     assert ctx.tight is not None
@@ -1066,14 +1068,10 @@ def _judge(
         tight_gap = series_gap(_check_sensitivity._block(ctx.tight), S_cmp)
     except ValueError:
         tight_gap = np.full(d.shape, np.inf)
-    tight_gap_x, _ = differences(ctx._view(ctx.tight), x_cmp)
     with np.errstate(invalid="ignore"):
         shrinks = np.isfinite(tight_gap) & (tight_gap <= SHRINK * d)
-        shrinks_x = np.isfinite(tight_gap_x) & (tight_gap_x <= SHRINK * d_x)
     tolerance_only = bool(
-        (failing.any() or failing_x.any())
-        and not (failing & ~(~converged & shrinks)).any()
-        and not (failing_x & ~(~x_conv & shrinks_x)).any()
+        failing.any() and not (failing & ~(~converged & shrinks)).any() and not failing_x.any()
     )
     status = "diff" if margin > 1.0 or state_diff else "pass"
     n_judged = int(judged.any(axis=0).sum())
