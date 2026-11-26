@@ -648,14 +648,19 @@ def test_the_confirmation_compares_bngsim_at_a_tenth_with_amici_at_a_hundredth(
     ctx = _check._Context(r, r.record, None)
     cols = _check_sensitivity._Columns(ctx)
     assert kw0["rtol"] == base and kw1["rtol"] == pytest.approx(base / 10)
-    assert np.allclose(kw1["floors"], cols.atol / 10) and np.allclose(kw0["floors"], cols.atol)
-    assert np.allclose(kw1["atols"], np.asarray(ctx.atols) / 10)
+    exact = dict(rtol=1e-12, atol=0.0)
+    assert np.allclose(kw1["floors"], cols.atol / 10, **exact)
+    assert np.allclose(kw0["floors"], cols.atol, **exact)
+    assert np.allclose(kw1["atols"], np.asarray(ctx.atols) / 10, **exact)
     assert kw0.get("withhold", True) is True
     assert kw1["withhold"] is False and kw1["S_loose"] is None and kw1["x_loose"] is None
     assert (kw1["judged"] == lv0.use).all()
     # bngsim at a tenth (the level-0 drift's run), not the run itself.
     assert np.array_equal(kw1["S"], kw0["S_next"]) and not np.array_equal(kw1["S"], kw0["S"])
     assert np.array_equal(kw1["x"], kw0["x_next"])
+    # Its drift is its own move a decade tighter still: the run at a hundredth.
+    assert not np.array_equal(kw1["S_next"], kw0["S_next"])
+    assert not np.array_equal(kw1["x_next"], kw0["x_next"])
     # AMICI at a hundredth as the reference, at a tenth as the move.
     assert kw1["am"] is kw0["ref"] and kw1["ref"] is not kw0["ref"]
 
@@ -701,6 +706,16 @@ def test_a_budget_spent_before_the_tighter_run_says_so(monkeypatch, engine):
     assert v["status"] == "diff" and v["confirmed_tighter"] is None, v
     assert "the budget ran out before bngsim's run at 1/100 of the tolerance" in v["note"]
     assert "_Out" not in v["note"]
+
+    def rerun_raises(self, **changes):
+        if changes.get("rtol", 1.0) < self.rtol / 50:
+            raise RuntimeError("the solver gave up")
+        return real(self, **changes)
+
+    monkeypatch.setattr(_check._Context, "rerun", rerun_raises)
+    v = _verdict(_decay())
+    assert v["confirmed_tighter"] is None, v
+    assert "raised RuntimeError: the solver gave up" in v["note"]
 
 
 def test_a_diff_that_cannot_be_compared_tighter_says_so(engine):
@@ -813,6 +828,17 @@ def test_a_species_not_converged_is_judged_on_the_runs_whole_scale(tmp_path, mon
     rep = _decay(path).check([NAME])
     (v,) = rep["checks"]
     assert v["status"] == "pass" and v["state_diff"] is False, v
+    # At rtol 1e-4, AMICI's B 50% off: within the whole scale's allowance,
+    # past B's own.
+
+    def far(x, sx):
+        x = x.copy()
+        x[:, 1] *= 1.5
+        return x, sx
+
+    engine(_ClosedForm({"A": A0, "B": 0.1}, edit=far))
+    v = _verdict(_decay(path, rtol=1e-4))
+    assert v["state_diff"] is False, v
 
 
 def test_a_species_wrong_in_every_solve_is_the_readings_though_not_converged(
@@ -1425,8 +1451,10 @@ class _FakeAmici:
     def __init__(self, fail: Exception | None = None) -> None:
         self.fail = fail
         self.log = ""
-        #: Written to file descriptor 1, as AMICI's CMake and compiler do.
+        #: Written to file descriptor 1, as AMICI's CMake and compiler do;
+        #: with stdout_in_staging, "{staging}" names the build's directory.
         self.stdout = ""
+        self.stdout_in_staging = False
         self.tried = 0
         self.builds: list[Path] = []
         self.paths: list[str] = []
@@ -1445,7 +1473,10 @@ class _FakeAmici:
                 outer.paths.append(os.environ["PATH"])
                 outer.tried += 1
                 if outer.stdout:
-                    os.write(1, outer.stdout.encode())
+                    text = outer.stdout
+                    if outer.stdout_in_staging:
+                        text = text.replace("{staging}", Path(out).name)
+                    os.write(1, text.encode())
                 if outer.log:
                     logging.getLogger("amici.importers.sbml").error(outer.log)
                 if outer.fail is not None:
@@ -1522,9 +1553,12 @@ def test_a_failed_builds_output_stays_off_the_terminal_and_is_not_tried_again(
 
     monkeypatch.setattr(_check_amici, "CACHE_DIR", tmp_path / "amici")
     fake = _FakeAmici(subprocess.CalledProcessError(1, ["python", "setup.py", "build_ext"]))
+    fake.stdout_in_staging = True
     fake.stdout = (
         "-- Configuring done\n" * 50
-        + "/tmp/x/.building_y/w.cpp:22:11: error: no member named 'w' in namespace 'std'\n"
+        + "CMake Warning: a tools line first\n"
+        + "make: *** error: a tools line that is not the model's\n"
+        + "/tmp/x/{staging}/w.cpp:22:11: error: no member named 'w' in namespace 'std'\n"
         + "1 error generated.\n" * 20
     )
     capfd.readouterr()
@@ -1562,6 +1596,12 @@ def test_a_failure_of_the_build_tools_is_not_kept(monkeypatch, tmp_path):
     assert not list((tmp_path / "amici").glob("*.failed"))
     _check_amici.build_engine(fake, "<sbml/>")
     assert fake.tried == 2
+    # A compiler's error in AMICI's own headers (a system header not found)
+    # is the environment's too: the model builds once the header is there.
+    fake.stdout = "/site/amici/include/amici/defines.h:8:10: fatal error: 'cmath' file not found\n"
+    why = _check_amici.build_engine(fake, "<sbml/>")
+    assert "its build tools failed" in why and "'cmath' file not found" in why, why
+    assert not list((tmp_path / "amici").glob("*.failed"))
 
 
 def test_a_rename_that_fails_with_no_build_in_place_is_a_build_failure(monkeypatch, tmp_path):

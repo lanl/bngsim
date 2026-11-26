@@ -626,17 +626,19 @@ def _output_to(log: Path) -> Iterator[None]:
 _COMPILER_ERROR = re.compile(r"\S+\.(?:cpp|cc|c|h|hpp):\d+(?::\d+)?:\s*(?:fatal )?error:")
 
 
-def _build_errors(log: Path) -> tuple[str | None, str | None]:
-    """From *log*: the first compiler error in a generated source (the
-    model's own failure), and else the first error of the build tools
-    (CMake's, SWIG's: the environment's), each as one line."""
+def _build_errors(log: Path, staging: Path) -> tuple[str | None, str | None]:
+    """From *log*: the first compiler error in a source AMICI generated for
+    the model, in *staging* (the model's own failure), and else the first
+    error of the build tools (CMake's, SWIG's, or a compiler's in AMICI's or
+    the system's own headers, such as a header not found: the
+    environment's), each as one line."""
     try:
         lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return None, None
     tools = None
     for k, line in enumerate(lines):
-        if _COMPILER_ERROR.search(line):
+        if _COMPILER_ERROR.search(line) and staging.name in line:
             # A source file's path is the staging directory's, gone by now.
             return re.sub(r"^\S*/(?=[^/\s]+:\d+)", "", line.strip())[:300], None
         if tools is None and (line.startswith("CMake Error") or "error:" in line.lower()):
@@ -743,7 +745,7 @@ def build_engine(amici: Any, sbml: str) -> Engine | str:
                     raise
         except Exception as e:  # noqa: BLE001 - AMICI's failure is not bngsim's
             why = f"AMICI could not build it: {type(e).__name__}: {_first_line(e)[:200]}"
-            compiler, tools = _build_errors(log)
+            compiler, tools = _build_errors(log, staging)
             if compiler:
                 why = f"AMICI could not build it: its generated C++ did not compile ({compiler})"
                 # The model's own failure, which no change here mends: kept,
