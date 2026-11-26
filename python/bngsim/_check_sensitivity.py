@@ -28,14 +28,15 @@ the two.
   named: its move past that many floors is read on the largest peak of its
   column, so its noise near zero is no finding and a departure as large as the
   column's own values is one. A series past the bound whose move from rtol/10
-  to rtol/100, and from rtol/100 to rtol/1000, is each at least
-  :data:`FLOOR_SHARE` of its move at rtol/10 is taken to be held by a floor
-  (issue #177) and not the tolerance: an error that shrinks slowly, or not at
-  first, still shrinks over the second decade (issue #1962). It is named
-  (``n_floor_held``), not failed: its move is read on its column's largest
-  peak, and the quotient check allows it ten times that move. An error in such a series
-  that does not shrink with the tolerance, and is small beside its column's
-  peak, therefore passes both checks; the name is the only sign of it.
+  to rtol/100 is at least :data:`FLOOR_SHARE` of its move at rtol/10, and
+  whose move is within :data:`bngsim._check.TRACE_ATOLS` of its floor, is
+  taken to be held by a floor (issue #177) and not the tolerance; a larger
+  move is the tolerance's, however it shrinks (issue #1962). Such a series is
+  named (``n_floor_held``), not failed: its move is read on its column's
+  largest peak, and the quotient check allows it ten times that move. An error
+  in such a series that is a few of its floors therefore passes both checks;
+  the name is the only sign of it. No model is known that has one: the tests
+  make one.
 - ``"sensitivity_fd"``: a central difference quotient. Each ``θ`` is moved by
   :data:`FD_STEP` of its value, and by twice that, both ways (an initial
   amount through the start state, a parameter through
@@ -132,9 +133,9 @@ FD_RESOLVED = 0.05
 #: and kink terms are both back under this share of :data:`FD_RESOLVED`.
 FD_CLEAR = 0.01
 #: A series past the bound whose move between the hundredfold and the tenfold
-#: tighter runs, and between the thousandfold and the hundredfold ones, is at
-#: least this share of its move at the tenfold one is held by a floor, not the
-#: tolerance (:func:`_floor_held`).
+#: tighter runs is at least this share of its move at the tenfold one, and
+#: whose move is within :data:`bngsim._check.TRACE_ATOLS` of its floor, is held
+#: by a floor, not the tolerance (:func:`_floor_held`).
 FLOOR_SHARE = 0.5
 #: How many times its error over its step a quotient may be off by: each of
 #: its runs errs by about the run's own drift (or spread) scaled to the
@@ -395,9 +396,8 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
         return _verdict(
             name,
             "timeout",
-            note="the budget ran out at rtol/100 or rtol/1000, while telling a floor the "
-            "arithmetic sets from the tolerance in the series that move past the bound at "
-            "rtol/10",
+            note="the budget ran out at rtol/100, while telling a floor the arithmetic sets "
+            "from the tolerance in the series that move past the bound at rtol/10",
             changed=changed,
         )
     live = ~cols.refused.reshape(-1)
@@ -418,9 +418,9 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
     n_held = int(held.sum())
     if n_held:
         note += (
-            f"; {n_held} series moving at least half as far at rtol/100, and again at "
-            "rtol/1000, as at rtol/10, taken to be held by a floor and not the tolerance, "
-            "judged on their column's largest peak"
+            f"; {n_held} series moving at least half as far at rtol/100 as at rtol/10, by "
+            f"at most {TRACE_ATOLS:g} times their floor, taken to be held by a floor and not "
+            "the tolerance, judged on their column's largest peak"
         )
     n_refused = int((~live).sum())
     if n_refused:
@@ -447,23 +447,33 @@ def _floor_held(
     d10: NDArray[np.float64],
     candidates: NDArray[np.bool_],
 ) -> NDArray[np.bool_]:
-    """The series past the bound that a floor holds, not the tolerance: those
-    whose move does not shrink over two more decades of tolerance. A move the
-    tolerance sets shrinks with it; the floor the solver's arithmetic sets under
-    a sensitivity's error (issue #177) does not. So a series is held where it
-    moves between the hundredfold and the tenfold tighter runs by at least
-    :data:`FLOOR_SHARE` of its move at the tenfold one, and between the
-    thousandfold and the hundredfold ones by as much again.
+    """The series past the bound that a floor holds, not the tolerance. Both
+    of two signs are needed:
 
-    The second decade is what tells a floor from an error that shrinks slowly,
-    or not at first and then fast: issue #1962's series move 1.7 times as far at
-    rtol/100 as at rtol/10, and 0.06 times as far at rtol/1000. Where the
-    thousandfold run would be below :data:`FD_RTOL_LEAST`, as tight as it is
-    made at the double's precision, the first decade decides. The runs are made
-    only where a series is past the bound, the hundredfold from the tolerance
-    check's where it made one."""
+    - The move is about the size of a floor: within :data:`TRACE_ATOLS` of
+      the floor the solver held the series to (its sensitivity atol, or its
+      column's roundoff, ``eps`` times the column's largest entry, where that
+      is larger), as a series within that many floors of zero is not resolved.
+    - The move does not shrink with the tolerance: between the hundredfold
+      and the tenfold tighter runs the series moves by at least
+      :data:`FLOOR_SHARE` of its move at the tenfold one. A move the
+      tolerance sets shrinks about tenfold from one to the next; the floor the
+      solver's arithmetic sets under a sensitivity's error (issue #177) does
+      not shrink with the tolerance at all.
+
+    The second sign alone cannot tell a floor from an error that shrinks
+    slowly, or not at first and then fast (issue #1962): BIOMD0000000810's
+    ``dType_I_T_helper_Cell_T_H1/dgamma_C`` at rtol 1e-7 moves 1.7 times as
+    far at rtol/100 as at rtol/10, and is 2.6% off; its move is 4e9 times its
+    floor. A floor the solver raises during the run past that many of the
+    floor it set (issue #177's) is therefore not told from the tolerance, and
+    its move is judged on the series' own peak. The hundredfold run is made only
+    where a series has both of the other marks, from the tolerance check's
+    where it made one."""
     out = np.zeros(move.shape, dtype=bool)
     over = candidates & np.isfinite(move) & (move > TOLERANCE_MOVE)
+    if over.any():
+        over &= d10 <= TRACE_ATOLS * cols.atol.reshape(-1)
     if not over.any():
         return out
     if ctx.tight100 is None:
@@ -478,25 +488,7 @@ def _floor_held(
         d, _ = differences(cols.flat(_block(ctx.tight100)), cols.flat(_block(ctx.tight)))
     except ValueError:
         return out
-    held = over & np.isfinite(d) & (d >= FLOOR_SHARE * d10)
-    if not held.any():
-        return held
-    assert ctx.rtol is not None
-    by = float(ctx.rtol) / max(float(ctx.rtol) / 1000.0, FD_RTOL_LEAST)
-    if by <= 100.0:
-        return held
-    if ctx.tight1000 is None:
-        try:
-            ctx.tight1000 = ctx.rerun(**ctx._tighter(by))
-        except _Out:
-            raise
-        except Exception:  # noqa: BLE001 - no floor is told apart: the move stands
-            return out
-    try:
-        d3, _ = differences(cols.flat(_block(ctx.tight1000)), cols.flat(_block(ctx.tight100)))
-    except ValueError:
-        return out
-    return held & np.isfinite(d3) & (d3 >= FLOOR_SHARE * d10)
+    return over & np.isfinite(d) & (d >= FLOOR_SHARE * d10)
 
 
 def _too_wide(start: NDArray[np.bool_], clear: NDArray[np.bool_]) -> NDArray[np.bool_]:

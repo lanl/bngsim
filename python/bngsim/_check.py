@@ -602,9 +602,6 @@ class _Context:
         # judge their sensitivities (issue #1893).
         self.tight: Result | None = None
         self.tight100: Result | None = None
-        # The thousandfold run, made only to tell a floor from a slow
-        # convergence in the sensitivity check (issue #1962).
-        self.tight1000: Result | None = None
         self.loose: Result | None = None
         # The sensitivity checks' columns and their drift, made once.
         self.sens_columns: Any = None

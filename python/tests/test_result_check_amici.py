@@ -972,8 +972,7 @@ def test_a_budget_spent_before_the_tighter_run_says_so(monkeypatch, engine):
 def _off_by_tolerance(monkeypatch, offsets, row=None, *, states=False):
     """Every bngsim solve's dA/dk (or one series of it; or with *states* one
     species' state) off by *offsets*: ``(at the run's rtol, at a tenth, at a
-    hundredth[, at a thousandth])``, the looser run as the run, and a run
-    tighter than the last given as that one. *offsets* may be a dict of a row
+    hundredth)``, the looser run as the run. *offsets* may be a dict of a row
     to its offsets."""
     real = Simulator.run
     base = _decay().record["run"]["rtol"]
@@ -984,15 +983,15 @@ def _off_by_tolerance(monkeypatch, offsets, row=None, *, states=False):
         if not len(out._sensitivity_params):
             return out
         rtol = kw.get("rtol") or base
-        level = sum(rtol <= base / f for f in (5, 50, 500))
+        level = 0 if rtol > base / 5 else (1 if rtol > base / 50 else 2)
         for i, offs in by_row.items():
             if states:
                 out = copy.copy(out)
                 x = np.asarray(out._species, dtype=float).copy()
-                x[:, i] *= 1 + offs[min(level, len(offs) - 1)]
+                x[:, i] *= 1 + offs[level]
                 out._species = x
             else:
-                out = _scaled(out, 0, 1 + offs[min(level, len(offs) - 1)], row=i)
+                out = _scaled(out, 0, 1 + offs[level], row=i)
         return out
 
     monkeypatch.setattr(Simulator, "run", run)
@@ -1170,16 +1169,17 @@ def test_a_series_amici_converges_keeps_its_reference_beside_one_that_goes_deepe
 
 def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, engine):
     # dB/dk off by +2e-3 of its peak at the run's tolerance, -2e-3 a decade
-    # tighter, +2e-3 two and -2e-3 three: an error that does not shrink, which
-    # the tolerance tier takes for a floor's and passes, as the quotient does.
+    # tighter and +2e-3 two: an error that does not shrink, and at A = 1e12
+    # 18 of dB/dk's floor (the column's roundoff), which the tolerance tier
+    # takes for a floor's and passes, as the quotient does.
     path = _write_sbml(
         tmp_path / "two.xml",
-        species=[("A", 1000.0, False), ("B", 1.0, False)],
+        species=[("A", 1e12, False), ("B", 1.0, False)],
         params={"k": K0},
         reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
     )
-    engine(_ClosedForm({"A": 1000.0, "B": 1.0}))
-    _off_by_tolerance(monkeypatch, (2e-3, -2e-3, 2e-3, -2e-3), row=1)
+    engine(_ClosedForm({"A": 1e12, "B": 1.0}))
+    _off_by_tolerance(monkeypatch, (2e-3, -2e-3, 2e-3), row=1)
     by = _by_name(_decay(path).check(["sensitivity", NAME]))
     assert by["sensitivity"]["status"] == "pass" and by["sensitivity"]["n_floor_held"] == 1
     v = by[NAME]
@@ -1190,7 +1190,7 @@ def test_a_series_a_floor_holds_is_judged_with_its_move(tmp_path, monkeypatch, e
     def amici_moves_b(*offs):
         """AMICI's dB/dk off by *offs* at the run's tolerance, a tenth and a
         hundredth of it."""
-        fake = _ClosedForm({"A": 1000.0, "B": 1.0})
+        fake = _ClosedForm({"A": 1e12, "B": 1.0})
 
         def edit(x, sx):
             sx = sx.copy()
@@ -1726,7 +1726,7 @@ def test_a_series_not_converged_at_the_runs_tolerance_gets_no_drift(tmp_path, mo
     assert "disagree on this model's trajectory" in rep["next"]
 
 
-def test_a_budget_spent_on_bngsims_reruns_builds_nothing(monkeypatch, engine):
+def test_a_budget_spent_on_bngsims_reruns_builds_nothing(tmp_path, monkeypatch, engine):
     real = _check._Context._ensure_spread
 
     def spread_then_spent(self):
@@ -1739,11 +1739,19 @@ def test_a_budget_spent_on_bngsims_reruns_builds_nothing(monkeypatch, engine):
     monkeypatch.setattr(_check_amici, "build_engine", lambda amici, sbml: built.append(sbml))
     v = _verdict(_decay())
     assert v["status"] == "timeout" and built == [], v
-    # The tolerance tier's run at a hundredth, for a series past its bound, is
-    # one of them: the budget it spends leaves no build either.
+    # The tolerance tier's run at a hundredth, for a series past its bound by
+    # about a floor (as in the floor test), is one of them: the budget it
+    # spends leaves no build either.
     monkeypatch.undo()
     monkeypatch.setattr(_check_amici, "_import_amici", lambda: SimpleNamespace())
     monkeypatch.setattr(_check_amici, "build_engine", lambda amici, sbml: built.append(sbml))
+    path = _write_sbml(
+        tmp_path / "two.xml",
+        species=[("A", 1e12, False), ("B", 1.0, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {}), ("J2", ["B"], [], "k*B", {})],
+    )
+    _off_by_tolerance(monkeypatch, (2e-3, -2e-3, 2e-3), row=1)
     real_rerun = _check._Context.rerun
 
     def rerun(self, **changes):
@@ -1752,7 +1760,7 @@ def test_a_budget_spent_on_bngsims_reruns_builds_nothing(monkeypatch, engine):
         return real_rerun(self, **changes)
 
     monkeypatch.setattr(_check._Context, "rerun", rerun)
-    v = _verdict(_scaled(_decay(), 0, 1.01))
+    v = _verdict(_decay(path))
     assert v["status"] == "timeout" and built == [], v
 
 
