@@ -496,6 +496,11 @@ def test_an_sbml_file_is_read_in_the_encoding_it_declares(tmp_path, engine):
         path = _decay_bytes(tmp_path, data)
         v = _verdict(_decay(path))
         assert v["status"] == "pass", v
+    # UTF-16, with its mark: libSBML is handed the text as UTF-8, and told so.
+    utf16 = ('<?xml version="1.0" encoding="UTF-16"?>' + body).encode("utf-16-le")
+    path = _decay_bytes(tmp_path, codecs.BOM_UTF16_LE + utf16)
+    sbml, why = _check_amici._sbml_text(str(path), "sbml", None)
+    assert sbml is not None and _parameter(sbml, "k") == K0, why
     # Bytes that are not text in the encoding declared: a skip that says so.
     path = _decay_bytes(tmp_path, text.encode("utf-8").replace(b"<sbml", b"<!-- \xff -->\n<sbml"))
     sbml, why = _check_amici._sbml_text(str(path), "sbml", None)

@@ -270,33 +270,33 @@ def _sbml_text(path: str, fmt: str, sha256: str | None) -> tuple[str | None, str
         return None, f"Antimony could not read the model again: {_first_line(e)}"
 
 
-_XML_ENCODING = re.compile(rb"""\A\s*<\?xml[^>]*?encoding\s*=\s*["']([A-Za-z0-9._-]+)["']""")
+_XML_ENCODING = re.compile(r"""\A\s*<\?xml[^>]*?encoding\s*=\s*["']([A-Za-z0-9._-]+)["']""")
 
 
 def _xml_text(data: bytes) -> str | None:
     """An XML file's bytes as text, decoded as its byte-order mark or its XML
     declaration says (UTF-8 where neither does), the declaration then naming
     UTF-8, as the text libSBML is handed is; None where they do not decode."""
-    for bom, codec in (
+    codec = None
+    for bom, name in (
         (codecs.BOM_UTF8, "utf-8-sig"),
         (codecs.BOM_UTF16_LE, "utf-16"),
         (codecs.BOM_UTF16_BE, "utf-16"),
     ):
         if data.startswith(bom):
-            try:
-                return data.decode(codec)
-            except UnicodeDecodeError:
-                return None
-    m = _XML_ENCODING.match(data)
-    codec = m.group(1).decode("ascii") if m else "utf-8"
+            codec = name
+            break
+    if codec is None:
+        # With no mark, the declaration is ASCII in any encoding it can name.
+        m = _XML_ENCODING.match(data[:200].decode("latin-1"))
+        codec = m.group(1) if m else "utf-8"
     try:
         text = data.decode(codec)
     except (LookupError, UnicodeDecodeError):
         return None
+    m = _XML_ENCODING.match(text)
     if m:
-        # The declaration is ASCII, so its offsets in the text are its own.
-        start, end = m.span(1)
-        text = text[:start] + "UTF-8" + text[end:]
+        text = text[: m.start(1)] + "UTF-8" + text[m.end(1) :]
     return text
 
 
