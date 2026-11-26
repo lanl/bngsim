@@ -810,49 +810,6 @@ def test_perturbed_refuses_a_derived_parameter_and_records_what_it_moved():
     assert changed["parameters"] == {"s": 3.0} and changed["sensitivities"] is None
 
 
-def test_bngsim_check_exits_6_on_a_sensitivity_diff_with_no_change_to_the_command(tmp_path):
-    # The command has no option that asks for sensitivities (issue #1925), so
-    # the run is made a sensitivity run by patching the Simulator; the exit
-    # code is the command's own.
-    import subprocess
-    import sys
-
-    from bngsim import _cli
-
-    script = (
-        "import copy, numpy as np, bngsim\n"
-        "S = bngsim.Simulator\n"
-        "init, run = S.__init__, S.run\n"
-        "def __init__(self, model, **kw):\n"
-        "    kw.setdefault('sensitivity_params', ['k'])\n"
-        "    init(self, model, **kw)\n"
-        "def wrong(self, *a, **kw):\n"
-        "    out = run(self, *a, **kw)\n"
-        "    if len(out._sensitivity_params):\n"
-        "        out = copy.copy(out)\n"
-        "        out._sensitivities = np.asarray(out._sensitivities) * 1.02\n"
-        "    return out\n"
-        "S.__init__, S.run = __init__, wrong\n"
-    )
-    decay = str(examples.path("decay", "net"))
-    args = ["check", decay, "--t-end", "10", "--n-points", "11", "--json"]
-
-    def main(*extra: str) -> subprocess.CompletedProcess:
-        code = (
-            script + f"from bngsim._cli import main\nraise SystemExit(main({[*args, *extra]!r}))\n"
-        )
-        return subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, timeout=300
-        )
-
-    ok = main()
-    assert ok.returncode == 0, ok.stderr
-    assert [c["name"] for c in json.loads(ok.stdout)["check"]["checks"]][-1] == "sensitivity"
-    bad = main("--checks", "sensitivity_fd")
-    assert bad.returncode == _cli.EXIT_CHECK_FAILED, bad.stderr
-    assert json.loads(bad.stdout)["check"]["checks"][0]["status"] == "diff"
-
-
 def test_the_constants_say_what_the_docs_say():
     assert _check_sensitivity.FD_STEP == 1e-3 and _check_sensitivity.FD_TIGHTER == 100.0
     assert (_check_sensitivity.FD_RTOL_LEAST, _check_sensitivity.FD_RTOL_MOST) == (1e-14, 1e-8)

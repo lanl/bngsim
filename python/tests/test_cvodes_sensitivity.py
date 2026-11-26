@@ -138,10 +138,11 @@ class TestReversibleSensitivity:
 
 class TestInvalidParam:
     def test_invalid_param_raises(self):
+        # When the Simulator is made, not once the run has started (#1925).
         model = bngsim.Model.from_net(_get_simple_decay_net())
-        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["nonexistent_param"])
-        with pytest.raises(Exception, match="nonexistent_param"):
-            sim.run(t_span=(0, 10), n_points=11)
+        with pytest.raises(bngsim.ParameterError, match="nonexistent_param") as e:
+            bngsim.Simulator(model, method="ode", sensitivity_params=["nonexistent_param"])
+        assert e.value.code == "param.not_found"
 
     def test_sensitivity_ssa_raises(self):
         model = bngsim.Model.from_net(_get_simple_decay_net())
