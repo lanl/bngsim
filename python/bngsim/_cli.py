@@ -15,7 +15,9 @@ command             Python call behind it
 ``run MODEL``       ``Simulator(Model.load(MODEL), ...).run(...)``: the
                     run's record and :meth:`~bngsim.Result.digest`, the arrays
                     to ``--out``
-``check MODEL``     the run, then :meth:`~bngsim.Result.check`
+``check MODEL``     the run, then :meth:`~bngsim.Result.check`; with
+                    ``--sensitivity-params`` or ``--sensitivity-ic``, of the
+                    sensitivities too
 ``run-until``       ``Simulator.run_until(T)`` with ``add_stop_condition``: a
                     condition met is an answer, the result it cut
 ``run-batch``       ``Simulator.run_batch(params=ROWS)``, digested as a stack
@@ -295,13 +297,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "one setting changed and say whether the answer moved (Result.check()). "
         "Exits 6 when the check is not ok.",
     )
-    check.add_argument(
-        "--checks",
-        default=None,
-        help="'all', or check names separated by commas (tolerance, grid, jacobian, "
-        "linear_solver, backend, second_engine, replicates); default: the cheap ones for "
-        "the method",
-    )
+    check.add_argument("--checks", default=None, help=_checks_help())
     check.add_argument(
         "--budget",
         type=_seconds,
@@ -313,6 +309,20 @@ def _build_parser() -> argparse.ArgumentParser:
     _SUBPARSERS.clear()
     _SUBPARSERS.update(sub.choices)
     return parser
+
+
+def _checks_help() -> str:
+    """``--checks``' help, made from :mod:`bngsim._check`'s names, so a check
+    added there is listed here without an edit (issue #1925)."""
+    from bngsim import _check
+
+    names = ", ".join((*_check.DETERMINISTIC, *_check.STOCHASTIC, *_check.SENSITIVITY))
+    return (
+        f"'all', or check names separated by commas ({names}); default: the cheap ones "
+        f"for the method ({', '.join(_check.DEFAULT_DETERMINISTIC)} for an ODE run, "
+        f"{', '.join(_check.DEFAULT_STOCHASTIC)} for a stochastic one), and "
+        f"{', '.join(_check.DEFAULT_SENSITIVITY)} too for a run with sensitivities"
+    )
 
 
 #: Each command's parser, by name, as the last parser built holds them: what
@@ -333,6 +343,7 @@ def _run_arguments(p: argparse.ArgumentParser) -> None:
     _window_arguments(p, sample_times=True)
     _set_argument(p)
     _solver_arguments(p)
+    _sensitivity_arguments(p)
     p.add_argument(
         "--steady-state", action="store_true", help="stop the run once it reaches a steady state"
     )
@@ -418,6 +429,37 @@ def _solver_arguments(p: argparse.ArgumentParser, *, seed: bool = True) -> None:
         type=_atol,
         default=None,
         help="absolute tolerance (ode only): a number, 'auto' or 'tracking'",
+    )
+
+
+def _sensitivity_arguments(p: argparse.ArgumentParser) -> None:
+    """Forward sensitivities (issue #1925): Simulator's keywords of the same
+    names, and the digest's ``max_parameters``."""
+    p.add_argument(
+        "--sensitivity-params",
+        type=_names,
+        action="append",
+        default=None,
+        metavar="NAME[,NAME...]",
+        help="compute forward sensitivities to these parameters (Simulator's "
+        "sensitivity_params; ode only); repeatable",
+    )
+    p.add_argument(
+        "--sensitivity-ic",
+        type=_names,
+        action="append",
+        default=None,
+        metavar="SPECIES[,SPECIES...]",
+        help="compute forward sensitivities to these species' initial amounts "
+        "(Simulator's sensitivity_ic; ode only); repeatable. A comma inside "
+        "parentheses, as in R(l,d), is part of the name.",
+    )
+    p.add_argument(
+        "--max-parameters",
+        type=_count,
+        default=None,
+        help="parameters, and initial amounts, each digested column lists (default 5; "
+        "with --sensitivity-params or --sensitivity-ic)",
     )
 
 
@@ -748,6 +790,31 @@ def _floats(text: str) -> list[float]:
     return values
 
 
+def _names(text: str) -> list[str]:
+    """Names separated by commas. A comma inside parentheses is part of a
+    name: a BioNetGen species such as ``R(l,d)`` is one name."""
+    names: list[str] = []
+    depth, start = 0, 0
+    for i, c in enumerate(text):
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth < 0:
+                break
+        elif c == "," and depth == 0:
+            names.append(text[start:i].strip())
+            start = i + 1
+    if depth != 0:
+        raise argparse.ArgumentTypeError(f"unbalanced parentheses in {text!r}")
+    names.append(text[start:].strip())
+    if not all(names):
+        raise argparse.ArgumentTypeError(
+            f"expected names separated by commas, with none empty, not {text!r}"
+        )
+    return names
+
+
 def _positive(text: str, what: str = "a number") -> float:
     try:
         value = float(text)
@@ -988,6 +1055,7 @@ def _validate(args: argparse.Namespace) -> None:
                 _refuse("--sample-times must increase", "--sample-times", value=times)
     if getattr(args, "n_points", None) is not None and args.n_points < 2:
         _refuse("--n-points takes 2 or more", "--n-points")
+    sensitive = has("sensitivity_params") and _validate_sensitivities(args, method)
     if method is not None:
         if method not in _STOCHASTIC_METHODS and args.seed is not None:
             _refuse(f"--seed is a stochastic run's; a {method} run takes none", "--seed")
@@ -1084,8 +1152,40 @@ def _validate(args: argparse.Namespace) -> None:
             if not expression.strip():
                 _refuse("--stop-when takes an expression", "--stop-when", value=expression)
     _validate_out(args)
+    if sensitive and args.out is not None and args.out.lower().endswith((".csv", ".tsv")):
+        _refuse(
+            "a .csv or .tsv holds one kind of column and no sensitivities; write a run "
+            "with sensitivities to .npz or .h5",
+            "--out",
+            value=args.out,
+        )
     if has("set"):
         _parse_sets(args.set)
+
+
+def _validate_sensitivities(args: argparse.Namespace, method: str | None) -> bool:
+    """Flatten ``--sensitivity-params`` and ``--sensitivity-ic`` into the lists
+    Simulator takes, and refuse what a run could not use. Whether the run
+    computes sensitivities."""
+    for flag in ("--sensitivity-params", "--sensitivity-ic"):
+        attr = flag[2:].replace("-", "_")
+        given = getattr(args, attr)
+        if given is None:
+            continue
+        names = [n for item in given for n in (item if isinstance(item, list) else [item])]
+        twice = sorted({n for n in names if names.count(n) > 1})
+        if twice:
+            _refuse(f"{flag} names {', '.join(twice)} more than once", flag, value=names)
+        if method in _STOCHASTIC_METHODS:
+            _refuse(f"{flag} is an ODE run's; a {method} run takes none", flag)
+        setattr(args, attr, names)
+    sensitive = bool(args.sensitivity_params or args.sensitivity_ic)
+    if args.max_parameters is not None and not sensitive:
+        _refuse(
+            "--max-parameters is for a run with --sensitivity-params or --sensitivity-ic",
+            "--max-parameters",
+        )
+    return sensitive
 
 
 def _validate_out(args: argparse.Namespace) -> None:
@@ -1363,7 +1463,11 @@ def _do_run(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         sim_kwargs["xml_path"] = args.xml
     if args.poplevel is not None:
         sim_kwargs["poplevel"] = args.poplevel
-    sim = Simulator(model, **sim_kwargs)
+    for name in ("sensitivity_params", "sensitivity_ic"):
+        if getattr(args, name):
+            sim_kwargs[name] = list(getattr(args, name))
+    with _sensitivity_names_from(args):
+        sim = Simulator(model, **sim_kwargs)
     kw: dict[str, Any] = {"timeout": args.timeout}
     if args.sample_times is not None:
         kw["sample_times"] = args.sample_times
@@ -1387,6 +1491,44 @@ def _do_run(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
     return sim.run(**kw), extra
 
 
+@contextlib.contextmanager
+def _sensitivity_names_from(args: argparse.Namespace) -> Iterator[None]:
+    """A name in ``--sensitivity-params`` or ``--sensitivity-ic`` the model does
+    not have, as the usage error ``--set`` makes of one: Simulator's own
+    refusal, with its close matches, naming the option."""
+    from bngsim._error_codes import pass_argument
+    from bngsim._exceptions import BngsimError, UsageError
+
+    try:
+        yield
+    except BngsimError as error:
+        details = dict(error.details or {})
+        name = details.get("name")
+        for flag, attr, code, other in (
+            ("--sensitivity-params", "sensitivity_params", "param.not_found",
+             ("species", "--sensitivity-ic", "its initial amount")),
+            ("--sensitivity-ic", "sensitivity_ic", "species.not_found",
+             ("parameter", "--sensitivity-params", "it")),
+        ):  # fmt: skip
+            if error.code != code or name not in (getattr(args, attr) or ()):
+                continue
+            message = str(error).removeprefix(f"{attr}: ")
+            remedies = list(error.remedies or [])
+            is_a, other_flag, of_it = other
+            if details.get("is_a") == is_a:
+                # Simulator names its other keyword; the command, its option.
+                message = (
+                    f"{name!r} is a {is_a}: {other_flag} {name} computes sensitivities to {of_it}."
+                )
+                remedies = [pass_argument(other_flag, name)]
+            raise UsageError(
+                f"{flag} {name}: {message}",
+                details={**details, "argument": flag, "value": name},
+                remedies=remedies,
+            ) from error
+        raise
+
+
 def _write_out(result: Any, args: argparse.Namespace) -> str | None:
     if args.out is None:
         return None
@@ -1407,7 +1549,15 @@ def _run_payload(
 ) -> tuple[dict[str, Any], list[str]]:
     from bngsim import _record
 
-    digest = result.digest(species=args.species, max_columns=args.max_columns)
+    sensitive = bool(getattr(args, "sensitivity_params", None)) or bool(
+        getattr(args, "sensitivity_ic", None)
+    )
+    digest_kw: dict[str, Any] = {"species": args.species, "max_columns": args.max_columns}
+    if sensitive:
+        digest_kw["sensitivities"] = True
+        if args.max_parameters is not None:
+            digest_kw["max_parameters"] = args.max_parameters
+    digest = result.digest(**digest_kw)
     out = _write_out(result, args)
     payload = {
         "model": os.path.abspath(args.model),

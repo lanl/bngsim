@@ -33,6 +33,11 @@ print(result.sensitivities[-1, 0, 0])
 `result.sensitivities_observables` holds the same derivatives for the
 observables.
 
+From a shell, `bngsim run model.xml --t-end 10 --sensitivity-params kf,kr`
+makes the same run and prints a digest that ranks the parameters by how much
+they move each column, and `bngsim check` with the same options checks the
+sensitivities too. See [The `bngsim` command](../reference/command-line.md).
+
 What to watch out for:
 
 - **ODE only.** Sensitivities need `method="ode"`.

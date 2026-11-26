@@ -72,6 +72,7 @@ from bngsim._exceptions import (
     ModelError,
     NotFoundError,
     NotSupportedError,
+    ParameterError,
     RoundoffStepWarning,
     ScanDoseWarning,
     SensitivityRefusedDuringRunError,
@@ -1843,9 +1844,11 @@ class Simulator:
                 code="usage.method_unsupported",
                 remedies=[use_method("ode")],
             )
+        self._raise_if_sensitivity_names_are_not_names()
         self._raise_if_compartment_size_params(self._sensitivity_params)
         self._raise_if_folded_at_load_params(self._sensitivity_params)
         self._raise_if_function_backed_params(self._sensitivity_params)
+        self._raise_if_unknown_sensitivity_names(model)
 
         # Forward sensitivity REQUIRES an analytical codegen sensitivity RHS
         # (GH #214 follow-up): the interpreted path finite-differences the whole
@@ -1999,6 +2002,68 @@ class Simulator:
         except AttributeError:  # pragma: no cover - defensive
             return set()
         return internal & set(self._model.function_names)
+
+    def _raise_if_sensitivity_names_are_not_names(self) -> None:
+        """Refuse a ``sensitivity_params`` or ``sensitivity_ic`` that is not a
+        list of names (issue #1925): one name given as a string, which Python
+        reads as a sequence of one-letter names and the engine's binding
+        refused with a raw ``TypeError`` once the run started."""
+        for keyword in ("sensitivity_params", "sensitivity_ic"):
+            names = getattr(self, f"_{keyword}")
+            if isinstance(names, str):
+                raise ArgumentTypeError(
+                    f"{keyword} takes a list of names, not the string {names!r}: "
+                    f"{keyword}=[{names!r}]",
+                    details={"argument": keyword, "value": names},
+                    remedies=[pass_argument(keyword, [names])],
+                )
+            for name in names:
+                if not isinstance(name, str):
+                    raise ArgumentTypeError(
+                        f"{keyword} takes names, not {name!r} of type {type(name).__name__}",
+                        details={"argument": keyword, "value": repr(name)},
+                    )
+
+    def _raise_if_unknown_sensitivity_names(self, model: Any) -> None:
+        """Refuse, as the Simulator is made, a sensitivity name the model does
+        not have (issue #1925), which the engine found only once the run had
+        started and reported as a failed run (``run.failed``). It raises the
+        error ``set_param`` and ``set_concentration`` raise for the name, with
+        its close matches; a species named as a parameter, or a parameter as a
+        species, is pointed at the other keyword. Runs after the refusals of
+        names the model has but cannot differentiate, so theirs come first."""
+        params = set(model._core.param_names)
+        species = set(model.species_names)
+        for keyword, names, known, error, kind, other in (
+            ("sensitivity_params", self._sensitivity_params, params, ParameterError,
+             "parameter", ("species", "sensitivity_ic", "its initial amount")),
+            ("sensitivity_ic", self._sensitivity_ic, species, ModelError,
+             "species", ("parameter", "sensitivity_params", "it")),
+        ):  # fmt: skip
+            for name in names:
+                if name in known:
+                    continue
+                fields = model._not_found(name, kind)
+                is_a, other_keyword, of_it = other
+                if name in (species if kind == "parameter" else params):
+                    raise error(
+                        f"{keyword}: {name!r} is a {is_a}, not a {kind}: "
+                        f"{other_keyword}=[{name!r}] computes sensitivities to {of_it}.",
+                        code=fields["code"],
+                        details={"name": name, "close_matches": [], "is_a": is_a},
+                        remedies=[pass_argument(other_keyword, [name])],
+                    )
+                close = fields["details"]["close_matches"]
+                if close and fields["details"]["is_a"] is None:
+                    text = (
+                        f"{kind.capitalize()} {name!r} not found in model. Close matches: "
+                        f"{_foreign_names.quote_list(close)}."
+                    )
+                elif kind == "parameter":
+                    text = model._parameter_not_found(name)
+                else:
+                    text = model._species_not_found(name)
+                raise error(f"{keyword}: {text}", **fields)
 
     def _raise_if_function_backed_params(self, param_names: list[str]) -> None:
         """Refuse a forward-sensitivity column for a **function's backing slot** (#329).
