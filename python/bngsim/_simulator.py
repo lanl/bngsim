@@ -13459,10 +13459,11 @@ def _sensitivity_names_arg(keyword: str, names: object) -> list[str]:
     if names is None:
         return []
     if isinstance(names, str):
+        name = str(names)  # a NumPy string prints as np.str_('k')
         raise ArgumentTypeError(
-            f"{keyword} takes a list of names, not the string {names!r}: {keyword}=[{names!r}]",
-            details={"argument": keyword, "value": names},
-            remedies=[pass_argument(keyword, [names])],
+            f"{keyword} takes a list of names, not the string {name!r}: {keyword}=[{name!r}]",
+            details={"argument": keyword, "value": name},
+            remedies=[pass_argument(keyword, [name])],
         )
     if isinstance(names, bytes | dict) or not isinstance(names, Iterable):
         raise ArgumentTypeError(

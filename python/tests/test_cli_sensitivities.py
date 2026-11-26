@@ -663,3 +663,12 @@ def test_an_error_inside_a_generator_of_names_is_its_own():
     with pytest.raises(TypeError, match="the caller's own") as e:
         Simulator(Model.load(CHAIN), sensitivity_params=names())
     assert not isinstance(e.value, ArgumentTypeError)
+
+
+def test_a_numpy_string_is_refused_in_plain_words():
+    with pytest.raises(ArgumentTypeError) as e:
+        Simulator(Model.load(CHAIN), sensitivity_params=np.str_("k1"))
+    assert "sensitivity_params=['k1']" in str(e.value)
+    assert e.value.remedies == [
+        {"kind": "pass_argument", "argument": "sensitivity_params", "value": ["k1"]}
+    ]
