@@ -3519,10 +3519,14 @@ class Result:
               moves by at most 1e-3 of that peak to either run: an error about
               the same at ``rtol`` and ``rtol/10`` moves little between them,
               and is seen at ``rtol/100``. The verdict gives both moves
-              (``value_10``, ``value_100``); a ``budget=`` that runs out
-              before the run at ``rtol/100`` makes it a ``timeout``, and where
-              that run raises, the move to ``rtol/10`` is judged alone and the
-              note says so. A series within 100 of
+              (``value_10``, ``value_100``; ``value_100`` is ``None`` where
+              that run raised or a move is not finite, and the note says
+              which); a ``budget=`` that runs out before the run at
+              ``rtol/100`` makes it a ``timeout``, and where that run raises,
+              the move to ``rtol/10`` is judged alone. The other sensitivity
+              checks read the run at ``rtol/100`` where it was made, and
+              ``"sensitivity_second_engine"`` judges a series' convergence on
+              its move to ``rtol/10`` alone. A series within 100 of
               those tolerances of zero is not resolved by the run, named in
               the verdict's ``not_resolved``, and judged on its column's
               largest peak. A series past the bound whose move from
