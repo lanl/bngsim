@@ -19,19 +19,22 @@ Antimony model, unchanged since its load and read from a file whose bytes are
 still the ones bngsim read, run from its initial state at the file's own
 parameters, over a plain ``t_span``. ``budget=`` bounds bngsim's reruns, not
 AMICI's build (about 15 s cold for a small model, minutes for a large one) or
-its run; a build is cached under ``~/.cache/bngsim/amici`` (or
-``$BNGSIM_AMICI_CACHE_DIR``), keyed by the SBML text and the AMICI install.
+its runs; a build is cached under ``~/.cache/bngsim/amici`` (or
+``$BNGSIM_AMICI_CACHE_DIR``), keyed by the SBML text and the AMICI install,
+about 4 MB a model, and nothing prunes it (``bngsim-cache`` manages the codegen
+cache only): remove the directory to clear it.
 
 **What is carried over from ``parity_checks/amici_parity``**, which the wheel
 cannot import, and only what the check needs:
 
 - *Parameters.* bngsim names a reaction's local parameter
-  ``_lp_<reaction>_<id>``; AMICI names it ``<reaction>_<id>``. AMICI's free
-  parameter set is authoritative: a parameter an initial assignment or a rule
-  sets is an expression to AMICI, with no column, and its column is not judged
-  (bngsim's is then a partial derivative; a parameter that reads it gets the
-  whole chain in both engines). Scaling is pinned to none, so AMICI's
-  ``dx/dp`` is compared, not its ``dx/d ln p``.
+  ``_lp_<reaction>_<id>``; AMICI names it ``<reaction>_<id>``, unless the file
+  has a global parameter of that id, which keeps the name (neither column is
+  then judged). AMICI's free parameter set is authoritative: a parameter an
+  initial assignment or a rule sets is an expression to AMICI, with no column,
+  and its column is not judged (bngsim's is then a partial derivative; a
+  parameter that reads it gets the whole chain in both engines). Scaling is
+  pinned to none, so AMICI's ``dx/dp`` is compared, not its ``dx/d ln p``.
 - *Ids.* AMICI renames an id that collides with a symbol of its own (``k``,
   ``p``, ``x``) to ``amici_<id>``. The prefix is undone only where the file has
   no element of that id itself, and an id that two of AMICI's would map to is
@@ -76,13 +79,25 @@ tolerance) as its drift. A series that neither engine resolves (within
 :data:`bngsim._check.TRACE_ATOLS` of its tolerance of zero in both) is held
 to its column's whole scale too, so the two engines' noise there is no
 finding. One the run gives as 0 where AMICI does not is resolved, on AMICI's
-peak, and its move at the tighter tolerance is read on that peak as well. A
-series not converged at the run's tolerance is judged on its own scale with no
-drift, which would forgive its own error, as the quotient check judges it (a
-diff in such series alone is ``diff_not_converged``, which ``next`` reads as
-the tolerance's). The states AMICI
-integrates are compared too, species by species, as every path is
-(:meth:`bngsim._check._Context.compare_x`): sensitivities about two different
+peak. A series converges where its move at the tighter tolerance is at most
+:data:`bngsim._check.TOLERANCE_MOVE` of that peak, read on its own scale (the
+tolerance tier reads a series it does not resolve, or takes to be held by a
+floor, on its column's); one that does not is judged with no drift of its own,
+which would forgive its own error, as the quotient check judges it.
+
+AMICI runs twice, at the run's tolerance and at a tenth of it (its build is
+cached, so the second costs a run). The tighter run is the reference, and the
+move between the two is added to every series' and species' drift: it is how
+far a correct engine strays at the run's tolerance, which bngsim's own move can
+understate (BIOMD0000000810 at rtol 1e-7: both engines a few 1e-5 of a
+series' peak from the solution, apart by 2e-4, and in agreement once
+converged). A disagreement that bngsim's own run at a tenth of the tolerance
+shows at most :data:`SHRINK` as large, or that is in series not converged, is
+the tolerance's: the verdict is still ``diff``, with ``diff_not_converged``,
+which ``next`` reads as the tolerance's, not the reading's. The states AMICI
+integrates are compared too, species by species, on every path's rule
+(:func:`bngsim._check.path_margins`, as :meth:`bngsim._check._Context.compare_x`
+uses it): sensitivities about two different
 trajectories say nothing, and a disagreement there is reported as one about
 the trajectory (``state_diff``). AMICI runs at the run's ``rtol``, at the
 smallest of the compared species' atols for the states, and for the
@@ -145,10 +160,20 @@ NAME = "sensitivity_second_engine"
 #: holds the two equal). A report against any other install says so.
 PINNED_COMMIT = "7fb8c571ac9e4d5aafb85d5da08982ea7c5a19dc"
 
-#: AMICI's step limit for the run: CVODES' hard ceiling there, where bngsim's
-#: ``max_steps`` is a batch it resumes from. The parity suite's sensitivity
-#: budget, measured on its corpus (``_amici_sens.DEFAULT_SENS_MAX_STEPS``).
-MAX_STEPS = 100_000
+#: AMICI's step limit for a run: a budget over the whole run there (CVODES'
+#: ``mxstep`` as AMICI counts it), where bngsim's ``max_steps`` is a batch it
+#: resumes from. Ten times the parity suite's sensitivity budget
+#: (``_amici_sens.DEFAULT_SENS_MAX_STEPS``), as the reference run is at a tenth
+#: of the run's tolerance: a harmonic oscillator over 500 periods at rtol 1e-9
+#: runs out of 100,000 at t = 983 of 1000, and takes 0.2 s with this many. A
+#: model AMICI cannot integrate pays the whole budget before it gives up.
+MAX_STEPS = 1_000_000
+
+#: A disagreement with AMICI is the tolerance's where bngsim's run at a tenth
+#: of the tolerance is at most this share as far from AMICI's tighter run as
+#: the run is (:func:`_shrinks`): tolerance error shrinks about tenfold, and a
+#: model read two ways differs as much at any tolerance.
+SHRINK = 0.5
 
 #: bngsim's prefix for a reaction's local parameter.
 LOCAL_PREFIX = "_lp_"
@@ -313,6 +338,20 @@ def _element_ids(doc: Any) -> set[str]:
             local = list(law.getListOfLocalParameters()) + list(law.getListOfParameters())
             ids.update(f"{r.getId()}_{p.getId()}" for p in local)
     return ids
+
+
+def parameter_ids(model: Any) -> tuple[set[str], set[str]]:
+    """The file's global parameter ids, and its local parameters as
+    ``<reaction>_<id>``: where a name is in both, AMICI gives the global the
+    name and the local another, so neither is matched by name."""
+    globals_ = {p.getId() for p in model.getListOfParameters()}
+    locals_: set[str] = set()
+    for r in model.getListOfReactions():
+        if r.isSetKineticLaw():
+            law = r.getKineticLaw()
+            local = list(law.getListOfLocalParameters()) + list(law.getListOfParameters())
+            locals_.update(f"{r.getId()}_{q.getId()}" for q in local)
+    return globals_, locals_
 
 
 def amici_ids(raw: list[str], file_ids: set[str]) -> list[str | None]:
@@ -684,10 +723,20 @@ def check(ctx: _Context) -> dict[str, Any]:
     for ic in cols.ics:
         not_judged[ic] = "an initial amount: AMICI gives sensitivities to parameters only"
     by_file = bngsim_ids(cols.params)
-    wanted = [j for j in range(n_par) if by_file[j] is not None]
+    globals_, locals_ = parameter_ids(doc.getModel())
+    wanted = []
     for j in range(n_par):
-        if by_file[j] is None:
-            not_judged[cols.params[j]] = "another of the run's parameters has its id in the file"
+        name, sid = cols.params[j], by_file[j]
+        if sid is None:
+            not_judged[name] = "another of the run's parameters has its id in the file"
+        elif name.startswith(LOCAL_PREFIX) and sid in globals_:
+            not_judged[name] = (
+                f"the file has a global parameter {sid} as well, the name AMICI gives that one"
+            )
+        elif not name.startswith(LOCAL_PREFIX) and sid in locals_:
+            not_judged[name] = "a reaction's local parameter has its name in AMICI's naming too"
+        else:
+            wanted.append(j)
     if not wanted:
         first = next(iter(not_judged.items()))
         return _verdict(NAME, "skip", note=f"no column AMICI can give ({first[0]}: {first[1]})")
@@ -787,7 +836,7 @@ def compare(
     for i, s in enumerate(cols.species):
         k = state_of.get(s)
         if k is None:
-            species_not_compared[s] = "AMICI integrates no state for it"
+            species_not_compared[s] = "no state of AMICI's has its name"
             continue
         size = 1.0
         if s in amounts:
@@ -832,50 +881,65 @@ def compare(
     if atol_sens is None:
         atol_sens = atol
     times = np.asarray(ctx.result._time, dtype=float)
-    failure, x_am, sx_am = engine.simulate(
-        am_ids,
-        float(ctx.run.get("t_start", times[0] if times.size else 0.0)),
-        times,
-        rtol=rtol,
-        atol=atol,
-        atol_sens=atol_sens,
-        method=str(ctx.run.get("sensitivity_method") or "staggered"),
-    )
-    if failure:
-        return _verdict(NAME, "skip", note=f"AMICI could not run it: {failure}", changed=changed)
+    t0 = float(ctx.run.get("t_start", times[0] if times.size else 0.0))
+    method = str(ctx.run.get("sensitivity_method") or "staggered")
     n_t = times.size
-    if x_am.shape[0] != n_t or sx_am.shape[:2] != (n_t, len(engine.state_ids)):
-        return _verdict(
-            NAME,
-            "skip",
-            note=f"AMICI returned {x_am.shape} states and {sx_am.shape} sensitivities for "
-            f"{n_t} times",
-            changed=changed,
+    # AMICI at the run's tolerance and at a tenth of it: the tighter run is
+    # the reference, and the move between the two is how far a correct engine
+    # strays at the run's tolerance, which bngsim's own drift can understate.
+    answers: list[tuple[NDArray[np.float64], NDArray[np.float64]]] = []
+    for by in (1.0, 10.0):
+        failure, x_am, sx_am = engine.simulate(
+            am_ids,
+            t0,
+            times,
+            rtol=rtol / by,
+            atol=atol / by,
+            atol_sens=atol_sens / by,
+            method=method,
         )
+        at = "" if by == 1.0 else " at a tenth of the run's tolerance"
+        if failure:
+            return _verdict(
+                NAME, "skip", note=f"AMICI could not run it{at}: {failure}", changed=changed
+            )
+        if x_am.shape[0] != n_t or sx_am.shape[:2] != (n_t, len(engine.state_ids)):
+            return _verdict(
+                NAME,
+                "skip",
+                note=f"AMICI returned {x_am.shape} states and {sx_am.shape} sensitivities for "
+                f"{n_t} times{at}",
+                changed=changed,
+            )
+        answers.append((x_am, sx_am))
 
     # bngsim's own values where AMICI gives none, so nothing else differs.
     x = np.asarray(ctx.result._species, dtype=float)
-    x_cmp = x.copy()
-    S_cmp = np.array(cols.S, dtype=float, copy=True)
     compared = np.zeros((n_sp, n_cols), dtype=bool)
-    for i, (k, size) in rows.items():
-        x_cmp[:, i] = x_am[:, k] / size
-        for c, j in enumerate(use):
-            if not cols.refused[i, j]:
-                S_cmp[:, i, j] = sx_am[:, k, c] / size
-                compared[i, j] = True
+    filled: list[tuple[NDArray[np.float64], NDArray[np.float64]]] = []
+    for x_am, sx_am in answers:
+        x_cmp = x.copy()
+        S_cmp = np.array(cols.S, dtype=float, copy=True)
+        for i, (k, size) in rows.items():
+            x_cmp[:, i] = x_am[:, k] / size
+            for c, j in enumerate(use):
+                if not cols.refused[i, j]:
+                    S_cmp[:, i, j] = sx_am[:, k, c] / size
+                    compared[i, j] = True
+        filled.append((x_cmp, S_cmp))
     live = compared & ~cols.refused
-    seen = np.concatenate([x_cmp[:, sorted(rows)].ravel(), S_cmp[:, live].ravel()])
-    if not np.isfinite(seen).all():
-        return _verdict(
-            NAME, "skip", note="AMICI returned values that are not finite", changed=changed
-        )
+    for x_cmp, S_cmp in filled:
+        seen = np.concatenate([x_cmp[:, sorted(rows)].ravel(), S_cmp[:, live].ravel()])
+        if not np.isfinite(seen).all():
+            return _verdict(
+                NAME, "skip", note="AMICI returned values that are not finite", changed=changed
+            )
     return _judge(
         ctx,
         cols,
         engine,
-        x_cmp,
-        S_cmp,
+        filled[1],
+        filled[0],
         live,
         changed,
         not_judged,
@@ -885,12 +949,21 @@ def compare(
     )
 
 
+def _shrinks(gap: NDArray[np.float64], tight_gap: NDArray[np.float64]) -> NDArray[np.bool_]:
+    """Where a disagreement with AMICI is the tolerance's: bngsim's run at a
+    tenth of the tolerance is at most :data:`SHRINK` as far from AMICI's
+    tighter run as the run is. A model read two ways differs as much at any
+    tolerance."""
+    with np.errstate(invalid="ignore"):
+        return np.isfinite(gap) & np.isfinite(tight_gap) & (tight_gap <= SHRINK * gap)
+
+
 def _judge(
     ctx: _Context,
     cols: _Columns,
     engine: Engine,
-    x_cmp: NDArray[np.float64],
-    S_cmp: NDArray[np.float64],
+    reference: tuple[NDArray[np.float64], NDArray[np.float64]],
+    at_tol: tuple[NDArray[np.float64], NDArray[np.float64]],
     judged: NDArray[np.bool_],
     changed: dict[str, Any],
     not_judged: dict[str, str],
@@ -898,24 +971,45 @@ def _judge(
     atol: float,
     atol_sens: float,
 ) -> dict[str, Any]:
-    """The verdict: see the module docstring."""
+    """The verdict: see the module docstring. *reference* is AMICI's run at a
+    tenth of the run's tolerance, *at_tol* its run at the run's, each as
+    ``(states, sensitivities)`` on bngsim's species, bngsim's own values where
+    AMICI gives none."""
     n_sp, n_cols = cols.atol.shape
-    move_flat, keep_flat, d10_flat, _ = _check_sensitivity._tier1(ctx, cols)
-    move = np.asarray(move_flat, dtype=float).reshape(n_sp, n_cols)
-    keep = np.asarray(keep_flat, dtype=bool).reshape(n_sp, n_cols)
+    x_cmp, S_cmp = reference
+    x_at, S_at = at_tol
+    _, _, d10_flat, _ = _check_sensitivity._tier1(ctx, cols)
     d10 = np.asarray(d10_flat, dtype=float).reshape(n_sp, n_cols)
     S = np.asarray(cols.S, dtype=float)
+    rtol = float(ctx.rtol or 0.0)
+
+    def series_gap(a: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Each series' largest |a - b|, inf where a value of *a* is not finite
+        (a value the run gives as not finite is a finding, whatever AMICI
+        gives; a row the run refuses by design is not judged)."""
+        fa, fb = np.isfinite(a), np.isfinite(b)
+        g = np.where(fa & fb, np.abs(a - b), 0.0).max(axis=0)
+        return np.where(fa.all(axis=0) & fb.all(axis=0), g, np.inf)
+
     fin_b, fin_a = np.isfinite(S), np.isfinite(S_cmp)
     peak = np.maximum(
         np.where(fin_b, np.abs(S), 0.0).max(axis=0),
         np.where(fin_a, np.abs(S_cmp), 0.0).max(axis=0),
     )
-    gap = np.where(fin_b & fin_a, np.abs(S - S_cmp), 0.0).max(axis=0)
-    # A value the run gives as not finite is a finding, whatever AMICI gives
-    # (a row the run refuses by design is not judged).
-    d = np.where(fin_b.all(axis=0) & fin_a.all(axis=0), gap, np.inf)
-    # The series' own drift; none for a series not converged at the run's
-    # tolerance, which would forgive its own error.
+    d = series_gap(S, S_cmp)
+    # Resolved on the larger peak: a series the run gives as 0 where AMICI
+    # does not is judged on AMICI's scale, not taken for noise.
+    resolved = _check.resolved(peak.reshape(-1), cols.atol.reshape(-1), rtol).reshape(n_sp, n_cols)
+    # Converged on the series' own scale (the larger peak): its move at the
+    # tighter tolerance past its floor, over that peak. The tolerance tier
+    # reads a series it does not resolve, and one it takes to be held by a
+    # floor, on its column's largest peak; here such a series would keep its
+    # whole error as drift.
+    move = moves(d10.reshape(-1), peak.reshape(-1), cols.atol.reshape(-1)).reshape(n_sp, n_cols)
+    converged = ~resolved | (move <= TOLERANCE_MOVE)
+    # The series' own drift, or half its move at twice the tolerance; none
+    # for a series not converged, which would forgive its own error. And
+    # AMICI's own move between its two runs, for every series.
     drift = np.where(np.isfinite(d10), d10, 0.0)
     if ctx.loose is not None:
         try:
@@ -924,25 +1018,11 @@ def _judge(
             pass
         else:
             drift = spread(drift.reshape(-1), d_loose, peak.reshape(-1)).reshape(n_sp, n_cols)
-    rtol = float(ctx.rtol or 0.0)
-    # Resolved on the larger peak: a series the run gives as 0 where AMICI
-    # does not is judged on AMICI's scale, not taken for noise. Its move at
-    # the tighter tolerance is then read on that scale too (the tolerance
-    # tier reads it on its column's largest peak), so a run whose whole error
-    # is that series' value does not get it back as drift.
-    resolved = _check.resolved(peak.reshape(-1), cols.atol.reshape(-1), rtol).reshape(n_sp, n_cols)
-    own_move = moves(d10.reshape(-1), peak.reshape(-1), cols.atol.reshape(-1)).reshape(
-        n_sp, n_cols
-    )
-    move = np.where(resolved & ~keep, own_move, move)
-    converged = move <= TOLERANCE_MOVE
     drift = np.where(converged & np.isfinite(drift), drift, 0.0)
+    am_move = series_gap(S_at, S_cmp)
+    drift = np.maximum(drift, np.where(np.isfinite(am_move), am_move, 0.0))
     own = judged & resolved
 
-    # The states, as every path's are judged.
-    state = ctx.compare_x(NAME, x_cmp, changed)
-    if state["status"] == "no_base":
-        return state
     ratio = np.zeros((n_sp, n_cols))
     rel = np.zeros((n_sp, n_cols))
     for j in range(n_cols):
@@ -954,11 +1034,38 @@ def _judge(
         ratio[:, j], rel[:, j] = r, q
     margin = float(ratio.max()) if ratio.size else 0.0
     value = float(rel.max()) if rel.size else 0.0
-    state_diff = state["status"] == "diff"
-    sm = state.get("margin")
-    state_margin = float(sm) if sm is not None else (math.inf if state_diff else 0.0)
+
+    # The states, as every path's are judged (compare_x's rule), with AMICI's
+    # own move as drift too.
+    assert ctx.moved is not None and ctx.drift_abs is not None
+    x_conv = ctx.relevant & (ctx.moved <= TOLERANCE_MOVE)
+    d_x, peak_x = differences(x_cmp, ctx.x)
+    move_x, _ = differences(x_at, x_cmp)
+    drift_x = np.maximum(ctx._ensure_spread(), np.where(np.isfinite(move_x), move_x, 0.0))
+    ratio_x, _ = path_margins(
+        d_x, peak_x, ctx.atols, rtol, drift_x, np.ones(x_conv.shape, dtype=bool), own=x_conv
+    )
+    state_margin = float(ratio_x.max()) if ratio_x.size else 0.0
+    state_diff = state_margin > 1.0
+    state_worst = ctx._worst(ratio_x)
+
+    # A disagreement that bngsim's run at a tenth of the tolerance does not
+    # show is the tolerance's, not the reading's.
     failing = judged & (ratio > 1.0)
-    unconverged_only = bool(failing.any() and not (failing & converged).any() and not state_diff)
+    failing_x = ratio_x > 1.0
+    assert ctx.tight is not None
+    try:
+        tight_S = _check_sensitivity._block(ctx.tight)
+    except ValueError:
+        tight_S = np.full(S.shape, np.nan)
+    shrinks = _shrinks(d, series_gap(tight_S, S_cmp))
+    d_x_tight, _ = differences(ctx._view(ctx.tight), x_cmp)
+    shrinks_x = _shrinks(d_x, d_x_tight)
+    tolerance_only = bool(
+        (failing.any() or failing_x.any())
+        and not (failing & converged & ~shrinks).any()
+        and not (failing_x & x_conv & ~shrinks_x).any()
+    )
     status = "diff" if margin > 1.0 or state_diff else "pass"
     n_judged = int(judged.any(axis=0).sum())
     trace = judged & ~resolved
@@ -970,13 +1077,18 @@ def _judge(
     else:
         head = f"{value:.2e} of a series' scale at most, {_times(margin)} of the allowance"
     note = (
-        f"bngsim's forward sensitivities against {_engine_label(engine)}'s, from the model "
-        f"file: {head}, over {int(judged.sum())} series of {n_judged} of {n_cols} column(s); "
-        f"the states {'disagree' if state_diff else 'agree'}, {_times(state_margin)} of "
-        "their allowance"
+        f"bngsim's forward sensitivities against {_engine_label(engine)}'s at a tenth of the "
+        f"run's tolerance, from the model file: {head}, over {int(judged.sum())} series of "
+        f"{n_judged} of {n_cols} column(s); the states "
+        f"{'disagree' if state_diff else 'agree'}, {_times(state_margin)} of their allowance"
     )
-    if state_diff and state.get("worst_column"):
-        note += f" (most in {state['worst_column']})"
+    if state_diff and state_worst:
+        note += f" (most in {state_worst})"
+    if status == "diff" and tolerance_only:
+        note += (
+            "; each disagreement is one the run at a tenth of the tolerance does not show, or "
+            "in a series not converged at the run's tolerance: the tolerance's, not the reading's"
+        )
     if n_out:
         note += (
             f"; {n_out} series not converged at the run's tolerance, judged with no drift of "
@@ -1025,7 +1137,7 @@ def _judge(
         "state_diff": state_diff,
         "species_not_compared": dict(list(species_not_compared.items())[:MAX_NAMED]),
         "n_not_converged": n_out,
-        "diff_not_converged": unconverged_only,
+        "diff_not_converged": status == "diff" and tolerance_only,
         "n_not_resolved": int(trace.sum()),
         "not_resolved": _check_sensitivity._named(cols, trace)[:MAX_NAMED],
         "n_refused": n_refused,
@@ -1042,5 +1154,5 @@ def _judge(
     }
     worst = _check_sensitivity._worst(cols, score)
     if state_diff and not margin > 1.0:
-        worst = state.get("worst_column")
+        worst = state_worst
     return _verdict(NAME, status, value, note, worst=worst, changed=changed, extra=extra)

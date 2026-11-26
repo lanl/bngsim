@@ -195,14 +195,23 @@ class _ClosedForm:
         self.version, self.commit = "0.0-test", commit
         self.build_seconds, self.cached = 0.0, True
         self.fail, self.edit = fail, edit
-        self.asked: dict = {}
+        self.calls: list[dict] = []
+        #: Added to the sensitivities of the run at the run's own tolerance:
+        #: AMICI's own error there, which its tighter run does not have.
+        self.loose_error = 0.0
+
+    @property
+    def asked(self) -> dict:
+        """The first run's settings: AMICI at the run's tolerance."""
+        return self.calls[0]
 
     def simulate(self, ids, t0, times, *, rtol, atol, atol_sens, method):
-        self.asked = dict(
-            ids=list(ids), t0=t0, rtol=rtol, atol=atol, atol_sens=atol_sens, method=method
+        self.calls.append(
+            dict(ids=list(ids), t0=t0, rtol=rtol, atol=atol, atol_sens=atol_sens, method=method)
         )
-        if self.fail:
-            return self.fail, np.empty((0, 0)), np.empty((0, 0, 0))
+        if self.fail and (self.fail != "tight" or len(self.calls) > 1):
+            failure = "status -1 (AMICI_TOO_MUCH_WORK)" if self.fail == "tight" else self.fail
+            return failure, np.empty((0, 0)), np.empty((0, 0, 0))
         t = np.asarray(times, dtype=float)[:, None]
         x0 = np.asarray([self.x0[s.removeprefix("amici_")] for s in self.state_ids])[None, :]
         x = x0 * np.exp(-self.k * t)
@@ -212,6 +221,8 @@ class _ClosedForm:
                 sx[:, :, c] = -t * x
         if self.edit is not None:
             x, sx = self.edit(x, sx)
+        if len(self.calls) == 1:
+            sx = sx * (1 + self.loose_error)
         return "", x, sx
 
 
@@ -406,6 +417,11 @@ def test_a_closed_form_passes(engine):
     fake = engine(_ClosedForm({"A": A0}))
     _verdict(_decay(sensitivity_method="simultaneous"))
     assert fake.asked["method"] == "simultaneous"
+    # And again at a tenth of the run's tolerance, the reference.
+    (_, tight) = fake.calls
+    assert tight["rtol"] == pytest.approx(fake.asked["rtol"] / 10)
+    assert tight["atol"] == pytest.approx(fake.asked["atol"] / 10)
+    assert tight["atol_sens"] == pytest.approx(fake.asked["atol_sens"] / 10)
     assert rep["ok"] is True
     assert json.loads(json.dumps(rep, allow_nan=False)) == rep
 
@@ -457,6 +473,97 @@ def test_a_small_error_in_every_solve_is_past_the_allowance(monkeypatch, engine)
     assert v["status"] == "diff" and 1.0 < v["margin"] < 10.0, v
     off_by(1 + 1e-5)
     assert _verdict(_decay())["status"] == "pass"
+
+
+def test_amicis_own_move_at_the_runs_tolerance_widens_the_allowance(monkeypatch, engine):
+    # Every bngsim solve off by 1e-4 of dA/dk: past the allowance where AMICI
+    # does not move with the tolerance; within it where AMICI itself moves by
+    # as much between the run's tolerance and a tenth of it, as a correct
+    # engine there may.
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        return _scaled(out, 0, 1 + 1e-4) if len(out._sensitivity_params) else out
+
+    monkeypatch.setattr(Simulator, "run", run)
+    assert _verdict(_decay())["status"] == "diff"
+    fake = engine(_ClosedForm({"A": A0}))
+    fake.loose_error = 1e-4
+    v = _verdict(_decay())
+    assert v["status"] == "pass", v
+    # It widens: it does not forgive a reading off by far more.
+
+    def run_far(self, *a, **kw):
+        out = real(self, *a, **kw)
+        return _scaled(out, 0, 1.01) if len(out._sensitivity_params) else out
+
+    fake = engine(_ClosedForm({"A": A0}))
+    fake.loose_error = 1e-4
+    monkeypatch.setattr(Simulator, "run", run_far)
+    assert _verdict(_decay())["status"] == "diff"
+
+
+def test_a_disagreement_the_tighter_run_does_not_show_is_the_tolerances(engine):
+    # Off in the run alone, by 1%: the tenfold tighter run agrees with AMICI.
+    rep = _scaled(_decay(), 0, 1.01).check([NAME])
+    (v,) = rep["checks"]
+    assert v["status"] == "diff" and v["diff_not_converged"] is True, v
+    assert "the tolerance's, not the reading's" in v["note"]
+    assert "not converged at the run's tolerance" in rep["next"]
+
+
+def test_amici_failing_at_the_tighter_tolerance_is_a_skip(engine):
+    engine(_ClosedForm({"A": A0}, fail="tight"))
+    v = _verdict(_decay())
+    assert v["status"] == "skip" and "at a tenth of the run's tolerance" in v["note"], v
+
+
+def test_amici_starts_where_the_run_starts(engine):
+    model = Model.load(str(examples.path("decay", format="sbml")))
+    r = Simulator(model, method="ode", sensitivity_params=["k"]).run(t_span=(2, 7), n_points=6)
+    fake = engine(_ClosedForm({"A": A0}))
+    _verdict(r)
+    assert fake.asked["t0"] == 2.0 and all(c["t0"] == 2.0 for c in fake.calls)
+
+
+def test_an_antimony_model_is_read_as_its_sbml(engine):
+    pytest.importorskip("antimony")
+    model = Model.load(str(examples.path("decay", format="antimony")))
+    r = Simulator(model, method="ode", sensitivity_params=["k"]).run(t_span=(0, 10), n_points=11)
+    v = _verdict(r)
+    assert v["status"] == "pass", v
+
+
+def test_a_local_parameter_beside_a_global_of_its_amici_name_is_not_judged(tmp_path, engine):
+    # J2's local kl is AMICI's J2_kl, unless the file has a global J2_kl: then
+    # the global keeps the name, and the local is J2_kl_1.
+    path = _write_sbml(
+        tmp_path / "collide.xml",
+        species=[("A", A0, False), ("B", 1.0, False)],
+        params={"k": K0, "J2_kl": 0.7},
+        reactions=[
+            ("J1", ["A"], [], "k*A", {}),
+            ("J2", ["B"], [], "kl*B", {"kl": 0.2}),
+            ("J3", ["B"], [], "J2_kl*B", {}),
+        ],
+    )
+    model = Model.load(str(path))
+    r = Simulator(model, method="ode", sensitivity_params=["_lp_J2_kl"]).run(
+        t_span=(0, 5), n_points=6
+    )
+    engine(_ClosedForm({"A": A0, "B": 1.0}, free={"k": K0, "J2_kl": 0.7, "J2_kl_1": 0.2}))
+    v = _verdict(r)
+    assert v["status"] == "skip" and "no column AMICI can give" in v["note"], v
+    assert "global parameter J2_kl as well" in v["note"]
+    r = Simulator(Model.load(str(path)), method="ode", sensitivity_params=["J2_kl", "k"]).run(
+        t_span=(0, 5), n_points=6
+    )
+    engine(_ClosedForm({"A": A0, "B": 1.0}, free={"amici_k": K0, "J2_kl": 0.7, "J2_kl_1": 0.2}))
+    v = _verdict(r)
+    assert v["not_judged"] == {
+        "J2_kl": "a reaction's local parameter has its name in AMICI's naming too"
+    }, v
 
 
 def test_a_column_the_run_gives_as_zero_is_judged_on_amicis_scale(engine):
@@ -813,7 +920,7 @@ def test_a_species_amici_holds_no_state_for_is_named(tmp_path, engine):
     r = _decay(path)
     v = _verdict(r)
     assert v["status"] == "pass"
-    assert v["species_not_compared"] == {"B": "AMICI integrates no state for it"}
+    assert v["species_not_compared"] == {"B": "no state of AMICI's has its name"}
     assert "1 species not compared" in v["note"]
     # AMICI's tolerances are scalars over every state, compared or not: no
     # looser than the run's smallest, B's here.
@@ -992,7 +1099,7 @@ def test_the_build_cache_is_the_suites_own():
 
 @pytest.fixture(scope="module")
 def _amici():
-    return pytest.importorskip("amici.sim.sundials")
+    return pytest.importorskip("amici.sim.sundials", exc_type=ImportError)
 
 
 def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, monkeypatch, capfd):
@@ -1021,6 +1128,23 @@ def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, mon
     assert s.get_sensitivity_method() == _amici.SensitivityMethod_forward
     s = engine.solver(rtol=1e-7, atol=1e-11, atol_sens=1e-13, method="staggered")
     assert s.get_internal_sensitivity_method() == _amici.InternalSensitivityMethod_staggered
+    # The parameter scale is set to none whatever the model held: dx/dp, not
+    # dx/d ln p.
+    engine.model.set_parameter_scale([_amici.ParameterScaling_ln])
+    failure, x_am, sx_am = engine.simulate(
+        ["amici_k"],
+        0.0,
+        np.linspace(0, 10, 11),
+        rtol=1e-8,
+        atol=1e-10,
+        atol_sens=1e-8,
+        method="staggered",
+    )
+    assert failure == "" and list(engine.model.get_parameter_scale()) == [
+        _amici.ParameterScaling_none
+    ]
+    t = np.linspace(0, 10, 11)
+    assert np.allclose(sx_am[:, 0, 0], -t * A0 * np.exp(-K0 * t), rtol=1e-5, atol=1e-6)
     # The build is kept whole, and the next check reads it.
     assert _verdict(r)["engine"]["cached"] is True
     entries = [p.name for p in Path(_check_amici.CACHE_DIR).iterdir()]
@@ -1043,7 +1167,7 @@ def test_amici_agrees_with_the_closed_form_and_a_shared_defect_fails(_amici, mon
     assert not [rec for rec in printed if rec.levelno >= logging.ERROR], printed
     out, err = capfd.readouterr()
     assert "FORWARD_FAILURE" not in out + err
-    monkeypatch.setattr(_check_amici, "MAX_STEPS", 100_000)
+    monkeypatch.undo()
     # A defect the loader and the sensitivity code share: only AMICI sees it.
     _loader_moves_k_twice(monkeypatch)
     by = _by_name(_decay().check(["sensitivity", "sensitivity_fd", NAME]))

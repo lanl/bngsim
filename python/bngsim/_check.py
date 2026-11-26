@@ -42,9 +42,10 @@ trajectory at once, against the largest value of any species, which a column
 far smaller than the largest cannot fail; this one is per column.
 
 A run that computed forward sensitivities gets checks of them too
-(:data:`SENSITIVITY`, in :mod:`bngsim._check_sensitivity`, issue #1893), each
-judged series by series on the same rules: the tolerance check's run's
-sensitivities, and a difference quotient.
+(:data:`SENSITIVITY`, in :mod:`bngsim._check_sensitivity` and
+:mod:`bngsim._check_amici`, issues #1893 and #1923), each judged series by
+series on the same rules: the tolerance check's run's sensitivities, a
+difference quotient, and AMICI's, where it is installed.
 
 Verdicts: ``pass``, ``diff``, ``skip`` (with the reason), ``unsupported`` (the
 check does not apply to this run), ``exception`` (the changed run raised),
