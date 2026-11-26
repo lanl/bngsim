@@ -94,6 +94,7 @@ reference/api
 reference/expressions
 reference/error-codes
 reference/command-line
+reference/compatibility
 ```
 
 ```{toctree}
