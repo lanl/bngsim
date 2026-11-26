@@ -538,6 +538,51 @@ def test_the_reference_is_amicis_tighter_run(engine):
     assert _verdict(_scaled(_decay(), 0, 2.0))["status"] == "diff"
 
 
+def test_the_states_reference_is_amicis_tighter_run_too(monkeypatch, engine):
+    # bngsim's A off by 1.05% in every solve; AMICI's A off by 0.1% at the
+    # run's tolerance, the same way, and exact at a tenth of it. Against the
+    # tighter run the gap is 1.05 times ten times AMICI's move: a diff.
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = copy.copy(real(self, *a, **kw))
+        out._species = np.asarray(out._species, dtype=float) * (1 + 1.05e-2)
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run)
+    fake = engine(_ClosedForm({"A": A0}))
+    fake.loose_state_error = 1e-3
+    v = _verdict(_decay())
+    assert v["status"] == "diff" and v["state_diff"] is True, v
+    assert 1.0 < v["state_margin"] < 1.1, v
+
+
+def test_a_species_the_run_does_not_resolve_is_judged_on_its_whole_scale(tmp_path, engine):
+    # B is held at 1e-11, within 100 times its atol of zero, which the run
+    # does not resolve: AMICI's B 1e-8 off is past B's own allowance, and no
+    # finding on the run's whole scale.
+    path = _write_sbml(
+        tmp_path / "trace.xml",
+        species=[("A", A0, False), ("B", 1e-11, False)],
+        params={"k": K0},
+        reactions=[("J1", ["A"], [], "k*A", {})],
+    )
+    r = _decay(path)
+    ctx = _check._Context(r, r.record, None)
+    atol_b = float(ctx.atols[1])
+    assert not _check.resolved(np.array([1e-11]), np.array([atol_b]), r.record["run"]["rtol"])[0]
+    assert _check.PATH_ATOL_FACTOR * atol_b < 1e-8
+
+    def off(x, sx):
+        x = x.copy()
+        x[:, 1] = 1e-11 + 1e-8
+        return x, sx
+
+    engine(_ClosedForm({"A": A0, "B": 1e-11}, edit=off))
+    v = _verdict(r)
+    assert v["status"] == "pass" and v["state_diff"] is False, v
+
+
 def test_a_value_amicis_reference_run_gives_as_not_finite_is_a_skip(engine):
     fake = engine(_ClosedForm({"A": A0}))
     fake.nan_in_reference = True
