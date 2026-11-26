@@ -602,10 +602,17 @@ class _Context:
         # judge their sensitivities (issue #1893).
         self.tight: Result | None = None
         self.tight100: Result | None = None
+        # Why the hundredfold run could not be made, where it raised.
+        self.tight100_error = ""
         self.loose: Result | None = None
-        # The sensitivity checks' columns and their drift, made once.
+        # The sensitivity checks' columns and their drift, made once; and each
+        # series' move to the tenfold and the hundredfold runs (issue #1967).
         self.sens_columns: Any = None
         self.sens_drift: Any = None
+        self.sens_moves: Any = None
+        # Whether the budget ran out before the hundredfold run the sensitivity
+        # check judges by (its verdict is then a timeout).
+        self.sens_100_out = False
 
     def _view(self, result: Result) -> NDArray[np.float64]:
         """What is compared of *result*: its species, or of a run that stopped
@@ -833,8 +840,8 @@ class _Context:
             extra["value_100"] = _num(m100.max()) if m100.size else 0.0
         except _Out:
             pass
-        except Exception:  # noqa: BLE001 - the tenfold run decides; this one adds
-            pass
+        except Exception as e:  # noqa: BLE001 - the tenfold run decides; this one adds
+            self.tight100_error = f"{type(e).__name__}: {_first_line(e)}"
         status = "pass" if moved <= TOLERANCE_MOVE else "diff"
         note = (
             f"the answer moves by {moved:.2e} of a column's peak at rtol/10 and atol/10 "

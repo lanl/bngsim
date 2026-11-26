@@ -3510,12 +3510,19 @@ class Result:
               state at the file's parameters. The other checks all read the
               model as bngsim loaded it; only this one does not.
             - ``"sensitivity"``: the forward sensitivities of the tolerance
-              check's run, against this run's (issue #1893). Each series
-              (one species, one parameter or initial amount, over time) is
-              judged on its own peak, past the base absolute tolerance the
-              solver set for it (``atol_i·max(|x_i(0)|, 1)/|θ_j|``; the
-              solver's own roundoff floor can raise it during the run), and passes when
-              it moves by at most 1e-3 of that peak. A series within 100 of
+              check's runs at ``rtol/10`` and ``rtol/100`` (atol alike),
+              against this run's (issues #1893, #1967). Each series (one
+              species, one parameter or initial amount, over time) is judged
+              on its own peak, past the base absolute tolerance the solver set
+              for it (``atol_i·max(|x_i(0)|, 1)/|θ_j|``; the solver's own
+              roundoff floor can raise it during the run), and passes when it
+              moves by at most 1e-3 of that peak to either run: an error about
+              the same at ``rtol`` and ``rtol/10`` moves little between them,
+              and is seen at ``rtol/100``. The verdict gives both moves
+              (``value_10``, ``value_100``); a ``budget=`` that runs out
+              before the run at ``rtol/100`` makes it a ``timeout``, and where
+              that run raises, the move to ``rtol/10`` is judged alone and the
+              note says so. A series within 100 of
               those tolerances of zero is not resolved by the run, named in
               the verdict's ``not_resolved``, and judged on its column's
               largest peak. A series past the bound whose move from
