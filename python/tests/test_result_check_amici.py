@@ -2169,23 +2169,36 @@ def test_the_pin_is_the_parity_suites():
     assert pin["commit"] == _check_amici.PINNED_COMMIT
 
 
-def test_the_version_and_commit_come_from_the_install_record(monkeypatch):
+def _install_record(monkeypatch, where: Path):
+    """AMICI's distribution as one whose PEP 610 record is *where*'s text,
+    or that has none where *where* does not exist."""
     import importlib.metadata as md
+    from pathlib import PurePosixPath
 
-    record = json.dumps({"url": "x", "vcs_info": {"vcs": "git", "commit_id": "abc123"}})
-    dist = SimpleNamespace(read_text=lambda name: record if name == "direct_url.json" else None)
-    monkeypatch.setattr(md, "distribution", lambda name: dist)
+    def files():
+        return [PurePosixPath("amici-1.0.dist-info/direct_url.json")] if where.exists() else []
+
+    dist = SimpleNamespace(locate_file=lambda f: where)
+    monkeypatch.setattr(
+        md, "distribution", lambda name: SimpleNamespace(**vars(dist), files=files())
+    )
+
+
+def test_the_version_and_commit_come_from_the_install_record(monkeypatch, tmp_path):
+    where = tmp_path / "direct_url.json"
+    _install_record(monkeypatch, where)
+    where.write_text(
+        json.dumps({"url": "x", "vcs_info": {"vcs": "git", "commit_id": "abc123"}}),
+        encoding="utf-8",
+    )
     assert _check_amici.amici_version(SimpleNamespace(__version__="9.9")) == ("9.9", "abc123")
-    dist = SimpleNamespace(read_text=lambda name: None)
-    monkeypatch.setattr(md, "distribution", lambda name: dist)
+    where.unlink()
     assert _check_amici.amici_version(SimpleNamespace(__version__="9.9")) == ("9.9", None)
 
 
 def test_an_editable_installs_commit_comes_from_its_checkout(monkeypatch, tmp_path):
     # AMICI_PIN.json's route installs AMICI editable from a checkout, whose
     # record names the source directory and no commit.
-    import importlib.metadata as md
-
     sha, other = "a" * 40, "b" * 40
     repo = tmp_path / "AMICI"
     src = repo / "python" / "sdist"
@@ -2194,9 +2207,11 @@ def test_an_editable_installs_commit_comes_from_its_checkout(monkeypatch, tmp_pa
     (git / "refs" / "heads").mkdir(parents=True)
     (git / "HEAD").write_text("ref: refs/heads/main\n")
     (git / "refs" / "heads" / "main").write_text(sha + "\n")
-    record = json.dumps({"url": src.as_uri(), "dir_info": {"editable": True}})
-    dist = SimpleNamespace(read_text=lambda name: record if name == "direct_url.json" else None)
-    monkeypatch.setattr(md, "distribution", lambda name: dist)
+    where = tmp_path / "direct_url.json"
+    _install_record(monkeypatch, where)
+    where.write_text(
+        json.dumps({"url": src.as_uri(), "dir_info": {"editable": True}}), encoding="utf-8"
+    )
     amici = SimpleNamespace(__version__="1.0.1")
     assert _check_amici.amici_version(amici) == ("1.0.1", sha)
     # A ref packed, a detached HEAD, a worktree's .git file.
@@ -2213,23 +2228,28 @@ def test_an_editable_installs_commit_comes_from_its_checkout(monkeypatch, tmp_pa
     (meta / "commondir").write_text("../..\n")
     (wt / ".git").write_text(f"gitdir: {meta}\n")
     url = (wt / "python" / "sdist").as_uri()
-    record = json.dumps({"url": url, "dir_info": {"editable": True}})
+    where.write_text(json.dumps({"url": url, "dir_info": {"editable": True}}), encoding="utf-8")
     assert _check_amici.amici_version(amici) == ("1.0.1", other)
     # No checkout: no commit.
-    record = json.dumps({"url": (tmp_path / "nowhere").as_uri(), "dir_info": {"editable": True}})
+    where.write_text(
+        json.dumps({"url": (tmp_path / "nowhere").as_uri(), "dir_info": {"editable": True}}),
+        encoding="utf-8",
+    )
     assert _check_amici.amici_version(amici) == ("1.0.1", None)
     # A source tree inside another repository is not AMICI's checkout.
     inner = repo / "vendor" / "amici" / "python" / "sdist"
     inner.mkdir(parents=True)
-    record = json.dumps({"url": inner.as_uri(), "dir_info": {"editable": True}})
+    where.write_text(
+        json.dumps({"url": inner.as_uri(), "dir_info": {"editable": True}}), encoding="utf-8"
+    )
     assert _check_amici.amici_version(amici) == ("1.0.1", None)
     # An install from a local directory, not editable, was built from what the
     # directory held then, which its HEAD now need not be.
-    record = json.dumps({"url": src.as_uri(), "dir_info": {}})
+    where.write_text(json.dumps({"url": src.as_uri(), "dir_info": {}}), encoding="utf-8")
     assert _check_amici.amici_version(amici) == ("1.0.1", None)
     # A .git file that names no gitdir.
     (wt / ".git").write_text("something else\n")
-    record = json.dumps({"url": url, "dir_info": {"editable": True}})
+    where.write_text(json.dumps({"url": url, "dir_info": {"editable": True}}), encoding="utf-8")
     assert _check_amici.amici_version(amici) == ("1.0.1", None)
 
 

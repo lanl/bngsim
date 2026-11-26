@@ -497,7 +497,16 @@ def amici_version(amici: Any) -> tuple[str, str | None]:
     try:
         import importlib.metadata as md
 
-        raw = md.distribution("amici").read_text("direct_url.json")
+        dist = md.distribution("amici")
+        raw = next(
+            (
+                # PEP 610's record is UTF-8 JSON.
+                Path(str(dist.locate_file(f))).read_text(encoding="utf-8")
+                for f in dist.files or ()
+                if f.name == "direct_url.json"
+            ),
+            None,
+        )
         if raw:
             info = json.loads(raw)
             commit = (info.get("vcs_info") or {}).get("commit_id") or None
