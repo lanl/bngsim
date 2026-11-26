@@ -46,6 +46,7 @@ end reactions
 begin groups
     1 Rtot 1
     2 Xtot 2
+    3 Both 1,2
 end groups
 """
 
@@ -144,6 +145,25 @@ def test_the_options_repeat_and_split_only_at_commas_outside_parentheses(tmp_pat
     assert d["digest"] == _plain(r.digest(sensitivities=True))
 
 
+@pytest.mark.parametrize("suffix", [".h5", ".hdf5"])
+def test_out_h5_holds_the_sensitivities(tmp_path, suffix):
+    pytest.importorskip("h5py")
+    from bngsim import Result
+
+    out = tmp_path / f"sens{suffix}"
+    d = _json(
+        _bngsim(
+            "run", CHAIN, *_WINDOW, "--sensitivity-params", "k1", "--out", str(out), "--json"
+        )
+    )  # fmt: skip
+    assert d["out"] == str(out.resolve())
+    back = Result.load(out)
+    assert list(back.sensitivity_params) == ["k1"]
+    np.testing.assert_array_equal(
+        back.sensitivities, _python_run(CHAIN, sensitivity_params=["k1"]).sensitivities
+    )
+
+
 def test_out_npz_holds_the_sensitivities(tmp_path):
     out = tmp_path / "sens.npz"
     d = _json(
@@ -191,9 +211,11 @@ def test_out_npz_holds_the_sensitivities(tmp_path):
         (["check", CHAIN, "--t-end", "1", "--sensitivity-ic", "a"], "--sensitivity-ic",
          "--sensitivity-ic a: Species 'a' not found in model."),
         (["run", CHAIN, "--t-end", "1", "--sensitivity-params", "A"], "--sensitivity-params",
-         "'A' is a species: --sensitivity-ic A computes sensitivities to its initial amount."),
+         "'A' is a species, not a parameter: --sensitivity-ic A computes sensitivities to its "
+         "initial amount."),
         (["run", CHAIN, "--t-end", "1", "--sensitivity-ic", "k1"], "--sensitivity-ic",
-         "'k1' is a parameter: --sensitivity-params k1 computes sensitivities to it."),
+         "'k1' is a parameter, not a species: --sensitivity-params k1 computes sensitivities "
+         "to it."),
     ],
 )  # fmt: skip
 def test_a_wrong_sensitivity_command_line_exits_2(args, argument, says, tmp_path):
@@ -273,6 +295,31 @@ def test_check_of_sensitivities_on_a_run_with_none_is_unsupported_and_exits_6():
     assert verdict["note"] == "the run computed no sensitivities"
 
 
+def test_check_of_sensitivities_out_of_budget_is_a_timeout_and_exits_6():
+    d = _json(
+        _bngsim(
+            "check", CHAIN, *_WINDOW, "--sensitivity-params", "k1", "--checks", "sensitivity",
+            "--budget", "1e-9", "--json",
+        ),
+        _cli.EXIT_CHECK_FAILED,
+    )  # fmt: skip
+    (verdict,) = d["check"]["checks"]
+    assert (verdict["name"], verdict["status"]) == ("sensitivity", "timeout")
+
+
+def test_check_skips_the_difference_quotient_of_a_parameter_at_zero():
+    # A quotient moves a value by a share of itself: none at 0. A skip is
+    # not a finding, so the check is ok.
+    d = _json(
+        _bngsim(
+            "check", CHAIN, *_WINDOW, "--set", "k1=0", "--sensitivity-params", "k1",
+            "--checks", "sensitivity,sensitivity_fd", "--json",
+        )
+    )  # fmt: skip
+    by_name = {c["name"]: c["status"] for c in d["check"]["checks"]}
+    assert by_name == {"sensitivity": "pass", "sensitivity_fd": "skip"}, d["check"]
+
+
 def test_check_all_of_a_sensitivity_run_adds_both_sensitivity_checks():
     d = _json(
         _bngsim(
@@ -320,15 +367,23 @@ def _option_help(command: str, option: str) -> str:
 
 def test_check_help_lists_every_check_by_its_name():
     text = _option_help("check", "--checks")
-    for name in (*_check.DETERMINISTIC, *_check.STOCHASTIC, *_check.SENSITIVITY):
-        assert name in text, (name, text)
-    assert ", ".join(_check.DEFAULT_SENSITIVITY) in text
+    listed = text.split("separated by commas (", 1)[1].split(")", 1)[0].split(", ")
+    assert listed == [*_check.DETERMINISTIC, *_check.STOCHASTIC, *_check.SENSITIVITY]
+    defaults = (
+        f"({', '.join(_check.DEFAULT_DETERMINISTIC)} for an ODE run, "
+        f"{', '.join(_check.DEFAULT_STOCHASTIC)} for a stochastic one), and "
+        f"{', '.join(_check.DEFAULT_SENSITIVITY)} too for a run with sensitivities"
+    )
+    assert defaults in text, text
 
 
 def test_check_help_is_made_from_the_check_tuples(monkeypatch):
     # So a check added to bngsim._check is in --help without an edit here.
     monkeypatch.setattr(_check, "SENSITIVITY", (*_check.SENSITIVITY, "sensitivity_new"))
-    assert "sensitivity_new" in _option_help("check", "--checks")
+    monkeypatch.setattr(_check, "DEFAULT_SENSITIVITY", ("sensitivity_new",))
+    text = _option_help("check", "--checks")
+    assert "sensitivity_fd, sensitivity_new); default" in text
+    assert "and sensitivity_new too for a run with sensitivities" in text
 
 
 def test_the_command_line_page_lists_every_check_by_its_name():
@@ -410,3 +465,76 @@ def test_simulator_takes_the_names_it_took_before():
     assert sim.run(t_span=(0, 1), n_points=2).sensitivities.shape == (2, 3, 2)
     none = Simulator(Model.load(CHAIN), sensitivity_params=[]).run(t_span=(0, 1), n_points=2)
     assert none.sensitivities.shape[-1] == 0
+
+
+def _comma_model(tmp_path) -> str:
+    net = tmp_path / "comma.net"
+    net.write_text(_COMMA_NET)
+    return str(net)
+
+
+@pytest.mark.parametrize(
+    "keyword, name, says, target",
+    [
+        ("sensitivity_params", "X", "'X' is the species 'X()', not a parameter", "X()"),
+        ("sensitivity_params", "Xtot",
+         "'Xtot' is an observable of the one species 'X()', not a parameter", "X()"),
+        ("sensitivity_ic", "Xtot",
+         "'Xtot' is an observable of the one species 'X()', not a species", "X()"),
+    ],
+)  # fmt: skip
+def test_simulator_points_at_the_model_s_own_spelling(tmp_path, keyword, name, says, target):
+    with pytest.raises((ParameterError, ModelError)) as e:
+        Simulator(Model.load(_comma_model(tmp_path)), **{keyword: [name]})
+    assert says in str(e.value)
+    assert e.value.remedies == [
+        {"kind": "pass_argument", "argument": "sensitivity_ic", "value": [target]}
+    ]
+    # The remedy, followed, runs.
+    sim = Simulator(Model.load(_comma_model(tmp_path)), sensitivity_ic=[target])
+    assert sim.run(t_span=(0, 1), n_points=2).sensitivities_ic.shape == (2, 2, 1)
+
+
+def test_simulator_gives_no_setter_advice_for_a_sensitivity_name(tmp_path):
+    # set_param's message for an observable says how to set a concentration;
+    # a sensitivity name needs to be told which names it takes.
+    with pytest.raises(ParameterError) as e:
+        Simulator(Model.load(_comma_model(tmp_path)), sensitivity_params=["Both"])
+    assert str(e.value) == (
+        "sensitivity_params: 'Both' is an observable, not a parameter; Model.param_names "
+        "lists the names sensitivity_params takes."
+    )
+    assert e.value.remedies == []
+    with pytest.raises(ModelError) as e:
+        Simulator(Model.load(_comma_model(tmp_path)), sensitivity_ic=["X"])
+    assert str(e.value) == "sensitivity_ic: Species 'X' not found in model. Close matches: 'X()'."
+    assert "set_" not in str(e.value)
+
+
+def test_the_command_points_at_the_model_s_own_spelling_and_quotes_it(tmp_path):
+    net = _comma_model(tmp_path)
+    error = _error(
+        _bngsim("run", net, "--t-end", "1", "--sensitivity-params", "X", "--json"),
+        _cli.EXIT_USAGE,
+        "usage.invalid_argument",
+    )
+    says = "--sensitivity-ic 'X()' computes sensitivities to its initial amount"
+    assert says in error["message"], error
+    (remedy,) = error["remedies"]
+    assert remedy == {"kind": "pass_argument", "argument": "--sensitivity-ic", "value": "X()"}
+    # The remedy, followed, runs.
+    _json(_bngsim("run", net, "--t-end", "1", remedy["argument"], remedy["value"], "--json"))
+
+
+@pytest.mark.parametrize("names", [{"k1"}, frozenset({"k1"}), {"k1": 1.0}, 3])
+def test_simulator_refuses_names_that_are_not_a_list(names):
+    with pytest.raises(ArgumentTypeError) as e:
+        Simulator(Model.load(CHAIN), sensitivity_params=names)
+    assert e.value.details["argument"] == "sensitivity_params"
+
+
+def test_simulator_takes_names_from_any_ordered_iterable():
+    sim = Simulator(Model.load(CHAIN), sensitivity_params=(n for n in ["k2", "k1"]))
+    r = sim.run(t_span=(0, 1), n_points=2)
+    assert list(r.sensitivity_params) == ["k2", "k1"]
+    assert r.sensitivities.shape == (2, 3, 2)

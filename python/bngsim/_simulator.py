@@ -58,7 +58,7 @@ from bngsim._codegen import (
     read_sens_decline_note,
 )
 from bngsim._describe import ode_refusals, steady_state_refusals
-from bngsim._error_codes import pass_argument, use_method
+from bngsim._error_codes import pass_argument, use_method, use_name
 from bngsim._exceptions import (
     ArgumentTypeError,
     AtolScaleWarning,
@@ -2005,9 +2005,10 @@ class Simulator:
 
     def _raise_if_sensitivity_names_are_not_names(self) -> None:
         """Refuse a ``sensitivity_params`` or ``sensitivity_ic`` that is not a
-        list of names (issue #1925): one name given as a string, which Python
-        reads as a sequence of one-letter names and the engine's binding
-        refused with a raw ``TypeError`` once the run started."""
+        list of names (issue #1925), and hold either as a list. One name given
+        as a string, which Python reads as a sequence of one-letter names, met
+        a raw ``TypeError`` from the engine's binding once the run started; so
+        did a set, whose order would set the columns' order, and a dict."""
         for keyword in ("sensitivity_params", "sensitivity_ic"):
             names = getattr(self, f"_{keyword}")
             if isinstance(names, str):
@@ -2017,53 +2018,88 @@ class Simulator:
                     details={"argument": keyword, "value": names},
                     remedies=[pass_argument(keyword, [names])],
                 )
+            if isinstance(names, set | frozenset | dict) or not isinstance(names, Iterable):
+                raise ArgumentTypeError(
+                    f"{keyword} takes a list of names, in the order of the columns, not a "
+                    f"{type(names).__name__}",
+                    details={"argument": keyword, "value": repr(names)},
+                )
+            names = list(names)
             for name in names:
                 if not isinstance(name, str):
                     raise ArgumentTypeError(
                         f"{keyword} takes names, not {name!r} of type {type(name).__name__}",
                         details={"argument": keyword, "value": repr(name)},
                     )
+            setattr(self, f"_{keyword}", names)
 
     def _raise_if_unknown_sensitivity_names(self, model: Any) -> None:
         """Refuse, as the Simulator is made, a sensitivity name the model does
         not have (issue #1925), which the engine found only once the run had
         started and reported as a failed run (``run.failed``). It raises the
-        error ``set_param`` and ``set_concentration`` raise for the name, with
-        its close matches; a species named as a parameter, or a parameter as a
-        species, is pointed at the other keyword. Runs after the refusals of
-        names the model has but cannot differentiate, so theirs come first."""
+        error class and code ``set_param`` and ``set_concentration`` raise for
+        the name, with its close matches. A species named as a parameter, a
+        parameter as a species, and an observable of one species are pointed at
+        the keyword that takes them, by the model's own spelling. Runs after the
+        refusals of names the model has but cannot differentiate, so theirs
+        come first."""
+        from bngsim._model import _kind_of, _sole_species
+
         params = set(model._core.param_names)
         species = set(model.species_names)
-        for keyword, names, known, error, kind, other in (
+        for keyword, names, known, error, kind, listed in (
             ("sensitivity_params", self._sensitivity_params, params, ParameterError,
-             "parameter", ("species", "sensitivity_ic", "its initial amount")),
+             "parameter", "param_names"),
             ("sensitivity_ic", self._sensitivity_ic, species, ModelError,
-             "species", ("parameter", "sensitivity_params", "it")),
+             "species", "species_names"),
         ):  # fmt: skip
+            code = "param.not_found" if kind == "parameter" else "species.not_found"
             for name in names:
                 if name in known:
                     continue
-                fields = model._not_found(name, kind)
-                is_a, other_keyword, of_it = other
-                if name in (species if kind == "parameter" else params):
+                is_a, actual = _kind_of(model, name, besides=kind)
+                pointer: tuple[str, str, str, str] | None = None
+                if kind == "parameter" and is_a == "species":
+                    what = "a species" if actual == name else f"the species {actual!r}"
+                    pointer = ("sensitivity_ic", actual, what, "its initial amount")
+                elif kind == "species" and is_a == "parameter":
+                    pointer = ("sensitivity_params", actual, "a parameter", "it")
+                elif is_a == "observable":
+                    sole = _sole_species(model, actual)
+                    if sole is not None:
+                        what = f"an observable of the one species {sole!r}"
+                        pointer = ("sensitivity_ic", sole, what, "its initial amount")
+                details: dict[str, Any] = {"name": name, "close_matches": [], "is_a": is_a}
+                if pointer is not None:
+                    other, target, what, of_it = pointer
                     raise error(
-                        f"{keyword}: {name!r} is a {is_a}, not a {kind}: "
-                        f"{other_keyword}=[{name!r}] computes sensitivities to {of_it}.",
-                        code=fields["code"],
-                        details={"name": name, "close_matches": [], "is_a": is_a},
-                        remedies=[pass_argument(other_keyword, [name])],
+                        f"{keyword}: {name!r} is {what}, not a {kind}: "
+                        f"{other}=[{target!r}] computes sensitivities to {of_it}.",
+                        code=code,
+                        details=details,
+                        remedies=[pass_argument(other, [target])],
                     )
-                close = fields["details"]["close_matches"]
-                if close and fields["details"]["is_a"] is None:
-                    text = (
-                        f"{kind.capitalize()} {name!r} not found in model. Close matches: "
-                        f"{_foreign_names.quote_list(close)}."
+                if is_a is not None:
+                    article = "an" if is_a[0] in "aeiou" else "a"
+                    raise error(
+                        f"{keyword}: {name!r} is {article} {is_a}, not a {kind}; "
+                        f"Model.{listed} lists the names {keyword} takes.",
+                        code=code,
+                        details=details,
                     )
-                elif kind == "parameter":
-                    text = model._parameter_not_found(name)
-                else:
-                    text = model._species_not_found(name)
-                raise error(f"{keyword}: {text}", **fields)
+                close = model._not_found(name, kind)["details"]["close_matches"]
+                details["close_matches"] = list(close)
+                head = f"{keyword}: {kind.capitalize()} {name!r} not found in model."
+                if close:
+                    raise error(
+                        f"{head} Close matches: {_foreign_names.quote_list(close)}.",
+                        code=code,
+                        details=details,
+                        remedies=[use_name(c) for c in close],
+                    )
+                raise error(
+                    f"{head} Model.{listed} lists all {len(known)}.", code=code, details=details
+                )
 
     def _raise_if_function_backed_params(self, param_names: list[str]) -> None:
         """Refuse a forward-sensitivity column for a **function's backing slot** (#329).

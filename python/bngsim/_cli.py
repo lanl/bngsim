@@ -61,6 +61,7 @@ import errno
 import json
 import math
 import os
+import shlex
 import sys
 from collections.abc import Callable, Iterator
 from typing import Any, NoReturn
@@ -1504,23 +1505,29 @@ def _sensitivity_names_from(args: argparse.Namespace) -> Iterator[None]:
     except BngsimError as error:
         details = dict(error.details or {})
         name = details.get("name")
-        for flag, attr, code, other in (
-            ("--sensitivity-params", "sensitivity_params", "param.not_found",
-             ("species", "--sensitivity-ic", "its initial amount")),
-            ("--sensitivity-ic", "sensitivity_ic", "species.not_found",
-             ("parameter", "--sensitivity-params", "it")),
-        ):  # fmt: skip
+        for flag, attr, code in (
+            ("--sensitivity-params", "sensitivity_params", "param.not_found"),
+            ("--sensitivity-ic", "sensitivity_ic", "species.not_found"),
+        ):
             if error.code != code or name not in (getattr(args, attr) or ()):
                 continue
             message = str(error).removeprefix(f"{attr}: ")
             remedies = list(error.remedies or [])
-            is_a, other_flag, of_it = other
-            if details.get("is_a") == is_a:
+            for remedy in remedies:
+                keyword = remedy.get("argument")
+                if remedy.get("kind") != "pass_argument" or keyword not in (
+                    "sensitivity_params",
+                    "sensitivity_ic",
+                ):
+                    continue
                 # Simulator names its other keyword; the command, its option.
-                message = (
-                    f"{name!r} is a {is_a}: {other_flag} {name} computes sensitivities to {of_it}."
+                (target,) = remedy["value"]
+                other = "--" + keyword.replace("_", "-")
+                message = message.replace(
+                    f"{keyword}=[{target!r}]", f"{other} {shlex.quote(target)}"
                 )
-                remedies = [pass_argument(other_flag, name)]
+                remedies = [pass_argument(other, target)]
+                break
             raise UsageError(
                 f"{flag} {name}: {message}",
                 details={**details, "argument": flag, "value": name},
