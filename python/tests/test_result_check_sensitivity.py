@@ -961,6 +961,8 @@ def test_a_series_at_zero_is_judged_on_its_column_s_peak(monkeypatch, share, sta
 
     def rerun(self, **changes):
         out = real(self, **changes)
+        if "n_points" in changes:  # the grid check's run: dC/dk is 0 there too
+            return out
         out = copy.copy(out)
         s = np.asarray(out._sensitivities, dtype=float).copy()
         s[5, 1, 0] = share * 1e-3 * col_peak + 100 * 2e-8
@@ -1126,6 +1128,13 @@ def test_a_budget_out_before_the_denser_run_makes_the_sensitivity_check_a_timeou
     monkeypatch.setattr(_check._Context, "fine_run", out)
     v = _by_name(r.check(["sensitivity"]))["sensitivity"]
     assert v["status"] == "timeout" and "8x the points" in v["note"], v
+    # dx/dy(0) = sin(πt), near its floor at every integer time, is decided
+    # by that run too (#1974): no verdict a larger budget could change.
+    r = Simulator(Model.from_antimony_string(ant), sensitivity_ic=["y"]).run(
+        t_span=(0, 10), n_points=11, rtol=1e-8
+    )
+    v = _by_name(r.check(["sensitivity"]))["sensitivity"]
+    assert v["status"] == "timeout" and "near its floor" in v["note"], v
 
 
 def test_the_quotient_reads_a_series_judged_beside_its_points_on_that_scale():
@@ -1166,3 +1175,106 @@ def test_the_quotient_s_verdict_on_a_series_judged_beside_its_points_is_the_same
     beside = _by_name(r.check(["sensitivity", "sensitivity_fd"]))["sensitivity_fd"]
     for key in ("status", "value", "n_not_converged"):
         assert alone[key] == beside[key], (key, alone, beside)
+
+
+def test_a_series_near_its_floor_only_at_its_points_is_resolved_and_judged():
+    # Issue #1974: dx/dy(0) = sin(πt) is 0 at every integer time, within 100
+    # of its floor there; between them it reaches 1.
+    ant = """
+    model osc
+      J1: -> x; w*y
+      J2: -> y; -w*x
+      w = 3.141592653589793
+      x = 1; y = 0
+    end
+    """
+    r = Simulator(Model.from_antimony_string(ant), sensitivity_ic=["y"]).run(
+        t_span=(0, 10), n_points=11, rtol=1e-8
+    )
+    v = _by_name(r.check(["sensitivity"]))["sensitivity"]
+    assert v["status"] == "pass" and v["not_resolved"] == [] and v["n_between"] == 1, v
+
+
+def test_a_pulse_between_points_then_a_quiet_tail_judges_the_tail_by_its_floor():
+    # Issue #1974, as BIOMD0000000338 showed it: dX/dk peaks near 2.6e-3
+    # between t = 0 and t = 1, then stays within a few of its floor (5e-10).
+    # Noise there, 5 and 40 floors, is not judged on a peak the points sample
+    # as noise; 10% of the pulse at t = 1 is a diff.
+    def run() -> Result:
+        m = Model.from_antimony_string("J1: A -> X; k*A; J2: X -> ; 20*X; A = 1; X = 0; k = 20")
+        return Simulator(m, sensitivity_params=["k"]).run(
+            t_span=(0, 10), n_points=11, rtol=1e-8, atol=[1e-8, 1e-8]
+        )
+
+    r = run()
+    jx = r.species_names.index("X")
+
+    def shifted(rows, by):
+        out = copy.copy(r)
+        s = np.asarray(r._sensitivities, dtype=float).copy()
+        s[rows, jx, 0] += by
+        out._sensitivities = s
+        return out
+
+    for by in (2.5e-9, 2e-8):
+        v = _by_name(shifted(slice(2, None), by).check(["sensitivity"]))["sensitivity"]
+        assert v["status"] == "pass" and v["not_resolved"] == [] and v["n_between"] == 2, v
+    v = _by_name(shifted(1, 2.5e-4).check(["sensitivity"]))["sensitivity"]
+    assert v["status"] == "diff" and v["worst_column"] == "dX/dk", v
+
+
+def test_noise_inside_the_band_beside_a_small_pulse_is_no_finding():
+    # The review's case (BIOMD0000000338 at rtol 1e-6): a series about 500 of
+    # its floors (5e-10) high between t = 0 and t = 1, near its floor at the
+    # points; 3 and 50 floors of noise at t = 1, right beside the pulse, are
+    # inside the band the run does not resolve at its points.
+    m = Model.from_antimony_string("J1: A -> X; k*A; J2: X -> ; 20*X; A = 1e-4; X = 0; k = 20")
+    r = Simulator(m, sensitivity_params=["k"]).run(
+        t_span=(0, 10), n_points=11, rtol=1e-8, atol=[1e-8, 1e-8]
+    )
+    jx = r.species_names.index("X")
+    for by in (1.5e-9, 2.5e-8):
+        out = copy.copy(r)
+        s = np.asarray(r._sensitivities, dtype=float).copy()
+        s[1, jx, 0] += by
+        out._sensitivities = s
+        v = _by_name(out.check(["sensitivity"]))["sensitivity"]
+        assert v["status"] == "pass" and v["not_resolved"] == [] and v["n_between"] == 2, v
+
+
+def test_a_series_between_the_bands_at_a_loose_rtol_stays_not_resolved():
+    # At rtol 0.05, dX/dk is 53 of its floors (5e-10) high between t = 0 and
+    # t = 1, near its floor at the points: "resolved" by the rtol share alone,
+    # but within 100 floors everywhere, no difference could ever count. It
+    # stays named; dA/dk, 208 floors high there, is judged.
+    m = Model.from_antimony_string("J1: A -> X; k*A; J2: X -> ; 20*X; A = 1e-5; X = 0; k = 20")
+    r = Simulator(m, sensitivity_params=["k"]).run(
+        t_span=(0, 10), n_points=11, rtol=0.05, atol=[1e-8, 1e-8]
+    )
+    v = _by_name(r.check(["sensitivity"]))["sensitivity"]
+    assert v["not_resolved"] == ["dX/dk"] and v["n_between"] == 1, v
+
+
+def test_a_quiet_tail_the_reruns_put_past_the_band_is_a_diff(monkeypatch):
+    # The second review's case: dX/dk peaks at 2.6e-3 between t = 0 and 1;
+    # the reruns put its tail 200 floors (5e-10) away. The pulse excuses no
+    # point in the tail.
+    m = Model.from_antimony_string("J1: A -> X; k*A; J2: X -> ; 20*X; A = 1; X = 0; k = 20")
+    r = Simulator(m, sensitivity_params=["k"]).run(
+        t_span=(0, 10), n_points=11, rtol=1e-8, atol=[1e-8, 1e-8]
+    )
+    jx = r.species_names.index("X")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if "rtol" in changes and "n_points" not in changes:
+            out = copy.copy(out)
+            s = np.asarray(out._sensitivities, dtype=float).copy()
+            s[2:, jx, 0] += 1e-7
+            out._sensitivities = s
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    v = _by_name(r.check(["sensitivity"]))["sensitivity"]
+    assert v["status"] == "diff" and v["worst_column"] == "dX/dk", v
