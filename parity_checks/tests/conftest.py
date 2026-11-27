@@ -20,6 +20,7 @@ for p in (
     _PC / "amici_parity",
     _PC / "nightly",
     _PC / "codegen_paths",
+    _PC / "discontinuity",
     _PC / "tests",
 ):
     s = str(p)

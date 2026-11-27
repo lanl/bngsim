@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from _branchwise import Spec, Surface
-from _case import Aligned, Axes, Case, Offset, Switch, Uniform, point
+from _case import Aligned, Axes, Case, Known, Offset, Switch, Uniform, point
 from _closed_forms import clock_exposure
 
 # #1776's model, with the residual's coefficients as parameters so the sweep
@@ -79,6 +79,16 @@ CASES = (
             point(1e-8, Uniform(31), COLS, a=2.5, b=0.5),
             point(1e-8, Uniform(4), ()),
         ),
+        known={
+            # Asked for a row at t = 25, the crossing, the sensitivity run
+            # records it from one ulp short: 24.999999999999996 (macOS arm64).
+            f"clock_step[a=2.5,b=0.5]|rtol=1e-12,grid={g},sens=kx+k_clock+c": Known(
+                1799,
+                AssertionError,
+                "a sensitivity run records the row at the crossing an ulp short",
+            )
+            for g in ("aligned31", "offset31")
+        },
         note=(
             "#1776's step: a state switch the clock carries against its species. "
             "u31 holds t = 25, so a uniform grid samples the crossing too."

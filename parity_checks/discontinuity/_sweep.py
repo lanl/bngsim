@@ -186,12 +186,9 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
     row.backend = sim.codegen_backend
     if seen:
         row.extra["warnings"] = seen
-    if "sample_times" in request and not np.array_equal(
-        np.asarray(res.time, float), np.asarray(request["sample_times"], float)
-    ):
-        return _set(
-            row, "DIFF", f"the run reported other times than the {p.grid.label} grid asked for"
-        )
+    moved = grid_mismatch(request, res.time)
+    if moved:
+        return _set(row, "DIFF", f"the {p.grid.label} grid: {moved}")
     names = list(res.species_names)
     all_species = np.asarray(res.species, dtype=float)
     if isinstance(ref, NoReference):
@@ -243,6 +240,22 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
     if v.unresolved:
         row.extra["unresolved"] = v.unresolved
     return _set(row, v.outcome, v.note)
+
+
+def grid_mismatch(request: dict, times) -> str | None:
+    """How the run's times differ from the sample times it was asked for, or
+    None. A run must report the times it is given, to the bit."""
+    if "sample_times" not in request:
+        return None
+    want = np.asarray(request["sample_times"], float)
+    got = np.asarray(times, float)
+    if got.shape != want.shape:
+        return f"{len(got)} rows reported where {len(want)} were asked for"
+    off = np.flatnonzero(got != want)
+    if not len(off):
+        return None
+    i = int(off[0])
+    return f"the row asked for at t={want[i]!r} came back at t={got[i]!r} ({len(off)} rows moved)"
 
 
 def _set(row: Row, outcome: str, note: str) -> Row:

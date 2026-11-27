@@ -321,7 +321,7 @@ class Case:
             if len({p.rtol for p in ps}) >= 2
         }
 
-    def keys(self) -> set[str]:
+    def all_keys(self) -> set[str]:
         """Every key the full sweep reports."""
         pts = self.points()
         out = {self.key(p) for p in pts}
@@ -394,7 +394,7 @@ class Case:
                 raise CaseError(
                     f"{where}: its slice never takes {axis} {sorted(want - have, key=str)}"
                 )
-        stray = set(self.known) - self.keys()
+        stray = set(self.known) - self.all_keys()
         if stray:
             raise CaseError(f"{where}: known failures at keys the sweep has not: {sorted(stray)}")
         for k, v in self.known.items():
