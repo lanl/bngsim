@@ -83,7 +83,7 @@ CASES = (
             point(1e-8, Aligned(2), COLS),
         ),
         # Every column point at rtol 1e-12 carries #1985, at 93-286x its
-        # tolerance (macOS arm64), where rtol 1e-6 to 1e-10 hold every column
+        # tolerance (macOS arm64 and Linux x86_64 alike), where rtol 1e-6 to 1e-10 hold every column
         # within 31x. A limit of 50 sits between the two with room either side.
         # The convergence rows are off: #1985 grows by 4x to 46x from rtol
         # 1e-10 to 1e-12 across the groups, a spread no such rule could split
@@ -92,7 +92,7 @@ CASES = (
         known={
             **{
                 # Asked for a row at t = 25, the crossing, the sensitivity run
-                # records it from one ulp short: 24.999999999999996 (macOS arm64).
+                # records it from one ulp short: 24.999999999999996 (macOS and Linux).
                 f"clock_step[a=2.5,b=0.5]|rtol=1e-12,grid={g},sens=kx+k_clock+c": Known(
                     1799,
                     AssertionError,

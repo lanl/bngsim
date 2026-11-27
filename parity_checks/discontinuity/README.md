@@ -89,8 +89,8 @@ did. In the seed cases every healthy row sits at under half of that allowance.
 
 ## What the seed found
 
-Three bugs, each marked against its issue (macOS arm64; the nightly baseline
-records what Linux gives):
+Three bugs, each marked against its issue. They show on macOS arm64 and on the
+nightly's Linux x86_64 alike, at the same ratios:
 
 * **#1984**: `clock_step[a=1.0,b=-1.0]` at rtol 1e-10 on `Aligned(2)`, with rows
   at t = 0, 25 (the crossing) and 30 only. From the crossing on, `dX/dk_clock`
