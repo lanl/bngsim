@@ -20,6 +20,294 @@ release commit, so no two branches ever edit this file (issue #668). Add a
 fragment — see [`changelog.d/README.md`](changelog.d/README.md) — rather than
 an entry here.
 
+## [0.18.0] - 2026-11-27
+
+### Added
+
+- **`bngsim run` and `bngsim check` compute forward sensitivities (issue #1925).** `--sensitivity-params NAME,...` and `--sensitivity-ic SPECIES,...` are `Simulator`'s `sensitivity_params` and `sensitivity_ic`. They are repeatable, and a comma inside parentheses, as in `R(l,d)`, is part of a name. The digest then ranks, for each column, the parameters and initial amounts that move it most (`Result.digest(sensitivities=True)`), and `.npz` and `.h5` `--out` files hold the sensitivities. So `bngsim check` now reaches the `sensitivity` and `sensitivity_fd` checks, and exits 6 when they find a diff. A stochastic method, a name given twice, and a `.csv` or `.tsv` `--out` beside one (it holds no sensitivities) are refused with exit 2. `bngsim check --help` now lists every check `--checks` takes, sensitivity checks included, read from `bngsim._check`.
+
+- **`Result.check("all")` checks a run's forward sensitivities against AMICI where it is installed (issue #1923).**
+  The other sensitivity checks read the model as bngsim loaded it, so a defect
+  the loader and the sensitivity code share passed them both. The new
+  `"sensitivity_second_engine"` check builds the model file in AMICI and
+  compares each parameter column series by series, on the rules of the other
+  sensitivity checks, and the states too. It skips, saying why, where AMICI does
+  not import (it is no dependency or extra) and for a model with an event or a
+  switch in its math, which AMICI reads differently; an initial-amount column
+  is named as not judged.
+  The report names AMICI's version and commit. Builds, and models whose
+  generated C++ does not compile, are cached, unpruned, in
+  `~/.cache/bngsim/amici` (`$BNGSIM_AMICI_CACHE_DIR`). `"second_engine"` now
+  skips a model file that changed since the run's model was loaded from it.
+
+- **`Result.check()` now checks a run's forward sensitivities (issue #1893).**
+  It used to judge the trajectory alone, so a wrong `dY/dθ` column passed. A
+  run made with `sensitivity_params=` or `sensitivity_ic=` now gets a
+  `"sensitivity"` check by default: the sensitivities of the tolerance check's
+  run, judged series by series on each one's own peak and the absolute
+  tolerance the solver held it to. `check("all")` adds `"sensitivity_fd"`:
+  central difference quotients at two steps, of runs made with the
+  sensitivities off, which widen themselves near a switch or event time a
+  parameter moves. Each verdict names the worst series, each column's worst
+  species, and the series it does not resolve. `check("all")` on a
+  sensitivity run no longer reports the `backend` check as an exception.
+
+- **The `bngsim` command runs every run call, not `run()` alone (issue #1890).** `bngsim run-until` (stop conditions, `--stop-when`; a condition met exits 0 with the run it cut), `run-batch` (`--params` as JSON, `.json`, `.csv` or `.tsv`), `parameter-scan`, `steady-state`, `steady-state-batch`, `steady-states` and `run-bngl` (a `.bngl` file's own actions). Each follows `run`'s rules: one JSON object on standard output with `--json`, arrays only to `--out`, a wall-clock limit (`--timeout`, exit 5), and an option the call would not use refused (exit 2). A steady state's JSON gives the solver's verdict and the values there. Where a call takes no time limit of its own, the command ends the process past `--timeout`.
+
+- **Three new documentation pages: checking a result, known limitations, and compatibility between releases.** "Check a result before you rely on it" walks through `Result.check()` on passing, failing and unresolved runs, says what each status means, when a result has been checked against libRoadRunner or AMICI, and that a stochastic run's check judges nothing. "Known limitations" points to the open issues that can give a wrong answer with no error, lists what BNGsim refuses and where it departs from other simulators on purpose, and says what is known about each disagreement in the published benchmarks. "Compatibility between releases" says what stays the same across 0.x releases and how a change is announced. The docs no longer say that `steady_states()` finds every steady state: it searches from many starts and can miss one.
+
+- **`bngsim skill --out FILE` writes the agent guide as a `SKILL.md` file itself, and the README says where to put it.** For Claude Code, `bngsim skill --out ~/.claude/skills/bngsim/SKILL.md` installs it for every project. `--out` makes the folder, writes the bytes the command prints, and expands a leading `~` even where the shell does not; a path it cannot write is a usage error. A redirect (`bngsim skill > FILE`) works in a POSIX shell, but PowerShell before 7.4 reads it in the console's code page, and 5.1 writes it as UTF-16. `bngsim guide --out FILE` works the same way, and the `--json` output of both now always has `"text"` and `"out"`.
+
+### Changed
+
+- **`Result.check()` of a stochastic run is no longer `ok`, and its `z` is in one draw's standard deviations (`check_version` 2).** The `replicates` check reruns an SSA or PSA run at other seeds and reports each observable's mean at the last time. It judges nothing, but its status was `pass`, so the report was `ok` and printed "OK: 1 passed", which a caller reading `ok` took for a check of the run. Its status is now `info`, new for a check that reports and neither passes nor fails: a stochastic run's report is not `ok`, its text and `n_info` say 1 judged nothing, `next` says the run is not checked, and `bngsim check` of one exits 6. `z` was in standard errors of the reruns' mean, so a correct run's `z` was sqrt(11) times too large: `binding` at seed 1, whose `z` is now 2.6, had 8.5. It is now over `sd·sqrt(1 + 1/n)`, a draw's spread about the mean of the others, so a correct run's `z` is about a t-statistic on `n - 1` degrees of freedom. Each column also gives `sd_last`. A reader that took a stochastic run's `ok` or `pass` as a check should report a mean over replicates instead.
+
+- **Run-time messages no longer cite issue numbers.** Error, warning, notice and log text, the `bngsim` command's output and `capabilities()["missing"]` said what happened with an "(issue #1548)" or "GH #210" a user or an agent has no use for; about 480 such references are gone from the Python and C++ messages, and each message still says what happened and what to do. Comments, docstrings and the text of generated code keep theirs. A test now scans the package's strings and the C++ string literals so new ones do not creep in. A program that matched a message's issue number should branch on the error's or notice's `code` instead.
+
+### Fixed
+
+- **`Result.check()` no longer calls a column "not resolved" when it is near zero only at the run's output points (issue #1974).** An oscillation sampled at its zero crossings stayed within 100 times its atol of zero at the points, so the check named it, did not judge it, and `next` said it "stays" near zero and to lower the atol. Neither was true. A column or sensitivity series near zero at the points is now looked at on the grid check's run at 8x the points. If it is more than 100 atol there, it is resolved and judged on the values beside each point, as #1926 does, with a difference at each point counted only past 100 atol over the larger of 100 atol and what it reaches beside that point, so noise beside a short transient is no failure; only a column near zero between the points as well is named. Where the budget runs out before that run, the check is a timeout. `check(["tolerance"])` or `check(["sensitivity"])` alone now makes that run where a column is near zero at the points.
+
+- **`Result.check()`'s `"sensitivity"` check judges each series by its move to the run at rtol/100 as well as rtol/10, so an error about the same at rtol and rtol/10 is no longer passed (issue #1967).** On BIOMD0000000810 at rtol 5.151e-9 and 1.314e-8, gamma_C series 0.8% to 0.9% off moved only 5e-4 to 8e-4 of their peaks at rtol/10, and the check passed; to rtol/100 they move 7e-3 to 9e-3, and it reports a diff. The verdict gives both moves (`value_10`, `value_100`). The run at rtol/100 is the one the `"tolerance"` check already makes, so a default `check()` makes no new run. A `budget=` that runs out before it makes the verdict a `timeout`. A series past the bound only at rtol/100 is no longer taken to be held by a floor: three runs cannot tell its error from floor noise that happens to agree at rtol and rtol/10.
+
+- **`Result.check()`'s `"sensitivity"` check no longer passes a sensitivity that converges slowly as one held by a floor (issue #1962).** A series that moved at rtol/100 at least half as far as at rtol/10 was taken to be held by the solver's arithmetic floor, judged on its column's largest peak, and passed. On BIOMD0000000810 the check passed runs at rtols from 2e-8 to 2.8e-7 whose gamma_C series were 0.4% to 3.5% off against rtol 1e-12. A series is now taken to be held only if its move is also within 100 of the floor the solver held it to; those series move 3e2 to 1e9 times their floor, and each of those runs is a diff.
+
+- **`parity_checks/tests/test_rr_known_artifact_evidence.py` failed with
+  `ModuleNotFoundError` instead of skipping where RoadRunner is not installed
+  (issue #1938).** Its RoadRunner reference imported `roadrunner` before the
+  file's skip check ran, so a checkout without RoadRunner, such as a venv from
+  `uv sync --extra test`, saw three failures where every other RoadRunner test
+  skips. The check now runs first.
+
+- **The `BNGSIM_SSA_PROP_CC=1` propensity ablation built arm64 under Rosetta 2 and cached it under a name with no architecture (issue #1927).** On macOS its compile now passes `-arch`, as the Python codegen has since #1759: under Rosetta 2 it built arm64 for an x86_64 Python, the load failed, and the run fell back to interpreted propensities, so the ablation measured nothing. The library is now `ssa_prop_<machine>_v2_<hash>.so`, with the compile command in the hash, so a native and a Rosetta process sharing a cache, or two compilers, no longer take each other's library, and one an older bngsim built is not reused. It is written under `BNGSIM_CODEGEN_CACHE_DIR` when that is set, as the Python codegen's libraries are. The Python codegen now reads that variable the same way: `import bngsim` no longer fails when it names a `~user` the system does not know, and an empty `HOME` no longer puts the cache at the read-only `/.cache`.
+
+- **`Result.check()` no longer fails a correct run because its output points miss part of a column's trajectory (issue #1926).** The `"tolerance"` and `"sensitivity"` checks judged each column on its peak at the run's points. For `y = -sin(πt)` sampled at integer times, that peak is the integration error, and a run right to 2e-5 was a diff. A column past the bound there is now judged point by point on the largest value it reaches beside each point, read from the grid check's run at 8x the points. That covers zero crossings and the first point after a fast transient. The report's `n_between` counts them, and `next` says to rerun with more points.
+
+- **`Simulator(sensitivity_params=..., sensitivity_ic=...)` and `steady_state(sensitivity_params=...)` reported a name the model does not have only once the solve had started, as a failed run (`run.failed`) (issue #1925).** A single name passed as a string met a raw pybind11 `TypeError` there (`steady_state` read it as one-letter names), as a dict did in the constructor, and a NumPy array of two or more names a raw `ValueError`. Each call now refuses a missing name at once, with the error class and code `set_param` or `set_concentration` raises for it (`ParameterError` `param.not_found`, `ModelError` `species.not_found`) and its close matches. A species given as a parameter, a parameter as a species, and an observable of one species are pointed at the keyword that takes them, by the model's own spelling. A string, bytes, a value that does not iterate and a name that is not a string raise `ArgumentTypeError` (`usage.wrong_type`), so `[b"k1"]`, which ran, is now refused. A false value is no names, as before, and anything else that iterates (a dict's keys, a set, a NumPy array) is taken in its order.
+
+- **`Simulator(xml_path=...)` and `EvaluationSpec(model_source=...)` refused the `pathlib.Path` that `bngsim.examples.path()` returns (issue #1924).** The Simulator raised a raw pybind11 `TypeError` naming a core class; the spec accepted the `Path` and failed only at `to_json()`. A spec built from a `Path` now stores its `str`, so it equals, serializes and loads as one built from the `str`. An `xml_path` or `model_source` that is neither a `str` nor an `os.PathLike`, or a path given to a `*_string` format, is refused with `UsageError` (`usage.invalid_argument`).
+
+- **`Result.check()`'s `"second_engine"` read an Antimony file again differently from the load (issue #1923).**
+  Under a decimal-comma `LC_NUMERIC`, `k = 0.5` reached libRoadRunner as 0, so
+  a correct run was a diff; a file with a stray top-level line was compared as
+  Antimony's empty `__main` module. Both engines' checks now read the file as
+  the load does: in the C locale, and the module the load takes for main.
+
+- **`steady_state()` could report `converged=True` at a state a run leaves,
+  when the `atol` passed was coarser than the model (issue #1895).**
+  BIOMD0000000609, every species below 1.4e-13, asked at its SED-ML file's
+  `atol=1e-9` with its adduct accumulator left out by `mask=`, came back
+  converged at a root with four species below zero, from which a run
+  diverges. A scalar `atol` is still taken as given for the march, but the run
+  the convergence test takes now reads it as `run()` does: a ceiling per
+  species from the solve's start, and for a species below zero from the state
+  too. Such a state is refused. A saddle a run from it rests on still passes.
+  `steady_state_batch()` shares the test, but for a burst-free Newton solve
+  (`newton_burst=False`), which takes none and reports the root's stability.
+  To solve such a model, leave `atol` unset or pass one at its scale.
+
+- **An ODE run over a span near the largest double hung, or returned NaN rows,
+  with no error (issue #1838).** CVODE's step, or its clock, overflowed before
+  the run ended: `(0, 7e307)` never returned and `timeout=5` did not stop it,
+  and `(1e308, 1.7e308)` of a model that reads the clock came back as
+  `[1, 0, nan, nan, nan]`. Such a run now raises `UsageError`
+  (`usage.span_out_of_reach`, naming the row of a `run_batch` or the point of
+  a scan) where that happens, as does one that failed there with a CVODE
+  error, and a grid of output times that cannot be finite is refused before
+  it starts: measure time in a larger unit. Every run whose clock stayed
+  finite returns the same rows. And `timeout=` is now read inside the solver too,
+  every 256 right-hand-side evaluations, so a run that spends its budget
+  between two output points raises `SimulationTimeout`.
+
+- **An ODE run that took steps too small to move its clock returned a wrong
+  answer with no error and no Python warning (issue #1837).** Far from `t = 0`
+  CVODE takes a step where `t + h == t` anyway, moving the state and not the
+  clock: a decay reading `time()` from `1e15` returned `A(+5) = 0.000587` for
+  `0.00674`. Such a run now warns `bngsim.RoundoffStepWarning`, naming the first
+  row after one and the spacing of the doubles there, and keeps it on
+  `result.notices` (`solver.roundoff_steps`) or on the error of a run that
+  fails; `solver_stats["n_roundoff_steps"]` holds the count. A run can take
+  them and be right: `result.check()` tells. A system-SUNDIALS build counts none.
+
+- **A forward-sensitivity run failed to build under clang when the generated C
+  nested brackets more than 256 deep (issue #1814).** A table of daily values
+  written as a chain, `if(time()<=1, v1, if(time()<=2, v2, ...))`, got two
+  brackets deeper per `if()`, past clang's limit at 128; a plain run fell back to
+  the interpreter. An `if()` that is all of another's false branch is now the
+  next link of one flat `?:` chain, which computes the same values, and clang is
+  given `-fbracket-depth` for a source near the limit or past it, such as a
+  chain through the true branches. A chain of about a thousand, which every
+  codegen build refused with a `RecursionError`, builds too, and
+  `jacobian="jax"` writes a chain as one call, where 200 `if()`s raised "too
+  many nested parentheses". From 99 `if()`s the analytic sensitivity RHS is
+  still not built: the run uses CVODES' difference quotient where the
+  conditions allow it, and refuses as before where they read the state. A
+  failed build now says it was the compiled right-hand side.
+
+- **`mratio(a, b, z)` no longer returns a wrong value when `a` is a tiny
+  positive number below a `b` under 1 and `z` is past -20 (issue #1793).** The
+  continued fraction still ran there and lost up to all of the ratio:
+  `mratio(1e-30, 2e-12, -3e4)` returned 7.047e-17 for 6.667e-17, and some
+  answers had the wrong sign. The corner issue #1080 sums as two series out to
+  `z = -700`, and leaves to the asymptotic expansion beyond, is now
+  `0 < b - a < 1` with `b < 1`, which takes these too; the error there is
+  below 1e-13. At the subnormal doubles, where main was also wrong in places,
+  by factors and even returning inf, every answer is now right: with `b < 1`,
+  the series sums its denominator times 2^54 where `alpha` or `alpha*z` is
+  subnormal (`alpha = a` for `z > 0`, `b - a` for `z < 0`), and it forms a
+  subnormal `b`'s last product the same way, so `mratio(5e-324, 1e-322, 10)`,
+  3.1e-3 off before, is now exact. Where `b` and `|alpha*z|` are both
+  subnormal and `|alpha| >= 1`, the fraction, wrong there at about one sampled
+  triple in five, is refused. Both engines. BNG's own arguments are
+  unaffected, bit for bit.
+
+- **`Model.jacobian()` no longer raises for a rate law calling
+  `mratio(a, b, z)` where the compiled code differentiates it (issue #1793).**
+  The interpreter's derivative of `mratio` let a refusal of its second call,
+  `mratio(a+1, b+1, z)`, escape, where the generated code falls back to Kummer's
+  contiguous relation, so the two engines disagreed: with `z` read from a
+  species at `mratio(-0.5, 2.5, -1000)` the interpreter raised and the
+  generated code returned 2.4900224650e-06, right to 1.5e-12. The interpreter
+  now takes the same fallback, which its header always described.
+
+- **`sbml_to_bngl` dropped the events of a comp submodel and still reported
+  `ok=True` (issue #1787).** `Model.from_sbml` flattens a comp document before
+  reading it, but the events-to-actions translation read the unflattened file,
+  whose top model has no events, so the `.bngl` had no actions block: an event
+  setting A = 100 at t = 5 was lost, and BNG2.pl ran the file to A(10) = 3.68
+  for 60.65. The translation now reads the flattened document, so a
+  submodel's fixed-time events become actions and its state-triggered ones are
+  refused. A model with an event the translation did not read is refused
+  rather than converted without it.
+
+- **A `required="true"` package in the file a `comp` submodel is read from was
+  dropped without a word (issue #1786).** A document declaring `multi` is
+  refused, but the same model pulled in through an `ExternalModelDefinition`
+  lost the package in flattening, and its core layer loaded and ran
+  (`A(10) = 36.79`). Every file the flattener reads a submodel from, nested and
+  chained ones included, is now checked as the loaded file is, and the
+  `ModelError` names the file and the `ExternalModelDefinition` that reads it.
+  `BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS=1` opts out as before. For any file,
+  the loaded one too, the check of the root element now reads a `.gz`,
+  `.bz2` or `.zip` file decompressed, as libSBML does, takes
+  `required="1"` as true, and no longer passes a namespace only because a
+  segment of it says `comp`.
+
+- **`sbml_to_bngl` ignored a trigger's `initialValue` and the event
+  priority, and reported `ok=True` (issue #1785).** `at (time >= 0): A = 5`,
+  which never fires since its trigger is true from the start, became a dose at
+  t = 0, and two events at t = 1 were written in document order, so the one
+  of lower priority, which the run executes last, was overwritten. A trigger
+  true at the start now fires there only if its `initialValue` is false, and
+  events at one time are written in the order the run executes them: by
+  priority, an unset one counting as 0, and delayed events among equal
+  priorities as the run orders them, each time and priority read as the run's
+  evaluator reads it. Where the run's random draw among equal priorities can
+  decide a species' value, or its rounding can, as for events due almost at
+  once or a strict `time > T`, which it reads a little past T, the conversion
+  is refused.
+
+- **`sbml_to_bngl` read an event's trigger time, delay and assigned values
+  from each parameter's declared value, and reported `ok=True` (issue
+  #1784).** A parameter an initialAssignment or a rule sets, or another event
+  changes, was folded at its declaration: `at d after (time >= 1)`, with d
+  declared 0 and set to 1 by an initialAssignment, became a dose at t = 1 for
+  t = 2. These values are now the ones the run computes, from an
+  initialAssignment or from an assignment rule over constants. An event is
+  refused where the run's arithmetic and the SBML's folded give different
+  values, or where its trigger time, delay or value reads a parameter a rate
+  rule or another event changes.
+  BIOMD0000000806, whose events step a parameter up and down, is refused
+  rather than written with the steps wrong.
+
+- **An x86_64 Python under Rosetta on an Apple Silicon Mac could not load any
+  library codegen compiled (issue #1759).** Apple's `cc` built arm64 whatever
+  process started it, so forward sensitivities and `codegen=True` failed at
+  dlopen with "incompatible architecture". Every codegen compile and link on
+  macOS now passes `-arch` with the Python's own architecture (all but the
+  `BNGSIM_SSA_PROP_CC=1` ablation, which compiles in C++); a native build is
+  unchanged, byte for byte. A compiler that builds for another architecture all
+  the same is refused as a broken toolchain, with a message that names both and
+  the fix, and its library is not cached. `CC` is now split as the shell splits
+  it on macOS and Linux, so `CC="ccache cc"` works (quote a path with a space,
+  unless `CC` is that path alone); on Windows it is one path, as before. The
+  arm64 libraries an x86_64 Python cached before are not read again (the cache
+  key moved); `bngsim-cache prune --orphaned` removes them.
+
+- **After an SSA or PSA run, an ODE run, a steady-state solve,
+  `get_concentration` and `set_concentration` read a species in a resized
+  compartment as its stored count over the load-time size (issue #1754).** 150
+  molecules at `c = 4`, stored as 75 over the load-time 2, started the ODE run
+  from 300, and `set_concentration("X", 10)` started the next SSA run from 20
+  molecules for 40. Each now reads that state at the size the compartment has
+  now, as the SSA run does; `get_state()` and `set_state()` still take the
+  values as stored, and `Simulator.snapshot()` keeps them so. Under SSA and
+  PSA, a compartment an assignment rule sizes from a concentration in a
+  resized compartment (`c2 := V0 + Y`) is now sized on that concentration, in
+  event assignments and in each row's observables and expressions:
+  `S = 20` stores 160 molecules where it stored 260, as the ODE run does.
+  `validate_for_ssa` and `Simulator(method="ssa")` now count a concentration
+  at the size its compartment was written to, so they warn of a fractional
+  start they passed over (`c` written to 3.01: 150.5 molecules).
+
+- **The rr_parity and AMICI ODE matrices drew a row as NO TRUTH where its
+  no-ground-truth entry did not apply (issue #1719).** Where both engines raised
+  on a model with a `NO_GROUND_TRUTH` entry, the row's only comment was the note
+  that the entry did not apply, which begins with the same words as an applied
+  entry's note, and both pages read it as one: each engine got a NO TRUTH badge
+  and a footnote saying it ran. The pages now match only an applied entry's
+  note, so such a row reads as two engines that rejected the model. The
+  rr_parity page no longer calls that note non-scoring either, on a row that
+  still scores, such as a DIFF whose `max_rel` is not finite, and `rr_run`'s
+  progress line no longer tags that DIFF `→BADTEST*`. No verdict, tally or exit
+  code changes.
+
+- **The Python examples in the user guide, the reference pages and the README now run as written (issue #1693).** Pasted in page order into an empty directory, 71 of the guides' 104 blocks raised: most lacked `import bngsim`, or used a model, a parameter or a file the page never gave. Each page now builds the small model its blocks use, from `bngsim.examples` or a file it writes, and examples that were wrong are corrected, among them a fit loop whose new initial conditions never took effect and a table-function file used under two indexes. The suite now runs every page top to bottom and checks the value a comment states on a one-line statement; the few blocks that need BNG2.pl or the network are passed over by name.
+
+- **`method="nfsim"` fired nothing while a model's total propensity was 1e-9 or less in its own time unit (issue #1672).** NFsim took such a total for zero and returned the state it had, with no warning: `0 -> D` at 5e-10 gave D = 0 where the mean is 20, and 100 A decaying at 1e-10 stopped at exactly 10. The threshold was absolute, so a model written in a short time unit, or a decay followed long enough, kept its last molecules. The vendored NFsim now fires at any total above 0, and a run no longer depends on the model's time unit.
+
+- **`method="nfsim"` lost a slow channel, or ran it about twice as fast, once a fast channel beside it had emptied (issue #1666).** NFsim keeps its total propensity as a running sum, and a rate many orders below the largest total of the run was rounded away in it: `0 -> D` at 1e-6 beside `A + B -> C` at kf from 1000 of each gave D(2e7) = 0 at kf = 1e5 and 38 at kf = 1e4, for a mean of 20, with no warning. The vendored NFsim now sums the total afresh once it falls far below its peak, and every 4096 updates, and D has mean 20 at every kf.
+
+- **`Model.from_bngl` and `bngsim.run_bngl` capped a file's network with the
+  limits of a `generate_network` after its first ODE, SSA, PLA or PSA run
+  (issue #1480).** BNG2.pl generates the network at that run with its defaults,
+  but the loader forwarded the file's last `generate_network`:
+  `simulate({method=>"ode",...})` followed by `generate_network({max_iter=>3})`
+  loaded a network cut off at 3 iterations. The limits now come from the first
+  `generate_network`, unless such a run, `writeMDL()` or a `reaction_network`
+  `visualize` comes before it. A network-free run generates nothing, so the
+  call after it still applies. A `method=>"nf"` run with a `poplevel` now runs
+  as PSA, as in BNG2.pl, where it was refused as an NFsim run.
+  `ProtocolSpec.network_gen`, which `write_bngl_protocol` and PyBNF read,
+  follows the same rule: it was the last call before any `quit()`, and is now
+  that one, read past `quit()` as the loader does, or `None` when the network
+  is generated first. `combine_protocols` keeps that `None` from a first spec
+  whose network is generated first, where it took a later spec's cap.
+
+- **Three rough edges an agent meets on first use.** Setting an observable that counts one species once, such as the `A` of a `.net` group `A 1`, now names that species in the message and as a remedy (`use_name`, or `use_call` with `set_concentration` from `set_param`), where the remedies were empty. `bngsim doctor` and `capabilities()["missing"]` no longer cite issue numbers for a feature a published wheel can lack; the KLU entry no longer says a macOS wheel is dense-only (every wheel has KLU), and the vivarium entry names `pip install 'bngsim[vivarium]'`. The `LiveStartWarning` no longer ends with an issue number.
+
+- **`Model.from_bngl` ran a `LinearParameterSensitivity` that came before the
+  file's `generate_network`.** BNG2.pl got it with the rest of the model, and
+  it runs ODE simulations of copies read from a `.net`, writing their output
+  beside that file, during the load. It is now left out, like the file's runs,
+  without stopping the actions after it.
+
+- **`bngsim run` and `bngsim check` refused `--seed` and `--xml` with
+  `--method nf_reject` or `nf_exact`.** The command knew only `nf`, `nfsim`,
+  `rm` and `rulemonkey` as network-free, where `Simulator` takes those too. It
+  now reads the list `Simulator` resolves. `nf_fixed`, `dynstoc` and `ds` get
+  `Simulator`'s own message that the method is unavailable here, from every
+  command.
+
+- **An ODE run that starts too far from t = 0 for its model is refused before it steps, where it failed in CVODE or silently lost a species.** The doubles near a time t0 are about t0·2.2e-16 apart: a clock-reading `A -> B` at `k = 1` is right from t0 = 1e26 down, fails in CVODE from about 1.05e26, and from about 1e55 returned A = B = 0 beside a `RoundoffStepWarning` alone. Over (1e308, 1.7e308) it returned A = B = 0 on a compiled right-hand side and was refused only by chance on the interpreted one, which the nightly forced-JIT suite showed. A run starting more than 1e26 of its model's time scales from 0 is now `UsageError` (`usage.span_out_of_reach`), the time scale read from how fast its rates change at the start; a rate that does not change, such as `A' = 1`, is not refused.
+
+- **`bngsim.run_bngl` ran a `parameter_scan` or `bifurcate` with
+  `method=>"protocol"` and a `poplevel` as a PSA scan.** Such a scan runs the
+  file's `begin protocol` block at each point, and BNG2.pl hands the block's
+  lines none of the scan's options, so the `poplevel` reaches no run. The scan
+  keeps its `protocol` method now, and is refused, as it is without a
+  `poplevel`, as one a protocol replay does not run.
+
 ## [0.17.3] - 2026-11-22
 
 ### Added
