@@ -370,19 +370,22 @@ def _molecule_key(pattern: str) -> tuple[str | None, str, tuple[str, ...]] | Non
 
 def _species_name(model, pattern: str) -> str | None:
     """The network's name for the species *pattern* names, or ``None`` if the
-    network has no such species: the pattern itself, or spelled as the network
-    spells a compartment (``@c::A()`` for ``@c:A()`` or ``A()@c``), either one
-    with or without a fixed species' ``$`` as :meth:`~bngsim.Model.get_concentration`
-    reads it, or a one-molecule species with its components in another order."""
-    for candidate in dict.fromkeys((pattern, _network_spelling(pattern))):
-        try:
-            return model._species_call(candidate, model._core.get_concentration)[0]
-        except ModelError:
-            pass
+    network has no such species: the one :meth:`~bngsim.Model.get_concentration`
+    reads for it, which is the pattern itself, with or without a fixed species'
+    ``$``, or the species it spells another way (components or molecules in
+    another order, other bond labels, a compartment as ``@c:A()`` or ``A()@c``),
+    as BNG2.pl's ``setConcentration`` finds it. Or else, on a model whose
+    species are SBML ids, the one whose id is the molecule's name: the SBML
+    bngsim writes for a network names ``A()`` ``A``, and an archive's protocol
+    still says ``A()``."""
+    try:
+        return model._species_call(pattern, model._core.get_concentration)[0]
+    except ModelError:
+        pass
     key = _molecule_key(pattern)
     if key is not None:
         for name in model.species_names:
-            if _molecule_key(name) == key:
+            if "(" not in name and _molecule_key(name) == key:
                 return name
     return None
 
