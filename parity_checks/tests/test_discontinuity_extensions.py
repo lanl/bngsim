@@ -346,7 +346,7 @@ def test_a_case_judged_by_its_window_peak_allows_rtol_of_that_peak(peak, outcome
 
 def test_only_the_cases_that_say_so_are_judged_by_their_window_peak():
     window = {c.name for c in BY_NAME.values() if c.judge.peak == "window"}
-    assert window == {"clock_triangle_weak", "clock_sawtooth_weak"}
+    assert window == {"clock_triangle_weak", "clock_sawtooth_weak", "clock_sawtooth_literal"}
 
 
 def test_a_point_is_a_dataclass_whose_engine_defaults_to_the_ode():

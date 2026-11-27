@@ -13,6 +13,10 @@ sample at a crossing time has both of its limits. No bngsim here.
   end point only, and extended to every time and to the columns of a, b and c.
 * ``decay_bend``: a source ``kp*max(0, th - X)`` on a decaying X: a bend on
   the state, whose crossing time ``ln(X0/th)/kd`` is known.
+
+Below those, one closed form per #1913 case, each its case's model written
+out (an event as a jump of the species it resets), and two (``cube_switch``,
+``counter_onset``) taken at 30 digits by mpmath where a double would not do.
 """
 
 from __future__ import annotations

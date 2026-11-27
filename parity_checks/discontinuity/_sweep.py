@@ -536,9 +536,13 @@ def check_spec(case: Case) -> list[str]:
             problems.append(f"{where}: the reference gives no crossings: {_first_line(e)}")
             crossings = ()
         request = Offset(SPEC_POINTS, shift=SPEC_SHIFT).request(window, crossings)
-        res = bngsim.Simulator(model, method="ode").run(
-            t_span=window, rtol=SPEC_RTOL, atol=SPEC_RTOL * 1e-2, **request
-        )
+        # Only the states are read, so what the run warns of (a late switch's
+        # round-off steps, #1836) is not the check's to report.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = bngsim.Simulator(model, method="ode").run(
+                t_span=window, rtol=SPEC_RTOL, atol=SPEC_RTOL * 1e-2, **request
+            )
         states = list(
             zip(np.asarray(res.time, float), np.asarray(res.species, float), strict=True)
         )

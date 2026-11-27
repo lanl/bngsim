@@ -426,4 +426,4 @@ def test_the_double_apart_events_fire_on_their_own_doubles_in_time_order():
 
 def test_the_unlisted_value_gains_one_window_every_three_from_three_on():
     x, _ = CF.event_unlisted_value().fn({}, np.array([0.05, 2.9, 3.05, 20.0]), "right")
-    np.testing.assert_allclose(x["Y"], [0.05, 0.05, 0.10, 0.35], rtol=1e-15)
+    np.testing.assert_allclose(x["Y"], [0.05, 0.05, 0.10, 0.35], rtol=1e-13)

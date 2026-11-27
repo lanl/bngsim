@@ -443,7 +443,16 @@ CASES = (
             point(1e-8, Uniform(11)),
         ),
         judge=Judge(converge=False),
-        known={},
+        known={
+            "counter_onset_sbml|rtol=1e-06,grid=u11,sens=on": Known(
+                1807,
+                AssertionError,
+                "the loader's extra root on Tc >= on breaks the comoving onset column",
+            ),
+            "counter_onset_sbml|rtol=1e-08,grid=u11,sens=on": Known(
+                1807, "SimulationError", "the run makes no progress at the onset, t = 3"
+            ),
+        },
         note=(
             "#1807: #750's pulse on a counter clock Tc, k1*s^(a-1)*(1-s) while "
             "on <= Tc <= on + D, as Antimony. The SBML loader adds a root on Tc >= on that "

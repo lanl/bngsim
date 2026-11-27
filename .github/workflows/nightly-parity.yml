@@ -858,16 +858,16 @@ jobs:
   # through bngsim's switch machinery (closed forms, or the model integrated
   # branch by branch at 30 digits). No reference engine and no corpus: the
   # cases are Python modules in parity_checks/discontinuity. Its PR slice runs
-  # in python-tests.yml; this is the full sweep. About 3 s of runs on 4
-  # workers locally once compiled.
+  # in python-tests.yml; this is the full sweep: 772 rows in about 50 s on 4
+  # workers locally (an M4 Max), #1779's stalls cut at 10 s each.
   # ------------------------------------------------------------------------- #
   discontinuity:
     name: Discontinuity sweep
     needs: plan
     if: needs.plan.outputs.discontinuity == 'true'
     runs-on: ubuntu-latest
-    # discontinuity_run.py caps a job at 15 min; its ten jobs run in three
-    # waves on four workers.
+    # discontinuity_run.py caps a job (a case's row) at 15 min; a job that
+    # hangs is cut there and reports TIMEOUT on every row it owed.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
