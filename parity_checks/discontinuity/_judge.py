@@ -26,14 +26,17 @@ every column's at most its ``k_sens``.
   is used, and the counts are reported. Which side is owed is #1916's to say.
 
 **Convergence.** For one row, grid and set of columns, take the point ratios
-across the rtol axis. A correct run's error tracks its tolerance, so its ratio
-stays about level. An error stuck at a crossing does not fall, and its ratio
-grows as the tolerance tightens; that is how #1227's columns showed. The row
-fails when, for any two of its tolerances, the tighter run's ratio is past
-``CONVERGE_FLOOR`` and past the looser one's times
-``(rtol_loose/rtol_tight)**CONVERGE_ORDER``: an error that falls slower than
-the square root of the tolerance anywhere along the axis, a plateau between
-the two tightest included.
+across the rtol axis. A correct run's error tracks its tolerance roughly: in
+the seed cases' healthy groups a ratio grows at most fourfold per hundredfold
+tightening, and stays under 100x even at rtol 1e-12. An error stuck at a
+crossing does not fall, and its ratio grows a hundredfold per hundredfold
+tightening; that is how #1227's columns showed. The row fails when, for any
+two of its tolerances, the tighter run's ratio is past ``CONVERGE_FLOOR`` and
+past the looser one's times ``(rtol_loose/rtol_tight)**CONVERGE_ORDER``: an
+error that falls slower than the square root of the tolerance anywhere along
+the axis. The floor keeps a small ratio's noise at loose tolerances from
+counting: with it, every healthy seed group sits at under half of its
+allowance, so the rule catches a plateau or a spike and is not on a knife edge.
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ from _reference import Band, Solution
 from bngsim import _check
 
 FLOOR_FACTOR = 10.0
-CONVERGE_FLOOR = 10.0
+CONVERGE_FLOOR = 30.0
 CONVERGE_ORDER = 0.5
 
 

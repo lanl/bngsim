@@ -80,11 +80,12 @@ the judge accepts either side, and each row records which one bngsim gave.
 `_judge.py`. For each species and each sensitivity column it takes the largest
 distance between the run and the reference over the window, in units of
 `atol + rtol·peak` (for a column, `atol/|p|`), and compares that with the case's
-`k_state` and `k_sens` (default 1e3, `bngsim._check.PATH_RTOL_FACTOR`). Columns
-the run cannot resolve are named but not judged; the rule is `_check.resolved`.
-The convergence row fails when the error stops falling as rtol tightens: the
-tightest run's ratio must stay within 10, or within the loosest run's ratio times
-the square root of the tolerance range.
+`k_state` and `k_sens` (default 1e3, `bngsim._check.PATH_RTOL_FACTOR`). A column
+that neither the run nor the reference resolves is named but not judged; the
+rule is `_check.resolved`. The convergence row fails when, for any two
+tolerances, the tighter run's ratio is past 30 and past the looser one's ratio
+times the square root of their ratio: an error that stops falling, as #1227's
+did. In the seed cases every healthy row sits at under half of that allowance.
 
 ## What the seed found
 
@@ -94,9 +95,12 @@ records what Linux gives):
 * **#1984**: `clock_step[a=1.0,b=-1.0]` at rtol 1e-10 on `Aligned(2)`, with rows
   at t = 0, 25 (the crossing) and 30 only. From the crossing on, `dX/dk_clock`
   and `dX/dc` come back exactly 0: the step's jump is lost, and nothing warns.
-* **#1985**: on every `clock_step` row, an output row at or before the crossing
-  leaves `dX/dk_clock` 286 times its tolerance at rtol 1e-12, where rtol 1e-10
-  holds it to 6 times. The convergence rule catches this.
+* **#1985**: every `clock_step` column point at rtol 1e-12 is 93 to 286 times
+  its tolerance, where rtol 1e-6 to 1e-10 hold every column within 31 times. An
+  output row at or before the crossing does it. The case states `k_sens = 50`
+  to catch it, and turns its convergence rows off: from rtol 1e-10 to 1e-12 the
+  error grows 4 to 46 times across the groups, which no convergence rule could
+  split without flapping.
 * **#1799**: `clock_step[a=2.5,b=0.5]` at rtol 1e-12. The row asked for at
   t = 25, the crossing, comes back at t = 24.999999999999996. A sensitivity run
   records a row up to 1e-12 short of the time asked for.

@@ -140,8 +140,8 @@ def test_a_band_measures_only_what_lies_outside_it():
     [
         ([1.0, 1.2, 1.5, 2.0], "PASS"),  # the error tracks the tolerance
         ([0.01, 1.0, 100.0, 1e4], "DIFF"),  # stuck: #1227's signature
-        ([0.0, 0.0, 3.0, 9.0], "PASS"),  # grew, but within CONVERGE_FLOOR
-        ([0.0, 0.0, 3.0, 12.0], "DIFF"),
+        ([0.0, 0.0, 3.0, 25.0], "PASS"),  # grew, but within CONVERGE_FLOOR (30)
+        ([0.0, 0.0, 3.0, 40.0], "DIFF"),
         # A plateau between the two tightest only: the ends alone allow 3720x.
         ([3.72, 4.0, 6.27, 286.0], "DIFF"),
         ([1.0, None, None, None], "SKIP"),
@@ -186,6 +186,7 @@ def test_a_run_must_report_the_sample_times_it_was_given_to_the_bit():
     assert S.grid_mismatch({"n_points": 3}, [0.0, 15.0, 30.0], span) is None
     assert "1 rows reported where 3" in S.grid_mismatch({"n_points": 3}, [0.0], span)
     assert "came back at t=29.9" in S.grid_mismatch({"n_points": 3}, [0.0, 15.0, 29.9], span)
+    assert "do not increase" in S.grid_mismatch({"n_points": 4}, [0.0, 0.0, 0.0, 30.0], span)
 
 
 def test_a_failure_is_classified_by_what_bngsim_raised():

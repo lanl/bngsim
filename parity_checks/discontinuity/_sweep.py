@@ -284,6 +284,8 @@ def grid_mismatch(request: dict, times, t_span) -> str | None:
         want[[0, -1]] = [float(t_span[0]), float(t_span[1])]
     if got.shape != want.shape:
         return f"{len(got)} rows reported where {len(want)} were asked for"
+    if np.any(np.diff(got) <= 0):
+        return f"the rows' times do not increase: {got.tolist()[:8]}"
     off = np.flatnonzero(got != want)
     if not len(off):
         return None

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from _branchwise import Spec, Surface
-from _case import Aligned, Axes, Case, Known, Offset, Switch, Uniform, point
+from _case import Aligned, Axes, Case, Judge, Known, Offset, Switch, Uniform, point
 from _closed_forms import clock_exposure
 
 # #1776's model, with the residual's coefficients as parameters so the sweep
@@ -77,11 +77,18 @@ CASES = (
         slice=(
             point(1e-10, Aligned(31), COLS),
             point(1e-6, Aligned(31), COLS),
-            point(1e-12, Offset(31), COLS, a=1.0, b=-1.0),
+            point(1e-12, Offset(31), (), a=1.0, b=-1.0),
             point(1e-8, Uniform(31), COLS, a=2.5, b=0.5),
             point(1e-8, Uniform(4), ()),
-            point(1e-10, Aligned(2), COLS),
+            point(1e-8, Aligned(2), COLS),
         ),
+        # Every column point at rtol 1e-12 carries #1985, at 93-286x its
+        # tolerance (macOS arm64), where rtol 1e-6 to 1e-10 hold every column
+        # within 31x. A limit of 50 sits between the two with room either side.
+        # The convergence rows are off: #1985 grows by 4x to 46x from rtol
+        # 1e-10 to 1e-12 across the groups, a spread no such rule could split
+        # without flapping, and the limit carries the check instead.
+        judge=Judge(k_sens=50.0, converge=False),
         known={
             **{
                 # Asked for a row at t = 25, the crossing, the sensitivity run
@@ -94,28 +101,24 @@ CASES = (
                 for g in ("aligned2", "aligned31", "offset31")
             },
             **{
-                # A row at or before the crossing leaves dX/dk_clock 286x the
-                # tolerance at rtol 1e-12, where 1e-10 holds it to 6x.
-                f"{row}|converge,grid={g},sens=kx+k_clock+c": Known(
+                f"{row}|rtol=1e-12,grid={g},sens=kx+k_clock+c": Known(
                     1985, AssertionError, "the k_clock column stops converging at rtol 1e-12"
                 )
                 for row, grids in (
-                    ("clock_step", ("u31", "aligned2", "aligned31", "offset31")),
-                    ("clock_step[a=2.5,b=0.5]", ("u31",)),
-                    ("clock_step[a=1.0,b=-1.0]", ("u31", "aligned31")),
+                    ("clock_step", ("u4", "u31", "aligned2", "aligned31", "offset31")),
+                    ("clock_step[a=2.5,b=0.5]", ("u4", "u31")),
+                    (
+                        "clock_step[a=1.0,b=-1.0]",
+                        ("u4", "u31", "aligned2", "aligned31", "offset31"),
+                    ),
                 )
                 for g in grids
             },
-            **{
-                # Rows at 0, 25 and 30 only: from the crossing on, dX/dk_clock
-                # and dX/dc come back exactly 0 at rtol 1e-10.
-                f"clock_step[a=1.0,b=-1.0]|{m},sens=kx+k_clock+c": Known(
-                    1984,
-                    AssertionError,
-                    "the step's jump is lost when a row falls on the crossing",
-                )
-                for m in ("rtol=1e-10,grid=aligned2", "converge,grid=aligned2")
-            },
+            # Rows at 0, 25 and 30 only: from the crossing on, dX/dk_clock and
+            # dX/dc come back exactly 0 at rtol 1e-10.
+            "clock_step[a=1.0,b=-1.0]|rtol=1e-10,grid=aligned2,sens=kx+k_clock+c": Known(
+                1984, AssertionError, "the step's jump is lost when a row falls on the crossing"
+            ),
         },
         note=(
             "#1776's step: a state switch the clock carries against its species. "

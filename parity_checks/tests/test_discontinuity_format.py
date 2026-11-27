@@ -140,13 +140,13 @@ def test_every_known_failure_fails_in_the_committed_baseline():
 
 
 def test_a_known_convergence_row_marks_the_slice_only_where_it_holds_every_tolerance():
-    base = BY_NAME["clock_step"]
+    base = BY_NAME["time_window"]
     group = base.slice[0].group  # aligned31 with the columns: 1e-10 and 1e-6 in the slice
     key = base.converge_key(group)
-    assert key in base.known
-    (param,) = [p for p in S.slice_groups([base]) if p.id == key]
+    marked = dataclasses.replace(base, known={key: Known(1985, AssertionError, "a plateau")})
+    (param,) = [p for p in S.slice_groups([marked]) if p.id == key]
     assert not param.marks
     full = tuple(dataclasses.replace(base.slice[0], rtol=r) for r in base.axes.rtol)
-    case = dataclasses.replace(base, slice=full + base.slice[2:6])
+    case = dataclasses.replace(marked, slice=full + base.slice[2:6])
     (param,) = [p for p in S.slice_groups([case]) if p.id == key]
     assert param.marks and param.marks[0].kwargs["reason"].startswith("#1985")
