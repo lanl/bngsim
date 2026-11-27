@@ -585,6 +585,22 @@ A grid of three or more output points over a span longer than the largest
 double, such as `(-1e308, 1e308)`, is refused before it starts: its output
 times are not finite. Measure time in a larger unit instead.
 
+**A run that starts too far from t = 0** for its model is refused before it
+steps, with the same `usage.span_out_of_reach`. The doubles near a time `t0`
+are about `t0·2.2e-16` apart, and CVODE's smallest step there outruns a model
+that changes on a time scale far shorter: a clock-reading `A -> B` at `k = 1`
+is right from `t0 = 1e26` down, fails in CVODE from about 1.05e26, and from
+about 1e55 loses B with only a `RoundoffStepWarning`. A run starting more than
+1e26 of its model's time scales from 0 is refused. The time scale is read at
+the start, as how fast the rates change along the model's path
+(`max|f| / max|J·f|`), over the species whose change on that scale is past
+their tolerance, so a species far under its `atol` does not set it, and a rate
+that does not change, such as `A' = 1`, which CVODE integrates exactly at any
+step, has none and is not refused. A model that does not read the clock is
+usually moved onto its own and starts at 0; one whose origin stays far from 0
+is refused as one that reads it. Start the run nearer 0, or measure time in a
+larger unit.
+
 ### Steps too small to move the clock
 
 Before each step CVODE checks whether `t + h == t` in double precision. Where
