@@ -907,12 +907,17 @@ def test_an_array_derived_from_species_takes_no_name(result, derive):
 
 
 def test_a_bngl_species_named_like_its_observable_is_named(data_dir=DATA):
-    """BNGL's ``Molecules S1 S1()`` makes S1 an observable and S1() the species:
-    asked for the species S1, the error names S1(), not the observable."""
+    """BNGL's ``Molecules S1 S1()`` makes S1 an observable and S1() the species.
+    The model takes ``S1`` as BNG2.pl's ``setConcentration("S1", 5)`` does: a
+    molecule with no components, which is the species S1(); the observable is
+    not consulted (issue #1833). A name that differs in case spells no species,
+    and its error still names S1(), not the observable; so does a result's."""
     m = Model.load(data_dir / "case_sensitivity.net")
     assert "S1" in m.observable_names and "S1()" in m.species_names
+    m.set_concentration("S1", 5.0)
+    assert m.get_concentration("S1()") == 5.0 == m.get_concentration("S1")
     with pytest.raises(ModelError, match=r"The species 'S1\(\)' is close"):
-        m.set_concentration("S1", 5.0)
+        m.set_concentration("s1", 5.0)
     r = Simulator(m).run(t_span=(0, 1), n_points=3)
     with pytest.raises(KeyError, match=r"Close matches: 'S1\(\)'"):
         r.species["S1"]

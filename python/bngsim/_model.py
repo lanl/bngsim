@@ -28,6 +28,7 @@ from bngsim._exceptions import (
     UsageError,
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
+from bngsim._species_graph import SpeciesIndex
 
 
 def _guard_function_expressions(core) -> list[tuple[str, str, str]]:
@@ -105,6 +106,7 @@ class Model:
 
     __slots__ = (
         "_core",
+        "_species_index",
         "_codegen_so_path",
         "_codegen_c_source",
         "_codegen_attachment",
@@ -173,6 +175,9 @@ class Model:
     ) -> None:
         _require_core(_core)
         self._core = _core
+        # The species by structure, for a name written another way than
+        # the network writes it; built at the first such name.
+        self._species_index: SpeciesIndex | None = None
         # Every parameter's value as the model was built, which a network-free
         # run compares the model's values with to find the ones set since, and
         # hands its backend (issue #1360, _network_free_params). A clone keeps
@@ -2339,7 +2344,16 @@ class Model:
         name : str
             Species name (e.g. ``"A(b)"``). A fixed species' ``$`` may be given
             or left out: the model names ``$A(b)`` in a ``.net`` ``A(b)``, and
-            BNG2.pl's ``setConcentration`` ignores the ``$`` too.
+            BNG2.pl's ``setConcentration`` ignores the ``$`` too. A name that
+            writes a species of the model another way than ``species_names``
+            does finds that species, as BNG2.pl's ``setConcentration`` does:
+            components or molecules in another order (``"B(a!1).A(y,x!1)"``
+            for ``A(x!1,y).B(a!1)``), other bond labels, a compartment as
+            ``"@c:A()"`` or ``"A()@c"``, and a bare ``"C"`` for a molecule with
+            no components (the species ``C()``, whatever else is named ``C``;
+            in a model with compartments it needs its compartment, ``@c:C``).
+            It has to be the whole species: a component or a state left out,
+            or a wildcard, names none.
         value : float
             New concentration value.
 
@@ -2394,8 +2408,8 @@ class Model:
         Parameters
         ----------
         name : str
-            Species name, a fixed species' ``$`` given or left out, as for
-            :meth:`set_concentration`.
+            Species name, a fixed species' ``$`` given or left out, or the
+            species written another way, as for :meth:`set_concentration`.
 
         Returns
         -------
@@ -2423,9 +2437,13 @@ class Model:
     ) -> tuple[str, Any]:
         """``(the model's name, call(it))`` for species *name*: *name* itself,
         or else *name* without a fixed species' ``$``, which the model's names
-        never hold. Raises :class:`ModelError` when neither is a species, saying
-        what the name is if it is something else (issue #1700); *value* is the
-        one a write was given, for the call that message suggests."""
+        never hold, or else the one species of the network that *name* spells
+        another way, as BNG2.pl's ``setConcentration`` finds it (components or
+        molecules in another order, other bond labels, another spelling of the
+        compartment; :mod:`bngsim._species_graph`). Raises :class:`ModelError`
+        when none is a species, saying what the name is if it is something else
+        (issue #1700); *value* is the one a write was given, for the call that
+        message suggests."""
         try:
             return name, call(name)
         except (KeyError, RuntimeError) as e:
@@ -2435,6 +2453,9 @@ class Model:
                     return bare, call(bare)
                 except (KeyError, RuntimeError):
                     pass
+            spelled = self._species_spelled(name)
+            if spelled is not None:
+                return spelled, call(spelled)
             raise ModelError(
                 self._species_not_found(name, value), **self._not_found(name, "species")
             ) from e
@@ -3560,6 +3581,13 @@ class Model:
             "details": {"name": name, "close_matches": list(close), "is_a": is_a},
             "remedies": remedies,
         }
+
+    def _species_spelled(self, name: str) -> str | None:
+        """The network's name for the species *name* spells another way, or
+        ``None`` if it spells no species of the model."""
+        if self._species_index is None:
+            self._species_index = SpeciesIndex(self.species_names)
+        return self._species_index.find(name)
 
     def _species_not_found(self, name: str, value: object = _UNSET) -> str:
         """:meth:`_parameter_not_found` for a species. A species the name
