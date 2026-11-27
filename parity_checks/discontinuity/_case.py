@@ -49,8 +49,19 @@ READS = ("time", "state")
 #: Whether the rate law jumps at the switch or only its derivative does.
 EFFECTS = ("jump", "bend")
 #: A BNGL model enters as the ``.net`` BNG2.pl writes for it, so that no run of
-#: the suite needs BNG2.pl (most CI legs have none).
-FORMATS = ("net", "sbml")
+#: the suite needs BNG2.pl (most CI legs have none). Antimony is read by
+#: ``Model.from_antimony_string``, through SBML, so its events are SBML's.
+FORMATS = ("net", "sbml", "antimony")
+#: How a point is run. ``ode`` is ``Simulator(method="ode")`` with codegen left
+#: to its own choice, as every seed case runs; ``ode-compiled`` and
+#: ``ode-interpreted`` force codegen on and off; ``diffrax`` is the experimental
+#: JAX integrator ``run_diffrax`` (plain runs on ``Uniform`` grids only, as it
+#: takes ``n_points`` and integrates no columns). Keys name a point's engine
+#: only when it is not ``ode``, so the seed cases' keys are unchanged.
+ENGINES = ("ode", "ode-compiled", "ode-interpreted", "diffrax")
+#: What a column is scaled by (``Judge.peak``): its largest magnitude over the
+#: samples, or over the whole window.
+PEAKS = ("samples", "window")
 #: The tolerances every case is swept over unless it says otherwise.
 RTOLS = (1e-6, 1e-8, 1e-10, 1e-12)
 #: The most points a case may put in the PR slice. A count, not a wall-clock
@@ -94,7 +105,10 @@ class Switch:
 
 @dataclass(frozen=True)
 class Uniform:
-    """``n_points=n``: the run's own grid, which knows nothing of the crossings."""
+    """``n_points=n``: the run's own grid, which knows nothing of the crossings.
+    Only its row count and both ends are checked: the reference is read at the
+    interior times the run reports, so a row recorded early is judged where it
+    was recorded. ``Sampled`` asks for the same times and checks every one."""
 
     n: int
 
@@ -145,7 +159,45 @@ class Offset:
         return {"sample_times": sorted(times)}
 
 
-Grid = Uniform | Aligned | Offset
+@dataclass(frozen=True)
+class Sampled:
+    """n uniform points as ``sample_times`` and nothing added at a crossing:
+    the times a user asks for, each of which must come back to the bit (#1799:
+    a sensitivity run recorded the row asked for at 3e-11 from 2.95e-11)."""
+
+    n: int
+
+    @property
+    def label(self) -> str:
+        return f"sampled{self.n}"
+
+    def request(self, t_span, crossings) -> dict:
+        return {"sample_times": _linspace(*map(float, t_span), self.n)}
+
+
+#: How ``Simulator.steady_state`` may be asked.
+STEADY_METHODS = ("integration", "newton")
+
+
+@dataclass(frozen=True)
+class SteadyState:
+    """Not a time course: ``Simulator.steady_state(method=...)``, judged against
+    the reference's limit as t goes to infinity (a ``Limit``). The run must also
+    report ``converged=True``. A case's grids are all of this kind or none."""
+
+    method: str
+
+    @property
+    def label(self) -> str:
+        return f"steady-{self.method}"
+
+    def request(self, t_span, crossings) -> dict:
+        return {"method": self.method}
+
+
+Grid = Uniform | Aligned | Offset | Sampled | SteadyState
+#: The grids that ask for a time course.
+COURSES = (Uniform, Aligned, Offset, Sampled)
 
 
 def _linspace(t0: float, t1: float, n: int) -> list[float]:
@@ -167,30 +219,38 @@ class Axes:
     rtol: tuple[float, ...] = RTOLS
     grids: tuple[Grid, ...] = (Uniform(4), Uniform(31))
     sens: tuple[tuple[str, ...], ...] = ((),)
+    engines: tuple[str, ...] = ("ode",)
 
 
 @dataclass(frozen=True)
 class Point:
-    """One run: a parameter row, a tolerance, a grid and a set of columns."""
+    """One run: a parameter row, a tolerance, a grid, a set of columns and an
+    engine."""
 
     row: tuple[tuple[str, float], ...]
     rtol: float
     grid: Grid
     sens: tuple[str, ...]
+    engine: str = "ode"
 
     @property
     def method(self) -> str:
-        return f"rtol={self.rtol:g},grid={self.grid.label},sens={_sens_label(self.sens)}"
+        return (
+            f"rtol={self.rtol:g},grid={self.grid.label},sens={_sens_label(self.sens)}"
+            f"{_engine_label(self.engine)}"
+        )
 
     @property
     def group(self) -> tuple:
         """The points one convergence row judges together: all but the rtol."""
-        return (self.row, self.grid, self.sens)
+        return (self.row, self.grid, self.sens, self.engine)
 
 
-def point(rtol: float, grid: Grid, sens: tuple[str, ...] = (), **row: float) -> Point:
+def point(
+    rtol: float, grid: Grid, sens: tuple[str, ...] = (), engine: str = "ode", **row: float
+) -> Point:
     """A point by hand, for a case's slice: ``point(1e-10, Uniform(31), ("kx",), b=-1.0)``."""
-    return Point(_row(row), float(rtol), grid, tuple(sens))
+    return Point(_row(row), float(rtol), grid, tuple(sens), engine)
 
 
 def _row(overrides: Mapping[str, float]) -> tuple[tuple[str, float], ...]:
@@ -201,9 +261,13 @@ def _sens_label(sens: tuple[str, ...]) -> str:
     return "+".join(sens) or "none"
 
 
+def _engine_label(engine: str) -> str:
+    return "" if engine == "ode" else f",engine={engine}"
+
+
 def converge_method(group: tuple) -> str:
-    _, grid, sens = group
-    return f"converge,grid={grid.label},sens={_sens_label(sens)}"
+    _, grid, sens, engine = group
+    return f"converge,grid={grid.label},sens={_sens_label(sens)}{_engine_label(engine)}"
 
 
 # ── The judge and known failures ────────────────────────────────────────────
@@ -215,11 +279,22 @@ class Judge:
     ``atol + rtol·peak`` (see ``_judge.py``). The default is ``bngsim._check``'s
     PATH_RTOL_FACTOR: what two correct paths may differ by. A case that needs a
     looser one says why in its ``note``. ``converge`` adds the row that asks
-    the error to fall as rtol tightens."""
+    the error to fall as rtol tightens.
+
+    ``peak`` is what a column's tolerance is scaled by. ``"samples"`` (the
+    default) is its largest magnitude over the run's samples. ``"window"`` also
+    takes the reference's largest over the whole window: both limits at every
+    crossing and a dense scan. A narrow pulse's column runs 1e4 to 1e5 times its
+    end value inside the pulse, CVODES holds it to rtol of that running size
+    there, and a grid with no sample inside the pulse would judge it against its
+    end value (#1779's triangle and sawtooth; a corner-free pulse of the same
+    width does no better, see #1777). A decaying column is right to be judged
+    by its samples: its early errors decay with it."""
 
     k_state: float = 1e3
     k_sens: float = 1e3
     converge: bool = True
+    peak: str = "samples"
 
 
 @dataclass(frozen=True)
@@ -227,10 +302,15 @@ class Known:
     """A point that fails on main for a filed bug: a strict expected failure in
     the PR slice (``raises`` is the narrowest type it fails with), and a
     non-passing row in the committed nightly baseline. Fixing the bug turns
-    both red until the mark is removed."""
+    both red until the mark is removed.
+
+    ``raises`` is a type, or the name of one of bngsim's exception classes
+    (``"SimulationError"``, ``"SensitivityUnsupportedError"``,
+    ``"SimulationTimeout"`` for a stall cut off by the case's ``timeout``):
+    ``_cases`` imports nothing from bngsim, and the driver resolves the name."""
 
     issue: int
-    raises: type[BaseException] = AssertionError
+    raises: type[BaseException] | str = AssertionError
     reason: str = ""
 
 
@@ -241,19 +321,24 @@ class Known:
 class Case:
     """One model, its sweep, and its reference.
 
-    * ``model``: the model text, in ``fmt`` (a ``.net`` or SBML). Every value the sweep moves is a
-      model parameter, set with ``set_param`` on a reset model, so one compile
-      serves the whole case.
+    * ``model``: the model text, in ``fmt`` (a ``.net``, SBML or Antimony).
+      Every value the sweep moves is a model parameter, set with ``set_param``
+      on a reset model, so one compile serves the whole case.
     * ``params``: the base value of every parameter the run sets, derived ones
       included; ``derive`` computes those from the rest (a threshold placed so
       the crossing sits at a chosen time).
+    * ``t_span``: the window, or a function of a row's values giving it (#1836's
+      late switch needs a window that ends just past it, at every span).
     * ``observe``: the species judged, by their names in the model.
-    * ``reference``: a ``ClosedForm``, ``Branchwise``, ``Frozen`` or
+    * ``reference``: a ``ClosedForm``, ``Limit``, ``Branchwise``, ``Frozen`` or
       ``NoReference`` (``_reference.py``).
     * ``spec``: the model written out by hand with explicit branch variables
       (``_branchwise.Spec``). The slice checks it against the text, and a
-      branch-by-branch reference integrates it.
+      branch-by-branch reference integrates it. A model with events has none:
+      the spec holds no resets, and its controls (points that pass) stand in.
     * ``slice``: the points the PR slice runs, at most ``SLICE_CAP``.
+    * ``steady_mask``: for ``SteadyState`` points, the species the convergence
+      test reads (``steady_state(mask=...)``); empty for all of them.
     """
 
     name: str
@@ -262,7 +347,7 @@ class Case:
     fmt: str
     switches: tuple[Switch, ...]
     params: Mapping[str, float]
-    t_span: tuple[float, float]
+    t_span: tuple[float, float] | Callable[[dict[str, float]], tuple[float, float]]
     observe: tuple[str, ...]
     reference: object
     axes: Axes
@@ -273,6 +358,7 @@ class Case:
     judge: Judge = field(default_factory=Judge)
     known: Mapping[str, Known] = field(default_factory=dict)
     timeout: float = 60.0
+    steady_mask: tuple[str, ...] = ()
     note: str = ""
 
     # Values and keys
@@ -284,6 +370,17 @@ class Case:
         if self.derive is not None:
             out.update({k: float(v) for k, v in self.derive(dict(out)).items()})
         return out
+
+    def window(self, values: Mapping[str, float] | None = None) -> tuple[float, float]:
+        """The run's window at these values (the base row's when None)."""
+        span = self.t_span(dict(values or self.values())) if callable(self.t_span) else self.t_span
+        t0, t1 = span
+        return float(t0), float(t1)
+
+    @property
+    def steady(self) -> bool:
+        """Whether the case's points are steady states, not time courses."""
+        return any(isinstance(g, SteadyState) for g in self.axes.grids)
 
     def row_id(self, row: tuple[tuple[str, float], ...]) -> str:
         if not row:
@@ -300,12 +397,17 @@ class Case:
         return [_row(r) for r in self.axes.params]
 
     def points(self, row: tuple[tuple[str, float], ...] | None = None) -> list[Point]:
-        """The sweep, in a fixed order: rows, then sens, grids, rtol (loosest first)."""
+        """The sweep, in a fixed order: rows, then sens, engines, grids, rtol
+        (loosest first)."""
         rows = self.rows() if row is None else [row]
         return [
-            Point(r, float(rtol), grid, tuple(sens))
-            for r, sens, grid, rtol in itertools.product(
-                rows, self.axes.sens, self.axes.grids, sorted(self.axes.rtol, reverse=True)
+            Point(r, float(rtol), grid, tuple(sens), engine)
+            for r, sens, engine, grid, rtol in itertools.product(
+                rows,
+                self.axes.sens,
+                self.axes.engines,
+                self.axes.grids,
+                sorted(self.axes.rtol, reverse=True),
             )
         ]
 
@@ -344,15 +446,19 @@ class Case:
             raise CaseError(f"{where}: names no switch")
         if len({s.name for s in self.switches}) != len(self.switches):
             raise CaseError(f"{where}: two switches share a name")
-        t0, t1 = map(float, self.t_span)
-        if not (math.isfinite(t0) and math.isfinite(t1) and t1 > t0):
-            raise CaseError(f"{where}: t_span {self.t_span} is not a forward window")
         if not self.observe:
             raise CaseError(f"{where}: observes no species")
         for row in self.axes.params:
             unknown = set(row) - set(self.params)
             if unknown:
                 raise CaseError(f"{where}: row {dict(row)} sets {sorted(unknown)}, not in params")
+        for row in self.rows():
+            t0, t1 = self.window(self.values(row))
+            if not (math.isfinite(t0) and math.isfinite(t1) and t1 > t0):
+                raise CaseError(
+                    f"{where}: the window ({t0}, {t1}) at {self.row_id(row)} is not a forward window"
+                )
+        self._validate_axes(where)
         if self.derive is not None:
             unknown = set(self.derive(dict(self.params))) - set(self.params)
             if unknown:
@@ -389,6 +495,7 @@ class Case:
             ("rtol", {p.rtol for p in self.slice}, set(map(float, self.axes.rtol))),
             ("grid", {p.grid.label for p in self.slice}, set(labels)),
             ("sens", {p.sens for p in self.slice}, set(map(tuple, self.axes.sens))),
+            ("engine", {p.engine for p in self.slice}, set(self.axes.engines)),
         ):
             if want - have:
                 raise CaseError(
@@ -400,8 +507,56 @@ class Case:
         for k, v in self.known.items():
             if not isinstance(v, Known) or v.issue <= 0:
                 raise CaseError(f"{where}: known[{k!r}] must be a Known naming its issue")
+            if isinstance(v.raises, str):
+                if not v.raises.isidentifier():
+                    raise CaseError(f"{where}: known[{k!r}] raises {v.raises!r}, not a class name")
+            elif not (isinstance(v.raises, type) and issubclass(v.raises, BaseException)):
+                raise CaseError(
+                    f"{where}: known[{k!r}] raises {v.raises!r}, not an exception type"
+                )
         check = getattr(self.reference, "check_case", None)
         if check is not None:
             check(self)
         if self.spec is not None:
             self.spec.check_case(self)
+
+    def _validate_axes(self, where: str) -> None:
+        """The engines, steady states and judge a case asks for fit together."""
+        engines = self.axes.engines
+        if not engines or len(set(engines)) != len(engines):
+            raise CaseError(f"{where}: engines {engines} must be given, once each")
+        bad = [e for e in engines if e not in ENGINES]
+        if bad:
+            raise CaseError(f"{where}: engines {bad} are not among {ENGINES}")
+        if self.judge.peak not in PEAKS:
+            raise CaseError(f"{where}: judge peak {self.judge.peak!r} is not one of {PEAKS}")
+        grids = self.axes.grids
+        plain_uniform = not any(self.axes.sens) and all(isinstance(g, Uniform) for g in grids)
+        if "diffrax" in engines and not plain_uniform:
+            raise CaseError(
+                f"{where}: run_diffrax takes n_points and integrates no columns, so a "
+                "case with the diffrax engine sweeps Uniform grids and plain runs only"
+            )
+        steady = [g for g in grids if isinstance(g, SteadyState)]
+        if steady:
+            if len(steady) != len(grids):
+                raise CaseError(f"{where}: mixes steady states and time courses in its grids")
+            if any(g.method not in STEADY_METHODS for g in steady):
+                raise CaseError(f"{where}: a steady-state method is not one of {STEADY_METHODS}")
+            if any(self.axes.sens) or any(
+                e not in ("ode", "ode-compiled", "ode-interpreted") for e in engines
+            ):
+                raise CaseError(f"{where}: steady states are plain runs of an ODE engine here")
+            if getattr(self.reference, "kind", "") != "limit":
+                raise CaseError(f"{where}: a steady state is judged against a Limit reference")
+            if self.judge.converge:
+                raise CaseError(
+                    f"{where}: a steady state's error is set by steady_state's tol, not "
+                    "its rtol, so its case turns the convergence rows off"
+                )
+        elif getattr(self.reference, "kind", "") == "limit":
+            raise CaseError(f"{where}: a Limit reference judges SteadyState grids only")
+        elif self.steady_mask:
+            raise CaseError(f"{where}: steady_mask applies to SteadyState grids only")
+        if self.steady_mask and not set(self.observe) <= set(self.steady_mask):
+            raise CaseError(f"{where}: every observed species must be in steady_mask")

@@ -21,17 +21,28 @@ reference would stop being a second opinion.
 
 The kinds:
 
-* ``ClosedForm`` (here): formulas written by hand, evaluated live.
+* ``ClosedForm`` (here): formulas written by hand, evaluated live. Events
+  are written into them too: a species an event resets jumps at the event's
+  time, read through ``past()`` like any other indicator, so both of its limits
+  are there.
+* ``Limit`` (here): a steady state written by hand, for ``SteadyState`` grids.
 * ``Branchwise`` (``_branchwise.py``): the case's spec integrated one smooth
   branch at a time at 30 digits, with crossings located on each branch.
 * ``Frozen`` (``_frozen.py``): committed enclosures from validated
   integrators (CAPD, Ariadne), recorded offline.
 * ``NoReference`` (here): no reference exists yet; only invariants and an
   expected refusal are checked.
+
+**A refusal owed.** Where a column has no derivative (the run's answer jumps
+as the parameter crosses a value, or has a kink there), no number is right,
+and the run owes a typed refusal. A ``ClosedForm`` says where with ``owes``,
+an ``Owed`` naming the refusal by its class name, since no reference imports
+bngsim; the driver resolves the name and holds the run to it.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
@@ -43,6 +54,12 @@ AT_CROSSING_ULPS = 4
 #: doubles: a few roundings of an exponential of an exposure. The seed cases'
 #: closed forms agree with the 30-digit branchwise reference to about 2e-16.
 CLOSED_FORM_FLOOR = 1e-15
+#: The uniform times a window peak is scanned at, beside both limits at every
+#: crossing (``window_peak``).
+PEAK_SCAN = 2001
+#: The refusal a column owes where it has no derivative, unless said otherwise:
+#: bngsim's base class of every sensitivity refusal.
+SENSITIVITY_REFUSAL = "SensitivityUnsupportedError"
 
 
 class ReferenceUnavailable(RuntimeError):
@@ -129,19 +146,38 @@ ClosedFormFn = Callable[
 ]
 
 
+@dataclass(frozen=True)
+class Owed:
+    """No column has a derivative here, so the run owes a refusal: one of
+    bngsim's exception classes by name, or a class (it or a subclass of it)."""
+
+    reason: str
+    refusal: str | type = SENSITIVITY_REFUSAL
+
+
+#: ``owes(params, sens) -> Owed | None``: whether a point with these values and
+#: columns owes a refusal (``sens`` is ``()`` for a plain run).
+OwesFn = Callable[[dict, tuple[str, ...]], "Owed | None"]
+
+
 @dataclass
 class ClosedForm:
     """Formulas written by hand. ``crossings(params)`` lists the crossing
-    times, which the grids and the two-sided rows need."""
+    times, which the grids and the two-sided rows need. ``owes`` says where a
+    point owes a refusal instead of a value (``Owed``)."""
 
     fn: ClosedFormFn
     crossings_fn: Callable[[dict], Sequence[float]]
     floor: float = CLOSED_FORM_FLOOR
+    owes: OwesFn | None = None
     kind: str = field(default="closed", init=False)
 
     def crossings(self, params: dict, t_span) -> tuple[float, ...]:
         t0, t1 = map(float, t_span)
         return tuple(sorted(c for c in map(float, self.crossings_fn(params)) if t0 < c <= t1))
+
+    def owed(self, params: dict, sens: Sequence[str]) -> Owed | None:
+        return None if self.owes is None else self.owes(dict(params), tuple(sens))
 
     def solve(
         self, params: dict, t_span, times, observe: Sequence[str], sens: Sequence[str]
@@ -189,6 +225,73 @@ class ClosedForm:
         )
 
 
+# ── The peak over the window ────────────────────────────────────────────────
+
+
+def window_peak(
+    ref, params: dict, t_span, observe: Sequence[str], sens: Sequence[str], n: int = PEAK_SCAN
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Each column's largest magnitude over the whole window, from the
+    reference alone: at ``n`` uniform times and at both limits of every
+    crossing. A column whose peak lies at a crossing (a triangle's apex, a
+    sawtooth's jump) is caught there, however narrow its pulse; a smooth peak
+    between crossings is caught to the scan's resolution. Returns
+    ``(species (n_obs,), columns (n_obs, n_cols) or None)``."""
+    t0, t1 = map(float, t_span)
+    cross = [c for c in ref.crossings(params, t_span) if t0 <= c <= t1]
+    times = np.unique(np.concatenate([np.linspace(t0, t1, n), np.asarray(cross, float)]))
+    sol = ref.solve(params, t_span, times, observe, sens)
+    sp = np.maximum(sol.species.magnitude(), sol.species_left.magnitude()).max(axis=0)
+    if sol.sens is None:
+        return sp, None
+    se = np.maximum(sol.sens.magnitude(), sol.sens_left.magnitude()).max(axis=0)
+    return sp, se
+
+
+# ── Steady states ───────────────────────────────────────────────────────────
+
+
+@dataclass
+class Limit:
+    """A steady state written by hand, for ``SteadyState`` grids:
+    ``fn(params) -> {species: value}``, the state as t goes to infinity. It
+    answers at the one "time" a steady-state run reports, infinity."""
+
+    fn: Callable[[dict], dict[str, float]]
+    floor: float = CLOSED_FORM_FLOOR
+    kind: str = field(default="limit", init=False)
+
+    def crossings(self, params: dict, t_span) -> tuple[float, ...]:
+        return ()
+
+    def owed(self, params: dict, sens: Sequence[str]) -> Owed | None:
+        return None
+
+    def solve(
+        self, params: dict, t_span, times, observe: Sequence[str], sens: Sequence[str]
+    ) -> Solution:
+        if sens:
+            raise ReferenceUnavailable("a Limit gives no sensitivity columns")
+        x = self.fn(dict(params))
+        missing = [s for s in observe if s not in x]
+        if missing:
+            raise ReferenceUnavailable(f"the limit gives no value for {missing}")
+        sp = np.array([[float(x[s]) for s in observe]])
+        if not all(math.isfinite(v) for v in sp.ravel()):
+            raise ReferenceUnavailable("the limit is not finite")
+        return Solution(
+            times=np.array([np.inf]),
+            species=Band.point(sp),
+            species_left=Band.point(sp),
+            sens=None,
+            sens_left=None,
+            crossings=(),
+            at_crossing=np.zeros(1, dtype=bool),
+            floor=self.floor,
+            kind=self.kind,
+        )
+
+
 # ── No reference ────────────────────────────────────────────────────────────
 
 
@@ -207,16 +310,22 @@ class Invariant:
 class NoReference:
     """No independent reference exists yet (some slides, #1915). The case
     checks only what can be checked, and says so: invariants, each judged to
-    ``k_state·(atol + rtol·scale)``, and a refusal type the run must raise.
-    Never invent a reference to fill the gap."""
+    ``k_state·(atol + rtol·scale)``, and a refusal the run must raise, at
+    every point (a class, or its name in bngsim, since ``_cases`` imports none
+    of bngsim). Never invent a reference to fill the gap."""
 
     why: str
     invariants: tuple[Invariant, ...] = ()
-    expect_refusal: type[BaseException] | None = None
+    expect_refusal: type[BaseException] | str | None = None
     kind: str = field(default="none", init=False)
 
     def crossings(self, params: dict, t_span) -> tuple[float, ...]:
         return ()
+
+    def owed(self, params: dict, sens: Sequence[str]) -> Owed | None:
+        if self.expect_refusal is None:
+            return None
+        return Owed(self.why, self.expect_refusal)
 
     def check_case(self, case) -> None:
         from _case import CaseError

@@ -56,7 +56,7 @@ def case_fingerprint(case) -> str:
     parts = {
         "model": case.model,
         "fmt": case.fmt,
-        "t_span": [float(t) for t in case.t_span],
+        "t_span": list(case.window()),
         "observe": list(case.observe),
         "params": {k: float(v) for k, v in sorted(case.params.items())},
     }
