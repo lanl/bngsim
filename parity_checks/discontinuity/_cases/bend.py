@@ -61,7 +61,9 @@ CASES = (
                 {"th": 9.0},  # t* = 0.53, early
                 {"kd": 0.05, "th": 5.0},  # t* = 13.9, slow
             ),
-            grids=(Uniform(4), Uniform(31), Aligned(31), Offset(31)),
+            # Aligned(2) is the window's ends and its crossings, nothing else:
+            # #1984 showed only there.
+            grids=(Uniform(4), Uniform(31), Aligned(2), Aligned(31), Offset(31)),
             sens=((), COLS),
         ),
         slice=(
@@ -70,6 +72,7 @@ CASES = (
             point(1e-12, Offset(31), COLS, th=9.0),
             point(1e-8, Uniform(31), COLS, kd=0.05, th=5.0),
             point(1e-8, Uniform(4), ()),
+            point(1e-10, Aligned(2), COLS),
         ),
         note="A source that starts as its decaying species falls through a threshold: a bend on the state.",
     ),

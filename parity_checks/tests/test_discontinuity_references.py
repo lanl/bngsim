@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +47,9 @@ CLOSED = {
     [
         ("time_window", ()),
         ("time_window", (("t_off", 7.31),)),
+        # Both switches on scan times (multiples of 30/400): each restart sits
+        # on a scan time where g is exactly 0.
+        ("time_window", (("t_off", 15.0), ("t_on", 7.5))),
         ("clock_step", ()),
         ("clock_step", (("a", 1.0), ("b", -1.0))),
         ("decay_bend", ()),
@@ -243,6 +247,12 @@ def test_a_record_refuses_a_changed_case_an_unrecorded_time_and_an_unknown_tool(
         _frozen_for(case, path).solve(values, SPAN, [0.0, 1.0], case.observe, ())
     with pytest.raises(ReferenceUnavailable, match="no record for these parameters"):
         _frozen_for(case, path).solve({**values, "kx": 2.0}, SPAN, times, case.observe, ())
+    partial = path.parent / "partial.json"
+    rec = json.loads(path.read_text())
+    rec["rows"][0]["params"] = {"kx": 1.0}
+    partial.write_text(json.dumps(rec))
+    with pytest.raises(ReferenceUnavailable, match="no record for these parameters"):
+        _frozen_for(case, partial).solve(values, SPAN, times, case.observe, ())
     with pytest.raises(ValueError, match="unknown tools"):
         write_record(
             path,
@@ -287,3 +297,18 @@ def test_no_reference_module_imports_bngsim():
         check=True,
     )
     assert out.stdout.strip() == "[]"
+
+
+@pytest.mark.parametrize(
+    ("shape", "change", "message"),
+    [
+        ("triangle", {"c": 1.0, "w": 3.0}, "ahead of t = 0"),  # started before t = 0
+        ("triangle", {"w": 0.0}, "needs w > 0"),
+        ("sawtooth", {"w": 0.0}, "needs w > 0"),
+        ("step", {"b": 2.0}, "r > 0"),
+    ],
+)
+def test_the_clock_closed_forms_refuse_outside_their_domain(shape, change, message):
+    p = {"kx": 1.0, "k_clock": 2.0, "a": 3.0, "b": 1.0, "c": 25.0, "w": 0.003, **change}
+    with pytest.raises(ValueError, match=message):
+        CF.clock_exposure(shape).solve(p, SPAN, np.array([30.0]), ("Y()",), ())

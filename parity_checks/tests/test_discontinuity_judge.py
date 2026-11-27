@@ -80,26 +80,45 @@ def test_a_crossing_row_takes_either_limit_but_not_one_between():
     assert v.outcome == "DIFF" and "(at a crossing)" in v.note
 
 
-def test_a_column_the_run_cannot_resolve_is_named_not_judged():
+def _clock_judge(edit):
     case = BY_NAME["clock_step"]
     values = case.values()
     t = np.linspace(*SPAN, 31)
-    sol = CF.clock_exposure("step").solve(values, SPAN, t, case.observe, ("kx",))
+    sol = CF.clock_exposure("step").solve(values, SPAN, t, case.observe, ("kx", "c"))
     S_ = sol.sens.lo.copy()
-    S_[:, 0, 0] = 1e-20  # dT()/dkx is 0; the run's rounding is not a finding
-    v = J.judge(
+    edit(S_, t)
+    return J.judge(
         sol,
         sol.species.lo,
         S_,
         rtol=1e-10,
         atol=1e-12,
         observe=case.observe,
-        sens=("kx",),
+        sens=("kx", "c"),
         params=values,
         k_state=1e3,
         k_sens=1e3,
     )
-    assert v.outcome == "PASS" and v.unresolved == ["dT()/dkx"]
+
+
+def test_a_column_neither_side_resolves_is_named_not_judged():
+    # dT()/dkx is 0; the run's rounding there is not a finding.
+    v = _clock_judge(lambda S_, t: S_.__setitem__((slice(None), 0, 0), 1e-20))
+    assert v.outcome == "PASS" and v.unresolved == ["dT()/dkx", "dT()/dc"]
+
+
+@pytest.mark.parametrize("value", [1e6, np.nan, np.inf, "jump"])
+def test_a_column_whose_reference_is_zero_is_still_judged_by_the_run(value):
+    """Where a stray saltation term would land: a column that is 0."""
+
+    def edit(S_, t):
+        if value == "jump":
+            S_[t > 25.0, 0, 1] = -5.0  # dT()/dc jumps at the crossing
+        else:
+            S_[:, 0, 0] = value
+
+    v = _clock_judge(edit)
+    assert v.outcome == "DIFF", v.note
 
 
 def test_an_error_at_the_reference_floor_is_none_and_one_past_it_counts():
@@ -123,6 +142,8 @@ def test_a_band_measures_only_what_lies_outside_it():
         ([0.01, 1.0, 100.0, 1e4], "DIFF"),  # stuck: #1227's signature
         ([0.0, 0.0, 3.0, 9.0], "PASS"),  # grew, but within CONVERGE_FLOOR
         ([0.0, 0.0, 3.0, 12.0], "DIFF"),
+        # A plateau between the two tightest only: the ends alone allow 3720x.
+        ([3.72, 4.0, 6.27, 286.0], "DIFF"),
         ([1.0, None, None, None], "SKIP"),
     ],
 )
@@ -148,7 +169,7 @@ def test_a_point_is_judged_against_its_reference_and_a_wrong_reference_fails_it(
 
 def test_a_known_point_keeps_its_true_outcome_and_names_its_issue():
     case = BY_NAME["clock_step"]
-    key = sorted(case.known)[0]
+    key = next(k for k, v in sorted(case.known.items()) if v.issue == 1799)
     p = next(q for q in case.points() if case.key(q) == key)
     row = S.run_point(case, p)
     assert row.extra["known"] == 1799 and row.note.startswith("known #1799")
@@ -156,11 +177,15 @@ def test_a_known_point_keeps_its_true_outcome_and_names_its_issue():
 
 def test_a_run_must_report_the_sample_times_it_was_given_to_the_bit():
     ask = {"sample_times": [0.0, 25.0, 30.0]}
-    assert S.grid_mismatch(ask, [0.0, 25.0, 30.0]) is None
-    assert S.grid_mismatch({"n_points": 3}, [0.0, 1.0, 2.0]) is None
-    note = S.grid_mismatch(ask, [0.0, np.nextafter(25.0, 0), 30.0])
+    span = (0.0, 30.0)
+    assert S.grid_mismatch(ask, [0.0, 25.0, 30.0], span) is None
+    note = S.grid_mismatch(ask, [0.0, np.nextafter(25.0, 0), 30.0], span)
     assert note == "the row asked for at t=25.0 came back at t=24.999999999999996 (1 rows moved)"
-    assert "2 rows reported where 3" in S.grid_mismatch(ask, [0.0, 30.0])
+    assert "2 rows reported where 3" in S.grid_mismatch(ask, [0.0, 30.0], span)
+    # A uniform grid: its row count and both ends.
+    assert S.grid_mismatch({"n_points": 3}, [0.0, 15.0, 30.0], span) is None
+    assert "1 rows reported where 3" in S.grid_mismatch({"n_points": 3}, [0.0], span)
+    assert "came back at t=29.9" in S.grid_mismatch({"n_points": 3}, [0.0, 15.0, 29.9], span)
 
 
 def test_a_failure_is_classified_by_what_bngsim_raised():
@@ -209,8 +234,8 @@ def test_the_runners_report_reads_as_a_verdict_file_holding_every_key(tmp_path):
     case = BY_NAME["time_window"]
     assert set(v["cases"]) == case.all_keys()
     assert v["tally"]["PASS"] == len(case.all_keys()), json.dumps(v["tally"])
-    some = next(iter(v["cases"].values()))
-    assert some.get("work", {}).get("n_steps", 0) > 0 or some["outcome"] == "PASS"
+    points = {k: c for k, c in v["cases"].items() if "|converge," not in k}
+    assert points and all(c["work"]["n_steps"] > 0 and c["backend"] for c in points.values())
 
 
 def test_a_spec_that_says_another_model_than_its_text_is_caught():
@@ -235,3 +260,59 @@ def test_a_species_off_by_its_allowance_fails_a_plain_point(times, outcome):
     x[i, 1] += times * 1e3 * (1e-12 + 1e-10 * peak)
     v = _judge(sol, x, None, values, sens=())
     assert v.outcome == outcome and v.sens_ratio is None
+
+
+def test_a_model_that_cannot_be_prepared_is_no_expected_refusal():
+    case = BY_NAME["time_window"]
+    odd = dataclasses.replace(
+        case,
+        params={**case.params, "zz": 1.0},
+        reference=NoReference("none yet", expect_refusal=bngsim.BngsimError),
+    )
+    row = S.run_point(odd, point(1e-10, Uniform(31)))
+    assert row.outcome == "EXCEPTION" and row.subclass.startswith("harness:"), row.note
+
+
+def test_a_reference_that_breaks_costs_its_row_alone():
+    case = BY_NAME["time_window"]
+
+    def broken(p, t, side):
+        raise ZeroDivisionError("a bug in a closed form")
+
+    odd = dataclasses.replace(case, reference=CF.ClosedForm(broken, lambda p: (7.3,)))
+    row = S.run_point(odd, point(1e-10, Uniform(31)))
+    assert row.outcome == "EXCEPTION" and row.subclass == "reference:ZeroDivisionError"
+
+
+def _spec_problems(**change):
+    case = BY_NAME[change.pop("case", "time_window")]
+    return S.check_spec(dataclasses.replace(case, spec=dataclasses.replace(case.spec, **change)))
+
+
+def test_a_spec_that_agrees_only_where_a_parameter_is_one_is_caught():
+    spec = BY_NAME["clock_step"].spec
+
+    def squared(x, s, t, p):
+        flows = spec.rhs(x, s, t, p)
+        rate = p["kx"] ** 2 * s[0] * x["X()"]
+        return {**flows, "X()": -rate, "Y()": rate}
+
+    # kx is 1 on every row of clock_step: only the moved values see it.
+    problems = _spec_problems(case="clock_step", rhs=squared)
+    assert problems and all("moved values" in p for p in problems)
+
+
+def test_a_spec_whose_surface_is_misplaced_is_caught_beside_the_crossing():
+    from _branchwise import Surface
+
+    spec = BY_NAME["time_window"].spec
+    moved = (Surface("on", lambda x, t, p: t - p["t_on"] - 0.5), spec.surfaces[1])
+    assert any("its values" in p for p in _spec_problems(surfaces=moved))
+
+
+def test_a_surface_the_check_never_sees_from_both_sides_is_named():
+    from _branchwise import Surface
+
+    spec = BY_NAME["time_window"].spec
+    never = (spec.surfaces[0], Surface("off", lambda x, t, p: t - 100.0))
+    assert any("never compared on both its sides" in p for p in _spec_problems(surfaces=never))

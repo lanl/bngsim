@@ -866,7 +866,9 @@ jobs:
     needs: plan
     if: needs.plan.outputs.discontinuity == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # discontinuity_run.py caps a job at 15 min; its ten jobs run in three
+    # waves on four workers.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/sundials-archive

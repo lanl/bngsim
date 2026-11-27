@@ -37,9 +37,12 @@ import _rr_common  # noqa: E402
 from _core import JobResult, tally, versions, write_report  # noqa: E402
 from _core.versions import git_rev  # noqa: E402
 
-#: The cap on one job, a case's row: up to 128 points, a few seconds each at
-#: worst, and the reference solve. A stalled point is cut by its own timeout.
-DEFAULT_TIMEOUT = 1800.0
+#: The cap on one job, a case's row: 32 points and 8 convergence rows in each
+#: seed case, milliseconds a point once compiled, and the reference solve.
+#: Each point is also cut by bngsim's own ``timeout`` (``Case.timeout``). Ten
+#: jobs on four workers make three waves, so three caps and the job's set-up
+#: fit the workflow's 60 minutes; revisit both as phase 0 adds cases.
+DEFAULT_TIMEOUT = 900.0
 
 
 def job_keys(case, row) -> list[tuple[str, str]]:

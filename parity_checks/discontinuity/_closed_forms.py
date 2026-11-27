@@ -82,16 +82,22 @@ SHAPES = {
 def clock_exposure(shape: str, x0: float = 10.0):
     """``X -> Y`` at ``kx·h(u)`` with ``u = a*time() - b*Tobs``, the clock
     ``0 -> T`` at ``k_clock`` from ``T = 0``, and ``X = x0``. The pulse must
-    lie ahead of the start (``c > 0``) and the clock must carry u forward
-    (``r = a - b*k_clock > 0``)."""
+    lie wholly ahead of the start (its first switch at ``u = c + offset > 0``;
+    the integrals start from 0 there), the clock must carry u forward
+    (``r = a - b*k_clock > 0``), and a triangle or sawtooth needs ``w > 0``."""
     h, H, offsets = SHAPES[shape]
 
     def fn(p, t, side):
         kx, kc, a, b, c = (p[q] for q in ("kx", "k_clock", "a", "b", "c"))
         w = p.get("w", 0.0)
         r = a - b * kc
-        if r <= 0 or c <= 0:
-            raise ValueError(f"clock_exposure needs r > 0 and c > 0, not r = {r}, c = {c}")
+        if shape != "step" and not w > 0:
+            raise ValueError(f"a {shape} needs w > 0, not {w}")
+        if r <= 0 or not c + min(offsets(w)) > 0:
+            raise ValueError(
+                f"clock_exposure needs r > 0 and the pulse ahead of t = 0, not r = {r}, "
+                f"c = {c}, w = {w}"
+            )
         on = past(t, c / r, side)
         v = r * t - c
         hv, Hv = h(v, on, w), H(v, on, w)

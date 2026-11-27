@@ -387,13 +387,17 @@ class Branchwise:
         signs = [1 if b else -1 for b in branches]
         a = t_lo
         for b in scan:
-            if b <= t_lo:
+            # A scan time at the restart itself (a crossing that fell on one)
+            # is that crossing, not a new one.
+            if b - t_lo <= tie * max(1, abs(b)):
                 continue
             gb = fns.g(b, *fn(b)[:n], *pv)
             changed = [k for k, v in enumerate(gb) if v == 0 or (v > 0) != (signs[k] > 0)]
             if changed:
+                # A g exactly 0 at the scan time has its root there, exactly.
                 roots = sorted(
-                    (self._bisect(fns, fn, k, a, b, signs[k], pv, n), k) for k in changed
+                    (b if gb[k] == 0 else self._bisect(fns, fn, k, a, b, signs[k], pv, n), k)
+                    for k in changed
                 )
                 (t_star, k), rest = roots[0], roots[1:]
                 if rest and rest[0][0] - t_star <= tie * max(1, abs(t_star)):

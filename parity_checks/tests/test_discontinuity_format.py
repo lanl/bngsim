@@ -122,10 +122,13 @@ def known_rows_passing(cases, baseline: dict) -> list[str]:
 
 def test_the_rule_names_a_known_failure_the_baseline_records_as_passing():
     case = BY_NAME["clock_step"]
-    (k1, k2) = sorted(case.known)
-    baseline = {"cases": {k1: {"outcome": "DIFF"}, k2: {"outcome": "PASS"}}}
+    k1, k2, *rest = sorted(case.known)
+    baseline = {
+        "cases": {k: {"outcome": "DIFF"} for k in rest}
+        | {k1: {"outcome": "DIFF"}, k2: {"outcome": "PASS"}}
+    }
     assert known_rows_passing([case], baseline) == [k2]
-    assert known_rows_passing([case], {"cases": {}}) == [k1, k2]
+    assert known_rows_passing([case], {"cases": {}}) == sorted(case.known)
 
 
 @pytest.mark.skipif(not BASELINE.exists(), reason="no committed discontinuity baseline yet")
@@ -134,3 +137,16 @@ def test_every_known_failure_fails_in_the_committed_baseline():
     its mark out too, or this fails."""
     baseline = json.loads(BASELINE.read_text())
     assert known_rows_passing(CASES, baseline) == []
+
+
+def test_a_known_convergence_row_marks_the_slice_only_where_it_holds_every_tolerance():
+    base = BY_NAME["clock_step"]
+    group = base.slice[0].group  # aligned31 with the columns: 1e-10 and 1e-6 in the slice
+    key = base.converge_key(group)
+    assert key in base.known
+    (param,) = [p for p in S.slice_groups([base]) if p.id == key]
+    assert not param.marks
+    full = tuple(dataclasses.replace(base.slice[0], rtol=r) for r in base.axes.rtol)
+    case = dataclasses.replace(base, slice=full + base.slice[2:6])
+    (param,) = [p for p in S.slice_groups([case]) if p.id == key]
+    assert param.marks and param.marks[0].kwargs["reason"].startswith("#1985")

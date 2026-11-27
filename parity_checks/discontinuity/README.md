@@ -88,8 +88,15 @@ the square root of the tolerance range.
 
 ## What the seed found
 
-`clock_step[a=2.5,b=0.5]` at rtol 1e-12 with sensitivity columns, on the
-aligned and offset grids: the row asked for at t = 25, the crossing, came back
-at t = 24.999999999999996 (macOS arm64). That is #1799 (a sensitivity run
-records an output row up to 1e-12 short of the time asked for), and both points
-are marked against it.
+Three bugs, each marked against its issue (macOS arm64; the nightly baseline
+records what Linux gives):
+
+* **#1984**: `clock_step[a=1.0,b=-1.0]` at rtol 1e-10 on `Aligned(2)`, with rows
+  at t = 0, 25 (the crossing) and 30 only. From the crossing on, `dX/dk_clock`
+  and `dX/dc` come back exactly 0: the step's jump is lost, and nothing warns.
+* **#1985**: on every `clock_step` row, an output row at or before the crossing
+  leaves `dX/dk_clock` 286 times its tolerance at rtol 1e-12, where rtol 1e-10
+  holds it to 6 times. The convergence rule catches this.
+* **#1799**: `clock_step[a=2.5,b=0.5]` at rtol 1e-12. The row asked for at
+  t = 25, the crossing, comes back at t = 24.999999999999996. A sensitivity run
+  records a row up to 1e-12 short of the time asked for.

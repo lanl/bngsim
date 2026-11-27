@@ -8,14 +8,19 @@ number, its error over its tolerance:
 where ``dist`` is how far the run lies outside the reference's band (a point
 reference's band is a point), ``peak`` the column's largest magnitude over the
 window, ``atol_col`` the run's atol for a species and ``atol/|p|`` for the
-column of parameter p (CVODES's own scaling of a column's tolerance). The
+column of parameter p (CVODES's default scaling of a column's tolerance;
+bngsim scales each state's column tolerance further, which this rule does not
+mirror: it is stated in the run's own atol, not rebuilt from the engine). The
 point passes when every species' ratio is at most the case's ``k_state`` and
 every column's at most its ``k_sens``.
 
-* A column the run does not resolve is not judged, and is named. These are
-  columns whose peak is within ``bngsim._check.TRACE_ATOLS`` atols of zero,
-  where that atol rather than rtol holds them. The rule is ``_check.resolved``
-  itself, so this judge and ``Result.check()`` agree on what a run can resolve.
+* A column neither the run nor the reference resolves is not judged, and is
+  named: its peak, over the reference and the run both, is within
+  ``bngsim._check.TRACE_ATOLS`` atols of zero, where that atol rather than
+  rtol holds it. The rule is ``_check.resolved`` itself, so this judge and
+  ``Result.check()`` agree on what a run can resolve. A column whose reference
+  is zero but whose run is not (a stray jump, a NaN) is resolved by the run's
+  own values, and judged.
 * An error inside ``FLOOR_FACTOR`` of the reference's own floor is no error.
 * On a row taken exactly at a crossing time, the side the run matches better
   is used, and the counts are reported. Which side is owed is #1916's to say.
@@ -23,10 +28,12 @@ every column's at most its ``k_sens``.
 **Convergence.** For one row, grid and set of columns, take the point ratios
 across the rtol axis. A correct run's error tracks its tolerance, so its ratio
 stays about level. An error stuck at a crossing does not fall, and its ratio
-grows as the tolerance tightens; that is how #1227's columns showed. The
-row fails when the tightest run's ratio is past ``CONVERGE_FLOOR`` and past
-the loosest run's ratio times ``(rtol_loose/rtol_tight)**CONVERGE_ORDER``: an
-error that falls slower than the square root of the tolerance.
+grows as the tolerance tightens; that is how #1227's columns showed. The row
+fails when, for any two of its tolerances, the tighter run's ratio is past
+``CONVERGE_FLOOR`` and past the looser one's times
+``(rtol_loose/rtol_tight)**CONVERGE_ORDER``: an error that falls slower than
+the square root of the tolerance anywhere along the axis, a plateau between
+the two tightest included.
 """
 
 from __future__ import annotations
@@ -127,7 +134,9 @@ def judge(
     sides = {k: v for k, v in sides.items() if v}
 
     unresolved: list[str] = []
-    sp_ok = _check.resolved(sp_peak, sp_atol, rtol)
+    # Resolved by the reference or by the run: a NaN or an inf in the run
+    # makes its peak non-finite, which counts as resolved and fails below.
+    sp_ok = _check.resolved(np.maximum(sp_peak, np.abs(x).max(axis=0)), sp_atol, rtol)
     unresolved += [f"{observe[j]}" for j in range(n_obs) if not sp_ok[j]]
     sp_ratio = np.where(sp_ok, d.max(axis=0), 0.0)
     worst_state = float(sp_ratio.max()) if n_obs else 0.0
@@ -138,7 +147,7 @@ def judge(
         worst = _describe(observe[j], sol.times[i], x[i, j], sol, i, (j,), worst_state)
     sens_ratio = None
     if have_s:
-        se_ok = _check.resolved(se_peak, se_atol, rtol)
+        se_ok = _check.resolved(np.maximum(se_peak, np.abs(S).max(axis=0)), se_atol, rtol)
         unresolved += [
             f"d{observe[j]}/d{q}"
             for j in range(n_obs)
@@ -194,19 +203,22 @@ class Convergence:
 
 def converge(points: Sequence[tuple[float, float | None]]) -> Convergence:
     """``(rtol, ratio)`` per point of one group, ratio None where the point
-    gave no values. Judged on the loosest and the tightest that did."""
+    gave no values. Every pair of tolerances that gave values is judged."""
     have = sorted(((r, q) for r, q in points if q is not None), key=lambda rq: -rq[0])
     if len(have) < 2:
         return Convergence("SKIP", "fewer than two tolerances gave values", have)
-    (r1, q1), (rn, qn) = have[0], have[-1]
-    allowed = max(CONVERGE_FLOOR, q1 * (r1 / rn) ** CONVERGE_ORDER)
     trend = ", ".join(f"{q:.3g}x at {r:g}" for r, q in have)
-    if not np.isfinite(qn) or qn > allowed:
-        return Convergence(
-            "DIFF",
-            f"the error does not fall with rtol ({trend}); at most {allowed:.3g}x at {rn:g}",
-            have,
-        )
+    for j in range(1, len(have)):
+        rj, qj = have[j]
+        for ri, qi in have[:j]:
+            allowed = max(CONVERGE_FLOOR, qi * (ri / rj) ** CONVERGE_ORDER)
+            if not np.isfinite(qj) or qj > allowed:
+                return Convergence(
+                    "DIFF",
+                    f"the error does not fall with rtol ({trend}): {qj:.3g}x at {rj:g}, "
+                    f"where {qi:.3g}x at {ri:g} allows {allowed:.3g}x",
+                    have,
+                )
     return Convergence("PASS", f"{trend}", have)
 
 

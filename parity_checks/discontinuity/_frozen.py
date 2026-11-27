@@ -111,14 +111,13 @@ class Frozen:
         return rec
 
     def _row(self, params: Mapping[str, float]) -> dict:
+        """The row recorded at exactly these values: every parameter the run
+        sets, no more and no fewer."""
         rec = self.record()
+        want = _params_key(params, list(params))
         for row in rec["rows"]:
-            names = list(row["params"])
-            try:
-                if _params_key(params, names) == _params_key(row["params"], names):
-                    return row
-            except KeyError:
-                continue
+            if _params_key(row["params"], list(row["params"])) == want:
+                return row
         raise ReferenceUnavailable(f"{self.path} holds no record for these parameters")
 
     def crossings(self, params: Mapping[str, float], t_span) -> tuple[float, ...]:

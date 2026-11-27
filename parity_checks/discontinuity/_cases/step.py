@@ -69,7 +69,9 @@ CASES = (
                 {"a": 2.5, "b": 0.5},
                 {"a": 1.0, "b": -1.0},  # the species carry u with the clock
             ),
-            grids=(Uniform(4), Uniform(31), Aligned(31), Offset(31)),
+            # Aligned(2) is the window's ends and its crossings, nothing else:
+            # #1984 showed only there.
+            grids=(Uniform(4), Uniform(31), Aligned(2), Aligned(31), Offset(31)),
             sens=((), COLS),
         ),
         slice=(
@@ -78,16 +80,42 @@ CASES = (
             point(1e-12, Offset(31), COLS, a=1.0, b=-1.0),
             point(1e-8, Uniform(31), COLS, a=2.5, b=0.5),
             point(1e-8, Uniform(4), ()),
+            point(1e-10, Aligned(2), COLS),
         ),
         known={
-            # Asked for a row at t = 25, the crossing, the sensitivity run
-            # records it from one ulp short: 24.999999999999996 (macOS arm64).
-            f"clock_step[a=2.5,b=0.5]|rtol=1e-12,grid={g},sens=kx+k_clock+c": Known(
-                1799,
-                AssertionError,
-                "a sensitivity run records the row at the crossing an ulp short",
-            )
-            for g in ("aligned31", "offset31")
+            **{
+                # Asked for a row at t = 25, the crossing, the sensitivity run
+                # records it from one ulp short: 24.999999999999996 (macOS arm64).
+                f"clock_step[a=2.5,b=0.5]|rtol=1e-12,grid={g},sens=kx+k_clock+c": Known(
+                    1799,
+                    AssertionError,
+                    "a sensitivity run records the row at the crossing an ulp short",
+                )
+                for g in ("aligned2", "aligned31", "offset31")
+            },
+            **{
+                # A row at or before the crossing leaves dX/dk_clock 286x the
+                # tolerance at rtol 1e-12, where 1e-10 holds it to 6x.
+                f"{row}|converge,grid={g},sens=kx+k_clock+c": Known(
+                    1985, AssertionError, "the k_clock column stops converging at rtol 1e-12"
+                )
+                for row, grids in (
+                    ("clock_step", ("u31", "aligned2", "aligned31", "offset31")),
+                    ("clock_step[a=2.5,b=0.5]", ("u31",)),
+                    ("clock_step[a=1.0,b=-1.0]", ("u31", "aligned31")),
+                )
+                for g in grids
+            },
+            **{
+                # Rows at 0, 25 and 30 only: from the crossing on, dX/dk_clock
+                # and dX/dc come back exactly 0 at rtol 1e-10.
+                f"clock_step[a=1.0,b=-1.0]|{m},sens=kx+k_clock+c": Known(
+                    1984,
+                    AssertionError,
+                    "the step's jump is lost when a row falls on the crossing",
+                )
+                for m in ("rtol=1e-10,grid=aligned2", "converge,grid=aligned2")
+            },
         },
         note=(
             "#1776's step: a state switch the clock carries against its species. "

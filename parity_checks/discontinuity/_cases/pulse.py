@@ -62,7 +62,9 @@ CASES = (
                 {"t_on": 10.0, "t_off": 20.0},  # on the uniform grids' points
                 {"kx": 0.05, "t_on": 0.5, "t_off": 29.5},  # wide and slow
             ),
-            grids=(Uniform(4), Uniform(31), Aligned(31), Offset(31)),
+            # Aligned(2) is the window's ends and its crossings, nothing else:
+            # #1984 showed only there.
+            grids=(Uniform(4), Uniform(31), Aligned(2), Aligned(31), Offset(31)),
             sens=((), ALL),
         ),
         slice=(
@@ -71,6 +73,7 @@ CASES = (
             point(1e-12, Offset(31), ALL, t_off=7.31),
             point(1e-8, Uniform(31), ALL, t_on=10.0, t_off=20.0),
             point(1e-8, Uniform(4), ()),
+            point(1e-10, Aligned(2), ALL),
         ),
         note="A rate switched on and off at two times: both times' columns jump.",
     ),

@@ -32,19 +32,27 @@ from pathlib import Path
 import _judge as J
 import bngsim
 import numpy as np
-from _case import Case, Point
+from _case import Case, Offset, Point
 from _reference import NoReference, ReferenceUnavailable
 
 #: The refusals bngsim declares: a run that declines loudly is not a wrong
 #: answer.
 REFUSALS = (bngsim.SensitivityUnsupportedError, bngsim.CodegenDeclinedError)
-#: The plain run the spec check reads its states from.
+#: The plain run the spec check reads its states from: an ``Offset`` grid, so
+#: it holds a state either side of every crossing, ``SPEC_SHIFT`` of
+#: ``max(1, |t*|)`` away.
 SPEC_RTOL = 1e-8
 SPEC_POINTS = 31
+SPEC_SHIFT = 1e-4
 #: States within this of a surface are left out of the spec check: there the
 #: live comparison bngsim reads and the spec's branch variable may differ.
-SPEC_MARGIN = 1e-6
+SPEC_MARGIN = 1e-9
 SPEC_RTOL_MATCH = 1e-9
+#: The flows are compared at the row's own values and again with every
+#: parameter the spec reads moved by these factors (each parameter by a
+#: different one), so a spec that agrees with the text only where a parameter
+#: is 1 (``kx**2`` for ``kx``) is caught.
+SPEC_FACTORS = (1.17, 0.83, 1.31)
 
 
 @dataclass
@@ -95,23 +103,22 @@ class Row:
 
 # ── Loading ─────────────────────────────────────────────────────────────────
 
-_MODELS: dict[str, bngsim.Model] = {}
-_TMP: Path | None = None
+_MODELS: dict[tuple[str, str, str], bngsim.Model] = {}
 
 
 def load(case: Case) -> bngsim.Model:
-    """The case's model, loaded once per process."""
-    global _TMP
-    if case.name not in _MODELS:
+    """The case's model, loaded once per process (per name and text, so a
+    case rewritten under the same name is loaded afresh)."""
+    key = (case.name, case.fmt, case.model)
+    if key not in _MODELS:
         if case.fmt == "net":
-            if _TMP is None:
-                _TMP = Path(tempfile.mkdtemp(prefix="discontinuity-"))
-            path = _TMP / f"{case.name}.net"
-            path.write_text(case.model)
-            _MODELS[case.name] = bngsim.Model.from_net(str(path))
+            with tempfile.TemporaryDirectory(prefix="discontinuity-") as d:
+                path = Path(d) / f"{case.name}.net"
+                path.write_text(case.model)
+                _MODELS[key] = bngsim.Model.from_net(str(path))
         else:
-            _MODELS[case.name] = bngsim.Model.from_sbml_string(case.model)
-    return _MODELS[case.name]
+            _MODELS[key] = bngsim.Model.from_sbml_string(case.model)
+    return _MODELS[key]
 
 
 def prepare(case: Case, values: dict[str, float]) -> bngsim.Model:
@@ -145,7 +152,12 @@ def _first_line(e: BaseException) -> str:
 def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
     """Run one point and judge it. With ``strict`` (the PR slice) bngsim's
     exceptions and the reference's refusals propagate, so a test sees their
-    types; otherwise they become rows."""
+    types; otherwise they become rows.
+
+    Each stage fails as itself: preparing the model is the harness's (a
+    ``set_param`` that raises is never an expected refusal), the run is
+    bngsim's, and a reference that raises anything but
+    ``ReferenceUnavailable`` costs this row, not its whole job."""
     ref = case.reference
     values = case.values(p.row)
     row = Row(case.row_id(p.row), p.method, "PASS", extra={"reference": ref.kind})
@@ -154,16 +166,22 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
         row.extra["known"] = known.issue
     try:
         crossings = ref.crossings(values, case.t_span)
-    except ReferenceUnavailable as e:
+    except Exception as e:
         if strict:
             raise
-        return _set(row, "REFERENCE_FAILED", f"crossings: {e}")
+        return _reference_failed(row, "crossings", e)
     row.extra["crossings"] = [float(c) for c in crossings]
     request = p.grid.request(case.t_span, crossings)
     atol = p.rtol * case.atol_ratio
-    seen: list[str] = []
     try:
         model = prepare(case, values)
+    except Exception as e:
+        if strict:
+            raise
+        row.subclass = f"harness:{type(e).__name__}"
+        return _set(row, "EXCEPTION", f"preparing the model: {_first_line(e)}")
+    seen: list[str] = []
+    try:
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=list(p.sens) or None)
         t0 = time.perf_counter()
         with warnings.catch_warnings(record=True) as caught:
@@ -186,7 +204,7 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
     row.backend = sim.codegen_backend
     if seen:
         row.extra["warnings"] = seen
-    moved = grid_mismatch(request, res.time)
+    moved = grid_mismatch(request, res.time, case.t_span)
     if moved:
         return _set(row, "DIFF", f"the {p.grid.label} grid: {moved}")
     names = list(res.species_names)
@@ -213,10 +231,10 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
         S = np.asarray(res.sensitivities, dtype=float)[:, idx, :][:, :, cols]
     try:
         sol = ref.solve(values, case.t_span, np.asarray(res.time, float), case.observe, p.sens)
-    except ReferenceUnavailable as e:
+    except Exception as e:
         if strict:
             raise
-        return _set(row, "REFERENCE_FAILED", f"solve: {e}")
+        return _reference_failed(row, "solve", e)
     v = J.judge(
         sol,
         x,
@@ -242,20 +260,38 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
     return _set(row, v.outcome, v.note)
 
 
-def grid_mismatch(request: dict, times) -> str | None:
-    """How the run's times differ from the sample times it was asked for, or
-    None. A run must report the times it is given, to the bit."""
-    if "sample_times" not in request:
-        return None
-    want = np.asarray(request["sample_times"], float)
+def _reference_failed(row: Row, stage: str, e: BaseException) -> Row:
+    """A reference that declines is REFERENCE_FAILED; one that breaks is a
+    fault in the suite, EXCEPTION, on this row alone."""
+    if isinstance(e, ReferenceUnavailable):
+        return _set(row, "REFERENCE_FAILED", f"{stage}: {e}")
+    row.subclass = f"reference:{type(e).__name__}"
+    return _set(row, "EXCEPTION", f"the reference's {stage} raised {_first_line(e)}")
+
+
+def grid_mismatch(request: dict, times, t_span) -> str | None:
+    """How the run's times differ from those it was asked for, or None: the
+    sample times to the bit, or ``n_points`` rows from the window's start to
+    its end."""
     got = np.asarray(times, float)
+    if "sample_times" in request:
+        want = np.asarray(request["sample_times"], float)
+    else:
+        n = int(request["n_points"])
+        if len(got) != n:
+            return f"{len(got)} rows reported where {n} were asked for"
+        want = got.copy()
+        want[[0, -1]] = [float(t_span[0]), float(t_span[1])]
     if got.shape != want.shape:
         return f"{len(got)} rows reported where {len(want)} were asked for"
     off = np.flatnonzero(got != want)
     if not len(off):
         return None
     i = int(off[0])
-    return f"the row asked for at t={float(want[i])!r} came back at t={float(got[i])!r} ({len(off)} rows moved)"
+    return (
+        f"the row asked for at t={float(want[i])!r} came back at t={float(got[i])!r} "
+        f"({len(off)} rows moved)"
+    )
 
 
 def _set(row: Row, outcome: str, note: str) -> Row:
@@ -293,7 +329,10 @@ def _ratio(r: Row) -> float | None:
 
 
 def run_row(case: Case, row: tuple, *, on_point=None) -> list[Row]:
-    """Every point of one parameter row, then its convergence rows."""
+    """Every point of one parameter row, then its convergence rows. Each
+    column set is compiled first, untimed, so a point's time is its run's and
+    not the compiler's."""
+    warm(case, row)
     points = case.points(row)
     rows = []
     for p in points:
@@ -308,53 +347,108 @@ def run_row(case: Case, row: tuple, *, on_point=None) -> list[Row]:
     return rows
 
 
+def warm(case: Case, row: tuple = ()) -> None:
+    """Compile the case's code for every column set it sweeps, by a short run
+    of each. What fails here is left for the points themselves to report."""
+    t0, t1 = map(float, case.t_span)
+    for sens in case.axes.sens:
+        try:
+            model = prepare(case, case.values(row))
+            sim = bngsim.Simulator(model, method="ode", sensitivity_params=list(sens) or None)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                sim.run(
+                    t_span=(t0, t0 + 1e-3 * (t1 - t0)), n_points=2, rtol=1e-6, timeout=case.timeout
+                )
+        except Exception:  # noqa: BLE001, S112 - the points report it
+            continue
+
+
 # ── The spec against the text ───────────────────────────────────────────────
 
 
-def check_spec(case: Case, row: tuple = ()) -> list[str]:
+def check_spec(case: Case) -> list[str]:
     """Where the case's spec and its model text disagree; [] when they agree.
 
-    The spec's states must be the model's species, its start the model's
-    initial state, and its flows bngsim's right-hand side, at states a plain
-    run passes through, away from every surface."""
+    For every parameter row: the spec's states must be the model's species,
+    its start the model's initial state, and its flows bngsim's right-hand
+    side, at the states a plain run passes through (a state either side of
+    every crossing among them), away from every surface, at the row's values
+    and again at values moved by ``SPEC_FACTORS``. Every surface must be
+    compared on both of its sides somewhere."""
     spec = case.spec
     if spec is None:
         return []
-    values = case.values(row)
-    model = prepare(case, values)
-    names = list(model.species_names)
-    problems: list[str] = []
+    names = list(load(case).species_names)
     if set(names) != set(spec.states):
         return [
             f"the spec's states {sorted(spec.states)} are not the model's species {sorted(names)}"
         ]
     order = [names.index(s) for s in spec.states]
-    start = np.asarray(model.get_state(), dtype=float)[order]
-    want = spec.start(values)
-    if not np.allclose(start, want, rtol=1e-14, atol=0):
-        problems.append(f"the model starts at {start.tolist()}, the spec at {want.tolist()}")
-    res = bngsim.Simulator(model, method="ode").run(
-        t_span=case.t_span, n_points=SPEC_POINTS, rtol=SPEC_RTOL, atol=SPEC_RTOL * 1e-2
-    )
-    ys = np.asarray(res.species, dtype=float)
-    checked = 0
-    for t, y_model in zip(np.asarray(res.time, float), ys, strict=True):
-        y = y_model[order]
-        g = spec.g_values(t, y, values)
-        if any(abs(v) <= SPEC_MARGIN for v in g):
-            continue
-        s = [int(v > 0) for v in g]
-        f_spec = spec.flows(t, y, values, s)
-        f_model = np.asarray(model.rhs(y_model, float(t)), dtype=float)[order]
-        scale = max(1.0, float(np.max(np.abs(f_spec))))
-        if not np.allclose(f_model, f_spec, rtol=SPEC_RTOL_MATCH, atol=1e-12 * scale):
+    problems: list[str] = []
+    sides: list[set[int]] = [set() for _ in spec.surfaces]
+    for row in case.rows():
+        values = case.values(row)
+        where = case.row_id(row)
+        model = prepare(case, values)
+        start = np.asarray(model.get_state(), dtype=float)[order]
+        want = spec.start(values)
+        if not np.allclose(start, want, rtol=1e-14, atol=0):
             problems.append(
-                f"at t={t:.6g} on branches {s}: bngsim's flows {f_model.tolist()}, the spec's {f_spec.tolist()}"
+                f"{where}: the model starts at {start.tolist()}, the spec at {want.tolist()}"
             )
-        checked += 1
-    if checked < SPEC_POINTS // 2:
-        problems.append(f"only {checked} of {SPEC_POINTS} states lay away from every surface")
-    model.reset()
+        try:
+            crossings = case.reference.crossings(values, case.t_span)
+        except Exception as e:  # noqa: BLE001 - a reference that cannot say is a problem too
+            problems.append(f"{where}: the reference gives no crossings: {_first_line(e)}")
+            crossings = ()
+        request = Offset(SPEC_POINTS, shift=SPEC_SHIFT).request(case.t_span, crossings)
+        res = bngsim.Simulator(model, method="ode").run(
+            t_span=case.t_span, rtol=SPEC_RTOL, atol=SPEC_RTOL * 1e-2, **request
+        )
+        states = list(
+            zip(np.asarray(res.time, float), np.asarray(res.species, float), strict=True)
+        )
+        settings = [values] + [
+            {
+                **values,
+                **{
+                    q: values[q] * SPEC_FACTORS[(i + j) % len(SPEC_FACTORS)]
+                    for j, q in enumerate(spec.params)
+                },
+            }
+            for i in range(len(SPEC_FACTORS))
+        ]
+        for k, at in enumerate(settings):
+            for q, v in at.items():
+                model.set_param(q, v)
+            label = "its values" if k == 0 else "moved values"
+            checked = 0
+            for t, y_model in states:
+                y = y_model[order]
+                g = spec.g_values(t, y, at)
+                if any(abs(v) <= SPEC_MARGIN for v in g):
+                    continue
+                s = [int(v > 0) for v in g]
+                for i, b in enumerate(s):
+                    sides[i].add(b)
+                f_spec = spec.flows(t, y, at, s)
+                f_model = np.asarray(model.rhs(y_model, float(t)), dtype=float)[order]
+                scale = max(1.0, float(np.max(np.abs(f_spec))))
+                if not np.allclose(f_model, f_spec, rtol=SPEC_RTOL_MATCH, atol=1e-12 * scale):
+                    problems.append(
+                        f"{where} at {label}, t={t:.10g}, branches {s}: bngsim's flows "
+                        f"{f_model.tolist()}, the spec's {f_spec.tolist()}"
+                    )
+                checked += 1
+            if checked < len(states) // 2:
+                problems.append(
+                    f"{where} at {label}: only {checked} of {len(states)} states lay away from every surface"
+                )
+        prepare(case, values)
+    for surf, seen in zip(spec.surfaces, sides, strict=True):
+        if seen != {0, 1}:
+            problems.append(f"the surface of {surf.switch!r} was never compared on both its sides")
     return problems
 
 
@@ -385,9 +479,13 @@ def slice_groups(cases: Iterable[Case]) -> list:
     for case in cases:
         if not case.judge.converge:
             continue
+        every_rtol = set(map(float, case.axes.rtol))
         for group, pts in case.groups(list(case.slice)).items():
             key = case.converge_key(group)
-            known = case.known.get(key)
+            # A known failure of a convergence row describes the full sweep's
+            # group; the slice judges only the tolerances it holds, so the mark
+            # applies only where those are all of them.
+            known = case.known.get(key) if {p.rtol for p in pts} == every_rtol else None
             marks = (_xfail(known),) if known is not None else ()
             out.append(pytest.param(case, group, tuple(pts), id=key, marks=marks))
     return out
