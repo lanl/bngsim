@@ -465,3 +465,20 @@ def counter_onset():
         return {"Tc": t, "X": X}, {("Tc", "on"): np.zeros_like(t), ("X", "on"): kdeg * xp - P}
 
     return ClosedForm(fn, lambda p: (p["on"], p["on"] + p["D"]))
+
+
+def slow_threshold():
+    """A rises at r from a0 while A < 5, reaching it at ``t* = (5 - a0)/r``; past
+    5, ``A' = kf - kf/6·A`` relaxes it to 6. Y sits at its rest value 0.01 while
+    A < 5 and decays at ky past t*."""
+
+    def fn(p, t, side):
+        r, kf, ky, a0 = p["r"], p["kf"], p["ky"], p["a0"]
+        ts = (5.0 - a0) / r
+        on = past(t, ts, side)
+        dt = np.where(on, t - ts, 0.0)
+        A = np.where(on, 6.0 - np.exp(-kf / 6 * dt), a0 + r * t)
+        Y = np.where(on, 0.01 * np.exp(-ky * dt), 0.01)
+        return {"A()": A, "Y()": Y}, {}
+
+    return ClosedForm(fn, lambda p: ((5.0 - p["a0"]) / p["r"],))
