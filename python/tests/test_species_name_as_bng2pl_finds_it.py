@@ -590,6 +590,90 @@ def test_two_names_of_one_species_in_a_network_are_not_chosen_between():
     assert index.find("not a species (") is None
 
 
+HAND_WRITTEN = """\
+begin parameters
+    1 k 1.0
+end parameters
+begin compartments
+    EC 3 1
+    PM 2 1 EC
+    CP 3 1 PM
+end compartments
+begin species
+    1 L(r)@EC 5
+    2 %s 7
+    3 L(r!1)@EC.R(l!1)@PM 3
+    4 A(b!1)@CP.C(a!1)@CP 2
+end species
+begin reactions
+    1 1 0 k
+end reactions
+"""
+# (spelling, the species bngsim finds, whether BNG2.pl 2.9.3 sets one). BNG2.pl
+# read the network with readFile, one run for each spelling, and set the same
+# species wherever bngsim finds one.
+HAND_ROWS = [
+    # The compartment every molecule of the species is in, before the name.
+    ("@EC:L(r)", "L(r)@EC", True),
+    ("@EC::L(r)", "L(r)@EC", True),
+    ("@CP:B", "B()@CP", True),
+    ("@CP:B()", "B()@CP", True),
+    # A complex with every molecule in one compartment, the same way.
+    ("@CP:A(b!1).C(a!1)", "A(b!1)@CP.C(a!1)@CP", True),
+    ("@CP::C(a!3)@CP.A(b!3)", "A(b!1)@CP.C(a!1)@CP", True),
+    ("@EC:A(b!1).C(a!1)", None, False),
+    # No prefix: found as any species written another way.
+    ("R(l!7)@PM.L(r!7)@EC", "L(r!1)@EC.R(l!1)@PM", True),
+    # Another compartment than the molecule's.
+    ("@CP:L(r)", None, False),
+    ("@EC:B()", None, False),
+    ("@EC:B()@CP", None, False),
+    # Molecules in two compartments. BNG2.pl, which has the compartments'
+    # dimensions, takes the surface's prefix (@PM) and aborts on @EC. The
+    # index has no dimensions and takes neither, as the replay did before.
+    ("@EC:L(r!1).R(l!1)@PM", None, False),
+    ("@PM:R(l!1).L(r!1)@EC", None, True),
+    ("@PM:L(r!1)@EC.R(l!1)@PM", None, True),
+]
+
+
+def _hand_written(tmp_path: Path, second: str = "B()@CP") -> Path:
+    net = tmp_path / "hand.net"
+    net.write_text(HAND_WRITTEN % second, encoding="utf-8")
+    return net
+
+
+@pytest.mark.parametrize(("spelling", "want"), [row[:2] for row in HAND_ROWS])
+def test_a_prefix_on_a_network_that_writes_compartments_on_molecules_only(
+    tmp_path, spelling, want
+):
+    # A network written by hand, with no @c:: prefix before the names (BNG2.pl
+    # writes one before every species of a compartmental network). The action
+    # replay took the four prefixed one-molecule names before this, by its
+    # molecule key; a compartment that is not the molecules' never named one.
+    model = bngsim.Model.from_net(str(_hand_written(tmp_path)))
+    assert _species_name(model, spelling) == want
+    if want is None:
+        with pytest.raises(ModelError, match="not found in model"):
+            model.set_concentration(spelling, 777.0)
+        assert _holding(model, 777.0) == []
+    else:
+        model.set_concentration(spelling, 777.0)
+        assert _holding(model, 777.0) == [want]
+
+
+def test_a_prefix_the_networks_own_contradicts_finds_nothing(tmp_path):
+    # A name that states one compartment before it and another on its
+    # molecule (no network BNG2.pl writes, and one it does not read): the
+    # prefix the name states is the species' own, and the molecule's is not.
+    model = bngsim.Model.from_net(str(_hand_written(tmp_path, "@EC::B()@CP")))
+    assert "@EC::B()@CP" in model.species_names
+    assert _species_name(model, "@CP:B()") is None
+    with pytest.raises(ModelError, match="not found in model"):
+        model.set_concentration("@CP:B()", 777.0)
+    assert _holding(model, 777.0) == []
+
+
 def test_names_that_are_no_bngl_species_do_not_stop_the_index():
     # An SBML model names its species by id; some names are no BNGL at all.
     # The last is alike enough to be looked at beside the one asked for, and
@@ -1190,6 +1274,42 @@ def test_bng2pl_aborts_where_the_table_says_it_aborts(tmp_path, which, spelling)
     assert done.returncode != 0 and "ABORT" in done.stdout + done.stderr
     assert list(_amounts(tmp_path / "m.net")) == _species_block(NET[which])
     assert not (tmp_path / "after.net").exists()
+
+
+@pytest.mark.skipif(not HAS_BNG2, reason="BNG2.pl not found")
+@pytest.mark.parametrize(("spelling", "want", "taken"), HAND_ROWS)
+def test_bng2pl_on_the_network_written_by_hand(tmp_path, spelling, want, taken):
+    # BNG2.pl writes the network back with a prefix before every name.
+    prefixed = {
+        "L(r)@EC": "@EC::L(r)",
+        "B()@CP": "@CP::B()",
+        "L(r!1)@EC.R(l!1)@PM": "@PM::L(r!1)@EC.R(l!1)",
+        "A(b!1)@CP.C(a!1)@CP": "@CP::A(b!1).C(a!1)",
+    }
+    _hand_written(tmp_path)
+    (tmp_path / "run.bngl").write_text(
+        f'readFile({{file=>"hand.net"}})\nsetConcentration("{spelling}", 777)\n'
+        'writeNET({prefix=>"after"})\n',
+        encoding="utf-8",
+    )
+    done = subprocess.run(
+        ["perl", str(BNG2), "run.bngl"],
+        cwd=tmp_path,
+        env={**os.environ, "BNGPATH": str(BNG2.parent)},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if not taken:
+        assert done.returncode != 0 and "ABORT" in done.stdout + done.stderr
+        assert not (tmp_path / "after.net").exists()
+        return
+    assert done.returncode == 0, done.stdout[-2000:]
+    after = _amounts(tmp_path / "after.net")
+    (holds,) = [name for name, amount in after.items() if amount == "777"]
+    assert sorted(after) == sorted(prefixed.values())
+    # Where bngsim finds a species it is the one BNG2.pl set.
+    assert want is None or prefixed[want] == holds
 
 
 # --- #1480's own case, end to end through run_bngl ---------------------------

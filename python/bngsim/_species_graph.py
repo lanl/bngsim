@@ -245,6 +245,22 @@ def _rough(text: str) -> _Rough:
     return names, text.count("!"), text.count("~")
 
 
+def _prefix_fits(graph: SpeciesGraph, other: SpeciesGraph) -> bool:
+    """Whether the compartment written before *graph*'s name, if there is one,
+    is the compartment of *other*, a species of the network: BNG2.pl refuses
+    another. That is the one *other*'s name states before it, as BNG2.pl
+    writes every species of a compartmental network; or, in a network written
+    with the compartment on the molecules alone (``L(r)@EC``), the one every
+    molecule of *other* is in. Molecules in two compartments and no prefix
+    say nothing of the species' own, which depends on the compartments'
+    dimensions: a prefix finds nothing there."""
+    if graph.prefix in ("", other.prefix):
+        return True
+    return not other.prefix and all(
+        compartment == graph.prefix for kind, _, compartment in other.labels if kind == "molecule"
+    )
+
+
 class SpeciesIndex:
     """The species of a network by structure, so that a name written
     another way finds the one it spells."""
@@ -279,9 +295,7 @@ class SpeciesIndex:
             same = [
                 name
                 for name, other in self._graphs[rough].get(graph.key, ())
-                # A compartment written before the name is the species' own,
-                # which the network's name states: BNG2.pl refuses another.
-                if graph.prefix in ("", other.prefix) and same_species(graph, other)
+                if _prefix_fits(graph, other) and same_species(graph, other)
             ]
             # Two names of one network for one species would be a network
             # BNG2.pl does not write: neither is picked.
