@@ -38,6 +38,7 @@ KEYS = [
     "checks",
     "n_pass",
     "n_diff",
+    "n_info",
     "next",
 ]
 CHECK_KEYS = ["name", "status", "value", "worst_column", "changed", "note"]
@@ -314,18 +315,24 @@ def test_the_second_engine_says_why_it_did_not_run(monkeypatch):
 # ─── Stochastic runs ─────────────────────────────────────────────────────────
 
 
-def test_replicates_give_the_mean_and_its_standard_error():
+def test_replicates_give_the_mean_its_spread_and_one_draws_z():
     sim = Simulator(examples.load("birth_death"), method="ssa")
     r = sim.run(t_span=(0, 10), n_points=11, seed=4)
     rep = r.check()
     (c,) = rep["checks"]
-    assert c["name"] == "replicates" and c["status"] == "pass" and c["n_replicates"] == 10
+    assert c["name"] == "replicates" and c["status"] == "info" and c["n_replicates"] == 10
     (col,) = c["columns"]
     lasts = [float(r.rerun(seed=5 + i).observables["A"][-1]) for i in range(10)]
+    sd = float(np.std(lasts, ddof=1))
     assert col["mean_last"] == pytest.approx(np.mean(lasts))
-    assert col["se_last"] == pytest.approx(np.std(lasts, ddof=1) / math.sqrt(10))
+    assert col["sd_last"] == pytest.approx(sd)
+    assert col["se_last"] == pytest.approx(sd / math.sqrt(10))
     assert col["run_last"] == r.observables["A"][-1]
-    assert col["z"] == pytest.approx((col["run_last"] - col["mean_last"]) / col["se_last"])
+    # The run is one draw, as each rerun is: its distance from the mean of ten
+    # is spread by sd·sqrt(1 + 1/10), not by the mean's standard error, over
+    # which a correct run's root-mean-square distance is about sqrt(11) of them.
+    assert col["z"] == pytest.approx((col["run_last"] - col["mean_last"]) / (sd * math.sqrt(1.1)))
+    assert c["value"] == pytest.approx(abs(col["z"])) and c["worst_column"] == "A"
     exact = examples.exact("birth_death", np.array([10.0]))["A"][0]
     assert abs(col["mean_last"] - exact) < 5 * col["se_last"] * math.sqrt(10)
     # The deterministic checks do not apply.
@@ -333,6 +340,49 @@ def test_replicates_give_the_mean_and_its_standard_error():
     assert [x["name"] for x in rep["checks"]] == ["replicates"]
     (c,) = r.check("tolerance")["checks"]
     assert c["status"] == "unsupported" and "stochastic" in c["note"]
+
+
+def test_a_stochastic_runs_report_is_not_ok_as_its_check_judges_nothing():
+    # The replicates check reports numbers and judges nothing. Its status was
+    # "pass", so the report said "OK: 1 passed" and ok was True, which a
+    # caller reading ok or the status took for a check of the run.
+    sim = Simulator(examples.load("birth_death"), method="ssa")
+    r = sim.run(t_span=(0, 1), n_points=3, seed=1)
+    rep = r.check()
+    assert rep["check_version"] == _check.CHECK_VERSION == 2
+    assert [c["status"] for c in rep["checks"]] == ["info"]
+    assert rep["ok"] is False and rep["n_pass"] == 0 and rep["n_diff"] == 0
+    assert rep["n_info"] == 1
+    assert "judges nothing" in rep["next"] and "not checked" in rep["next"]
+    head = str(rep).splitlines()[0]
+    assert head.startswith("NOT OK: 0 passed") and "1 judged nothing" in head, head
+    json.dumps(rep, allow_nan=False)
+    # Beside a check that does not apply, it is still not ok, and says why.
+    rep = r.check(["replicates", "tolerance"])
+    assert [(c["name"], c["status"]) for c in rep["checks"]] == [
+        ("tolerance", "unsupported"),
+        ("replicates", "info"),
+    ]
+    assert rep["ok"] is False and "judges nothing" in rep["next"]
+
+
+def test_a_correct_draws_z_is_an_ordinary_one():
+    # Each run is a correct draw, so its z is about a t-statistic on 9 degrees
+    # of freedom: past 2.262 in 5% of runs, with a median of 0.70. Over the
+    # mean's standard error, as it was, a correct run's median was about 2.2
+    # and a third of runs were past 3.25 (binding at seed 1 had 8.5, where its
+    # z here is 2.6). Seeds 11 apart: no rerun is shared.
+    sim = Simulator(examples.load("binding"), method="ssa")
+    z = []
+    for b in range(200):
+        r = sim.run(t_span=(0, 10), n_points=11, seed=1 + 11 * b, start="initial")
+        (c,) = r.check()["checks"]
+        col = next(x for x in c["columns"] if x["name"] == "A")
+        assert col["z"] is not None, col
+        z.append(abs(col["z"]))
+    z = np.array(z)
+    assert np.mean(z > 2.262) < 0.12, np.mean(z > 2.262)
+    assert 0.45 < np.median(z) < 1.0, np.median(z)
 
 
 # ─── What it costs, and what it leaves ───────────────────────────────────────

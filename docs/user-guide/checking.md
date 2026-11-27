@@ -1,5 +1,5 @@
 ---
-summary: "Check a result before relying on it: what Result.check() runs, how to read pass, diff, skip, unsupported, no_base, timeout and exception, species the run does not resolve, when a result has been checked against another engine, and what a check of a stochastic run does not judge."
+summary: "Check a result before relying on it: what Result.check() runs, how to read pass, diff, skip, unsupported, no_base, timeout, exception and info, species the run does not resolve, when a result has been checked against another engine, and what a check of a stochastic run does not judge."
 ---
 
 # Check a result before you rely on it
@@ -67,12 +67,14 @@ numbers.
 | `no_base` | No species is converged at the run's tolerance, so there is nothing to judge a rerun against. |
 | `timeout` | The `budget=` you gave ran out before the check finished. |
 | `exception` | The changed run raised. Its `note` has the error. |
+| `info` | The check reports numbers and judges nothing: it neither passes nor fails. Only `replicates`, a stochastic run's check, gives it. |
 
 `report["ok"]` is True when at least one check passed, none is `diff`,
 `timeout` or `exception`, and the run is converged. **A `skip` or an
 `unsupported` check does not make a report not ok.** So `ok` says that nothing
 that ran moved the answer. It does not say that every check ran. Read the
-statuses.
+statuses. An `info` check is no pass either, so a report whose only check is
+`info`, as a stochastic run's is, is not ok.
 
 ## A check that fails
 
@@ -188,27 +190,32 @@ print([(c["name"], c["status"]) for c in report["checks"]])  # [('tolerance', 'p
 ## Stochastic runs
 
 An SSA or PSA run gets one check, `replicates`. It runs the model again at 10
-other seeds and reports each observable's mean and standard error over them at
-the last time, and how far this run is from that mean. A network-free run
-(`method="nf"` or `"rm"`) gets none: there `replicates` is `unsupported`, and
-the report is not ok.
+other seeds and reports, for each observable at the last time, the mean over
+them (`mean_last`), their standard deviation (`sd_last`), the mean's standard
+error (`se_last`), and `z`, how far this run is from that mean. A network-free
+run (`method="nf"` or `"rm"`) gets none: there `replicates` is `unsupported`.
+Either way the report is not ok.
 
 ```python
 model.reset()
 ssa = bngsim.Simulator(model, method="ssa")
 one = ssa.run(t_span=(0, 10), n_points=11, seed=1)
 report = one.check()
-print([(c["name"], c["status"]) for c in report["checks"]])  # [('replicates', 'pass')]
-print(report["next"])  # a stochastic run is one draw: report the mean over replicates
+print([(c["name"], c["status"]) for c in report["checks"]])  # [('replicates', 'info')]
+print(report["ok"])  # False
+print(report["next"])  # The replicates check judges nothing, so this run is not checked ...
 ```
 
-**`replicates` judges nothing.** Its `pass` means that the reruns ran, not that
-the run is right, and `ok` is True for the same reason. The distance it gives,
-`z`, is in standard errors of the mean of 10 draws, so a correct draw is often
-several of them away. One trajectory is one draw. Report a mean over many
-replicates, with its standard error, the number of replicates and the seed.
-To check a stochastic answer, compare that mean with a closed form or with
-another simulator, allowing for the standard errors.
+**`replicates` judges nothing.** Its status is `info`, neither a pass nor a
+failure, so `ok` is False and `bngsim check` exits 6: the run is not checked.
+`z` is in standard deviations of one draw about the mean of the others,
+`sd_last·sqrt(1 + 1/10)`, since this run is a draw like each rerun. A correct
+run's `z` is then about a t-statistic on 9 degrees of freedom, past 2.3 in
+about one run in twenty, so a large `z` among several observables is expected
+now and then, and is no finding either. One trajectory is one draw. Report a
+mean over many replicates, with its standard error, the number of replicates
+and the seed. To check a stochastic answer, compare that mean with a closed
+form or with another simulator, allowing for the standard errors.
 
 ## From the command line
 
@@ -233,8 +240,8 @@ Whether you are a person or an agent reporting a result:
    and "checked against AMICI" only when `sensitivity_second_engine` is `pass`.
    Even then, AMICI's pass covers only the series it judged: name the ones in
    its `no_reference`. The other checks compare BNGsim with itself.
-5. **A stochastic run's check is no check of its answer.** Report means over
-   replicates.
+5. **A stochastic run's check is no check of its answer.** Its report is never
+   ok. Report means over replicates.
 6. **Keep the evidence.** Save `json.dumps(report)` beside `result.record`.
 
 ```python

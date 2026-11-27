@@ -49,8 +49,10 @@ difference quotient, and AMICI's, where it is installed.
 
 Verdicts: ``pass``, ``diff``, ``skip`` (with the reason), ``unsupported`` (the
 check does not apply to this run), ``exception`` (the changed run raised),
-``no_base`` (no column is converged enough to judge a path against) and
-``timeout`` (the ``budget`` ran out).
+``no_base`` (no column is converged enough to judge a path against),
+``timeout`` (the ``budget`` ran out) and ``info`` (the check reports numbers and
+judges nothing: the replicates check of a stochastic run, which neither passes
+nor fails, so a report whose only check it is, is never ok).
 """
 
 from __future__ import annotations
@@ -72,8 +74,10 @@ if TYPE_CHECKING:
     from bngsim._result import Result
 
 #: Incremented by a change that removes or renames a key, or changes what one
-#: holds. A key added is no change of version.
-CHECK_VERSION = 1
+#: holds. A key added is no change of version. 2: the replicates check's status
+#: is ``info``, not ``pass`` (so a stochastic run's report is not ok), and its
+#: ``z`` is in a single draw's standard deviations, not the mean's standard error.
+CHECK_VERSION = 2
 
 #: How many times the run's tolerance two correct paths may differ by: their
 #: errors are each about the tolerance, scaled by the problem's conditioning,
@@ -129,8 +133,11 @@ DEFAULT_DETERMINISTIC = ("tolerance", "grid")
 DEFAULT_STOCHASTIC = ("replicates",)
 DEFAULT_SENSITIVITY = ("sensitivity",)
 
-_STATUSES = ("pass", "diff", "skip", "unsupported", "exception", "no_base", "timeout")
+_STATUSES = ("pass", "diff", "skip", "unsupported", "exception", "no_base", "timeout", "info")
 _NOT_OK = ("diff", "exception", "timeout")
+#: A check that reports and judges nothing: neither a pass nor a failure, so it
+#: does not make a report ok.
+INFO = "info"
 
 
 def column_atols(
@@ -447,6 +454,7 @@ def _finish(out: Report, roundoff: bool = False) -> Report:
     )
     out["n_pass"] = statuses.count("pass")
     out["n_diff"] = statuses.count("diff")
+    out["n_info"] = statuses.count(INFO)
     out["next"] = _next(out, roundoff)
     return out
 
@@ -568,10 +576,12 @@ def _next(out: Report, roundoff: bool = False) -> str:
             "The run is not converged at its own tolerance, so no path could be judged: "
             "rerun at a tighter rtol and atol and check that."
         )
-    if any(c["name"] == "replicates" and c["status"] == "pass" for c in out["checks"]):
+    if any(c["name"] == "replicates" and c["status"] == INFO for c in out["checks"]):
         return (
-            "A stochastic run is one draw: report the mean over replicates with its "
-            "standard error, not this trajectory."
+            "The replicates check judges nothing, so this run is not checked: a stochastic "
+            "run is one draw. Report the mean over replicates with its standard error, not "
+            "this trajectory, and check that mean against a closed form or another "
+            "simulator, allowing for its standard error."
         )
     if not out["ok"]:
         return "No check could run on this result: see each check's note."
@@ -1196,14 +1206,21 @@ class _Context:
             block = again._observables if self.result._observable_names else again._species
             last[i] = np.asarray(block, dtype=float)[-1]
         mean = last.mean(axis=0)
-        se = last.std(axis=0, ddof=1) / math.sqrt(n)
+        sd = last.std(axis=0, ddof=1)
+        se = sd / math.sqrt(n)
         mine = obs[-1]
-        z = np.where(se > 0, (mine - mean) / np.where(se > 0, se, 1.0), np.nan)
+        # The run is one draw, as each rerun is: its distance from the reruns'
+        # mean is spread by one draw's variance and the mean's, sd²·(1 + 1/n),
+        # and not by the mean's alone. Over the standard error, a correct
+        # run's root-mean-square distance is about sqrt(n + 1) of them.
+        spread = sd * math.sqrt(1.0 + 1.0 / n)
+        z = np.where(spread > 0, (mine - mean) / np.where(spread > 0, spread, 1.0), np.nan)
         cols = [
             {
                 "name": names[j],
                 "run_last": _num(mine[j]),
                 "mean_last": _num(mean[j]),
+                "sd_last": _num(sd[j]),
                 "se_last": _num(se[j]),
                 "z": _num(z[j]),
             }
@@ -1213,12 +1230,14 @@ class _Context:
         worst = int(np.argmax(absz)) if len(names) and (absz >= 0).any() else None
         note = (
             f"{n} reruns at seeds {seeds[0]}, ..., {seeds[-1]}: at the last time each "
-            "observable's mean over them, its standard error, and how many standard errors "
-            "this run is from it (None where they all agree); it reports, and judges nothing"
+            "observable's mean over them, their standard deviation and the mean's standard "
+            "error, and how far this run is from the mean in standard deviations of one "
+            f"draw, sd*sqrt(1 + 1/{n}) (None where they all agree); it reports, and judges "
+            "nothing"
         )
         return _verdict(
             "replicates",
-            "pass",
+            INFO,
             None if worst is None else float(absz[worst]),
             note,
             worst=None if worst is None else names[worst],
@@ -1390,6 +1409,8 @@ def text(r: dict[str, Any]) -> str:
     lines = []
     verdict = "OK" if r.get("ok") else "NOT OK"
     head = f"{verdict}: {r.get('n_pass', 0)} passed, {r.get('n_diff', 0)} moved the answer"
+    if r.get("n_info"):
+        head += f", {r['n_info']} judged nothing"
     if r.get("n_not_resolved"):
         head += f", {r['n_not_resolved']} species not resolved"
     if r.get("n_between"):

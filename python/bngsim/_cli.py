@@ -87,7 +87,8 @@ EXIT_RUN_FAILED = 4
 #: A run took longer than its wall-clock limit.
 EXIT_TIMEOUT = 5
 #: ``bngsim check``: the run finished and its check is not ok (an answer moved,
-#: a changed run raised or ran out of time, or the run is not converged).
+#: a changed run raised or ran out of time, the run is not converged, no check
+#: applies, or the only check judges nothing, as a stochastic run's does).
 EXIT_CHECK_FAILED = 6
 
 #: Each exit code and what it means, as the documentation lists them.
@@ -308,7 +309,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="run a model, then check the run (Result.check())",
         description="Run a model as `bngsim run` does, then make the run again with "
         "one setting changed and say whether the answer moved (Result.check()). "
-        "Exits 6 when the check is not ok.",
+        "Exits 6 when the check is not ok, as it always is for a stochastic run, "
+        "whose check judges nothing.",
     )
     check.add_argument("--checks", default=None, help=_checks_help())
     check.add_argument(
