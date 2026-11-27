@@ -27,6 +27,13 @@ times that cannot be finite is refused before it starts. Every run whose
 clock stayed finite returns the rows it did. And the wall-clock budget is
 read from the right-hand side, so a run that spends it inside one CVode call
 stops there as ``SimulationTimeout``.
+
+A run that starts too far from t = 0 for its model is refused before it
+steps: that is where the clock-reading run over (1e308, 1.7e308) now ends, on
+either RHS, where a compiled RHS returned A = B = 0 (it reads 0*time() at inf
+as NaN, which the interpreted one folds to 0, and so was refused only at a kept
+step to inf). Issue #1943 (a first output far past the model's time scale)
+is not this file's.
 """
 
 from __future__ import annotations
@@ -87,11 +94,9 @@ OVERFLOWS = [
     pytest.param("k", 1.0, _span(0.0, 7e307), id="the issue's run that never returned"),
     pytest.param(READS_THE_CLOCK, 1.0, _span(0.0, 7e307), id="it, reading the clock"),
     pytest.param("k", 1.0, _span(1e308, 1.7e308), id="moved onto (0, 7e307)"),
-    pytest.param(READS_THE_CLOCK, 1.0, _span(1e308, 1.7e308), id="the issue's nan rows"),
     pytest.param("k", 1.0, _span(-1.7e308, -1e308), id="a far run below 0"),
     pytest.param("k", 0.0, _span(0.0, 1e306), id="a model at rest"),
     pytest.param("k", 0.0, _span(-7e307, 0.0), id="a model at rest, toward 0"),
-    pytest.param("k", 1.0, {"sample_times": [-1e308, 0.0, 1e308]}, id="sample times across 2e308"),
 ]
 
 
@@ -143,23 +148,28 @@ KEPT_AT_INF = [
     # call, and with max_steps=5 in a batch retry_while_advancing runs.
     pytest.param("clock", {}, {"max_step": 1e307}, id="the warm loop"),
     pytest.param("clock", {}, {"max_step": 1e307, "max_steps": 5}, id="a retried batch"),
-    # An event takes the run down the cold loop, and so do sensitivities.
-    pytest.param("event", {}, {}, id="the cold loop"),
-    pytest.param("event", {"sensitivity_params": ["k"]}, {}, id="the cold loop, sensitivities"),
+    # An event takes the run down the cold loop, and so do sensitivities: from
+    # 0, as a run that starts far from 0 is refused before it steps.
+    pytest.param("event", {}, {"max_step": 1e307}, id="the cold loop"),
+    pytest.param(
+        "event",
+        {"sensitivity_params": ["k"]},
+        {"max_step": 1e307},
+        id="the cold loop, sensitivities",
+    ),
 ]
 EVENT = "species A = 1, B = 0; k = 1; J1: A -> B; k*A; E1: at time > 1e10: A = 1;"
 
 
 @pytest.mark.parametrize(("model", "sim_kw", "run_kw"), KEPT_AT_INF)
 def test_a_step_kept_at_inf_is_refused_as_its_call_returns(tmp_path, model, sim_kw, run_kw):
+    span, n_points = (0.0, 1.79e308), 2
     if model == "clock":
         sim = _sim(tmp_path, CLOCK_NET, **sim_kw)
-        span, n_points = (0.0, 1.79e308), 2
     else:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             sim = bngsim.Simulator(bngsim.Model.from_antimony_string(EVENT), "ode", **sim_kw)
-        span, n_points = (1e308, 1.7e308), 5
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         with pytest.raises(bngsim.UsageError, match="largest double") as info:
@@ -314,3 +324,89 @@ def test_a_failure_after_a_timeout_is_still_logged(capfd):
     with pytest.raises(bngsim.SimulationError):
         bngsim.Simulator(blowup, "ode").run((0.0, 2.0), 3)
     assert "[ERROR]" in capfd.readouterr().err
+
+
+FAR_STARTS = [
+    # A clock-reading law is not moved onto its own clock (#1753): over
+    # (1e308, 1.7e308) it came back [1, 0, nan, nan, nan], and with a compiled
+    # RHS, which reads 0*time() at inf as NaN where the interpreted one folds
+    # it, A = B = 0 where B is 1, beside a RoundoffStepWarning alone.
+    pytest.param(READS_THE_CLOCK, 1.0, _span(1e308, 1.7e308), id="the issue's nan rows"),
+    pytest.param(READS_THE_CLOCK, 1.0, _span(2e26, 3e26), id="where CVODE failed"),
+    pytest.param(READS_THE_CLOCK, 1.0, _span(1e30, 1.5e30), id="past 1e26 time scales"),
+    pytest.param(READS_THE_CLOCK, 1e3, _span(1e27, 1.5e27), id="a faster model, sooner"),
+    pytest.param("k", 1.0, {"sample_times": [-1e308, 0.0, 1e308]}, id="sample times across 2e308"),
+]
+
+
+@pytest.mark.parametrize(("law", "k", "times"), FAR_STARTS)
+def test_a_run_too_far_from_zero_for_its_model_is_refused(tmp_path, law, k, times):
+    # The doubles there are so far apart that CVODE's smallest step outruns the
+    # model: a clock-reading A -> B at k = 1 is right from t0 = 1e26 down,
+    # fails in CVODE from 1.05e26, and from about 1e55 loses B. Refused before
+    # it steps, on either RHS, and the same Simulator runs a span inside reach.
+    sim = _sim(tmp_path, _net(law, k))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(bngsim.UsageError, match="too far from t = 0") as info:
+            sim.run(**times, timeout=30)
+    assert info.value.code == "usage.span_out_of_reach"
+    assert "larger unit" in str(info.value)
+    assert _roundoff_warnings(caught) == []
+    assert sim.current_time == 0.0
+    _decays_from_1(sim.run((0.0, 5.0), 6), k)
+
+
+@pytest.mark.parametrize("t0", [1e16, 1e20, 1e25])
+def test_a_far_start_inside_reach_still_returns(tmp_path, t0):
+    # The doubles near 1e16 are 2 apart, past the model's time scale of 1, and
+    # the run is right: a refusal there would turn good runs away.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        r = _sim(tmp_path, _net(READS_THE_CLOCK)).run(t_span=(t0, 1.5 * t0), n_points=5)
+    s = np.asarray(r.species)
+    np.testing.assert_allclose(s[1:, 1], 1.0, rtol=1e-6)
+    np.testing.assert_allclose(s.sum(axis=1), 1.0, rtol=1e-6)
+
+
+def test_a_large_species_at_rest_does_not_stretch_the_time_scale():
+    # The time scale is how fast the rates change along the path: C = 1e6,
+    # which nothing changes, beside A -> B at k = 1, leaves it at 1, so a run
+    # from 1e30 is refused as A -> B alone is. Its largest species over its
+    # largest rate would read 1e6, and let the run go on to fail.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m = bngsim.Model.from_antimony_string(
+            "species A = 1, B = 0, C = 1e6; k = 1; J1: A -> B; k*(1 + 0*time)*A;"
+        )
+    with pytest.raises(bngsim.UsageError, match="too far from t = 0") as info:
+        bngsim.Simulator(m, "ode").run(t_span=(1e30, 1.5e30), n_points=5, start="initial")
+    assert info.value.code == "usage.span_out_of_reach"
+
+
+@pytest.mark.parametrize("t0", [1e28, 1e30, 1e60])
+def test_a_species_far_under_its_tolerance_does_not_set_the_time_scale(tmp_path, t0):
+    # A = 1e-20 beside B = 1 moves 1e-20 on its time scale of 1, far under its
+    # error weight, and the run is right: [0, 1] at every row after the first.
+    net = _net(READS_THE_CLOCK).replace(" 1 A() 1\n 2 B() 0\n", " 1 A() 1e-20\n 2 B() 1\n")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        r = _sim(tmp_path, net).run(t_span=(t0, 1.5 * t0), n_points=5)
+    np.testing.assert_allclose(np.asarray(r.species)[1:, 1], 1.0, rtol=1e-12)
+
+
+def test_a_slow_species_sets_its_own_time_scale_beside_a_residue():
+    # C -> D at 1e-25 from C = 1 has a time scale of 1e25, so a run from 1e30
+    # is inside reach; a residue A = 1e-18 moving at 1 beside it does not set
+    # the scale. C = e^-0.5 and e^-2 at 0.5e25 and 2e25 past the start.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m = bngsim.Model.from_antimony_string(
+            "species A = 1e-18, B = 0, C = 1, D = 0; k = 1; ks = 1e-25;"
+            " J1: A -> B; k*(1 + 0*time)*A; J2: C -> D; ks*(1 + 0*time)*C;"
+        )
+        r = bngsim.Simulator(m, "ode").run(
+            sample_times=[1e30, 1e30 + 0.5e25, 1e30 + 2e25], start="initial"
+        )
+    c = np.asarray(r.species)[:, r.species_names.index("C")]
+    np.testing.assert_allclose(c[1:], np.exp([-0.5, -2.0]), rtol=1e-5)

@@ -200,6 +200,89 @@ static const char *const kPastTheDoubles =
     "The run is too long, or too far from t = 0. Measure time in a larger unit, so that the "
     "run's times are smaller.";
 
+// ─── A run that starts too far from t = 0 for its model ─────────────────────
+//
+// The doubles near a time t0 are about uround·|t0| apart, and CVODE's smallest
+// step there, near 100·uround·|t0|, can outrun a model by a factor no step
+// recovers: a clock-reading A -> B at k = 1 over (t0, 1.5·t0) is right from
+// t0 = 1e26 down, fails in CVODE from 1.05e26 to about 1e50, and from about
+// 1e55 loses B, A = B = 0, beside a RoundoffStepWarning alone (each 1e3 times
+// sooner at k = 1000). Over (1e308, 1.7e308), the nightly forced-JIT suite's
+// case, it returned A = B = 0 on a compiled right-hand side, which reads
+// 0*time() at inf as NaN, and was refused only by chance on the interpreted
+// one, which folds it to 0 and kept a step to inf (#1838). Such a run is
+// refused before it steps, past kFarStartScales of the model's time scales.
+//
+// The time scale is how fast the rates change along the model's path at the
+// start: max|f| / max|J·f|, J·f read as a difference quotient of f along f, over
+// the species whose change on their own scale, f_i² / |J·f|_i, exceeds their
+// error weight, atol_i + rtol·|y_i|: A -> B at k = 1 gives 1, at k = 1000 1e-3.
+// A species far under its tolerance does not set it (A = 1e-20 beside B = 1 is
+// right at any t0, and a slow C -> D at 1e-25 beside it has a scale of 1e25). A
+// rate that does not change along the path (A' = 1, which BDF integrates
+// exactly at any step) has no such scale, and is left to the run, as is a model
+// at rest, or one none of whose species qualifies. (Largest species over
+// largest rate refused A' = 1 far from 0, which is exact there; a species' own
+// |y|/|f| read B's, from 0, at its tolerance.) A model that does not read the
+// clock is usually moved onto its own (#1753) and starts at 0 here; where its
+// origin stays far from 0 it is refused as one that reads it.
+constexpr double kFarStartScales = 1e26;
+constexpr double kFarStartFloor = 1e6; // no run starting nearer 0 is looked at
+
+static void refuse_a_start_too_far(NetworkModel &model, sunrealtype t0, N_Vector y, double rtol,
+                                   double atol, const std::vector<double> &atol_v) {
+    if (!(std::fabs(t0) > kFarStartFloor))
+        return;
+    const auto n = static_cast<std::size_t>(N_VGetLength(y));
+    const double *y0 = N_VGetArrayPointer(y);
+    std::vector<double> f(n, 0.0);
+    model.compute_derivs(static_cast<double>(t0), y0, f.data());
+    double ymax = 0.0, fmax = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!std::isfinite(y0[i]) || !std::isfinite(f[i]))
+            return; // the run reports that itself
+        ymax = std::max(ymax, std::fabs(y0[i]));
+        fmax = std::max(fmax, std::fabs(f[i]));
+    }
+    if (!(fmax > 0.0))
+        return;
+    // J·f by a difference quotient along f: a step that moves the state by
+    // sqrt(uround) of its size (or of 1, from 0).
+    const double delta =
+        std::sqrt(std::numeric_limits<double>::epsilon()) * std::max(ymax, 1.0) / fmax;
+    std::vector<double> y1(n), f1(n, 0.0);
+    for (std::size_t i = 0; i < n; ++i)
+        y1[i] = y0[i] + delta * f[i];
+    model.compute_derivs(static_cast<double>(t0), y1.data(), f1.data());
+    double fq = 0.0, jfq = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!std::isfinite(f1[i]))
+            return;
+        const double jf = std::fabs(f1[i] - f[i]) / delta;
+        const double fi = std::fabs(f[i]);
+        const double a = i < atol_v.size() ? atol_v[i] : atol;
+        if (jf > 0.0 && fi * (fi / jf) > a + rtol * std::fabs(y0[i])) {
+            fq = std::max(fq, fi);
+            jfq = std::max(jfq, jf);
+        }
+    }
+    if (!(jfq > 0.0))
+        return;
+    const double scale = fq / jfq;
+    if (!(std::fabs(t0) > kFarStartScales * scale))
+        return;
+    char text[640];
+    std::snprintf(text, sizeof(text),
+                  "An ODE run starting at t = %.6g is too far from t = 0 for its model: the "
+                  "model changes on a time scale of about %.3g (how fast its rates change "
+                  "along its path at the start), and the doubles near t = %.6g are so far "
+                  "apart that CVODE's steps cannot follow it, so the run fails or loses a "
+                  "species' change. Measure time in a larger unit, or start the run nearer "
+                  "t = 0.",
+                  static_cast<double>(t0), scale, static_cast<double>(t0));
+    throw TimeSpanOutOfReach(text);
+}
+
 // A step CVODE took to t + h = inf and kept (issue #1838): it passed its error
 // test, and CVode returned with its clock at inf. Every row from there is
 // interpolated from a step at inf, NaN: over (1e308, 1.7e308) a model that
@@ -5976,6 +6059,8 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
             throw std::runtime_error("CVodeReInit failed: " + std::to_string(flag));
         }
     }
+    // A start too far from t = 0 for the model, refused before it steps.
+    refuse_a_start_too_far(model, times.t_start, w.y, rtol, atol, atol_v);
     // Every run, reused context or not (see select_spent_batch_handler).
     select_spent_batch_handler(w.ctx);
 
@@ -6362,6 +6447,8 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     if (flag != CV_SUCCESS) {
         throw std::runtime_error("CVodeInit failed: " + std::to_string(flag));
     }
+    // A start too far from t = 0 for the model, refused before it steps.
+    refuse_a_start_too_far(model, times.t_start, y, rtol, atol, atol_v);
     // Fresh CVODE memory, so its own counters start at 0; the carried half of
     // the run's totals is an Impl member and has to be cleared (issue #182).
     closed_segments = SegmentCounters{};
