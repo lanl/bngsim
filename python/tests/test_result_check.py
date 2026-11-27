@@ -957,7 +957,11 @@ def test_a_budget_out_before_the_denser_run_is_a_timeout(monkeypatch):
     monkeypatch.setattr(_check._Context, "fine_run", out)
     v = _tol(_osc())
     assert v["status"] == "timeout" and "8x the points" in v["note"], v
-    assert _tol(_osc(t_span=(0, 10), n_points=11))["status"] == "pass"
+    # A column near zero at its points is decided by that run too (#1974).
+    v = _tol(_osc(t_span=(0, 10), n_points=11))
+    assert v["status"] == "timeout" and "near zero" in v["note"], v
+    # A run with neither needs it for no verdict.
+    assert _tol(_osc(t_span=(0, 10), n_points=101))["status"] == "pass"
 
 
 def test_a_denser_run_that_raises_is_made_once_and_named(monkeypatch):
@@ -1016,3 +1020,180 @@ def test_the_report_counts_columns_judged_beside_their_points_and_says_what_to_d
     assert "rerun with more points" in rep["next"]
     assert "judged between the run's points" in str(rep)
     assert _osc(t_span=(0, 10), n_points=101).check(["tolerance"])["n_between"] == 0
+
+
+# ─── A column near zero at its points, large between them (issue #1974) ────
+
+
+def test_a_column_near_zero_only_at_its_points_is_resolved_and_judged():
+    # At rtol 1e-8, T = 10, y's values at the integer times are within 100 of
+    # its atol of zero, but it reaches 1 between them: not a column the run
+    # fails to resolve, so it is judged, point by point, and passes.
+    rep = _osc(t_span=(0, 10), n_points=11, rtol=1e-8).check()
+    assert rep["ok"] and rep["not_resolved"] == [] and rep["n_between"] == 1, rep
+    assert "stays within" not in rep["next"] and "more points" in rep["next"]
+
+
+def test_an_error_main_named_not_resolved_is_now_judged(monkeypatch):
+    # An oscillation of amplitude 1e-5 at an atol of 1e-8, sampled at its
+    # zeros: within 100 atol at the points, 1000 atol between them. The rerun
+    # at rtol/10 puts y 5e-6 (500 atol) from the run at every point: on its
+    # points main named y not resolved and did not judge it; judged on the
+    # values beside them, past the 100-atol band, it is the worst column.
+    small = OSC.replace("x = 1; y = 0", "x = 1e-5; y = 0")
+    r = Simulator(bngsim.Model.from_antimony_string(small)).run(
+        t_span=(0, 10), n_points=11, rtol=1e-8, atol=[1e-8, 1e-8]
+    )
+    jy = r.species_names.index("y")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("rtol") == pytest.approx(1e-9) and "n_points" not in changes:
+            out = copy.copy(out)
+            x = np.asarray(out._species, dtype=float).copy()
+            x[:, jy] += 5e-6
+            out._species = x
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    rep = r.check(["tolerance"])
+    v = rep["checks"][0]
+    assert v["status"] == "diff" and v["worst_column"] == "y", v
+    assert "y" not in rep["not_resolved"], rep
+
+
+def test_noise_inside_the_band_at_a_point_beside_a_small_pulse_is_no_finding():
+    # The review's case (BIOMD0000000338 over 1000 s): a pulse about 200 atol
+    # high between t = 0 and t = 1, and the run 2 and 50 atol off at t = 1,
+    # right beside it, where the truth is about 0. Inside the band the run
+    # does not resolve at its points: no finding, at that point or after it.
+    r = Simulator(
+        bngsim.Model.from_antimony_string("J1: A -> X; 20*A; J2: X -> ; 20*X; A = 1e-5; X = 0")
+    ).run(t_span=(0, 10), n_points=11, rtol=1e-8, atol=[1e-8, 1e-8])
+    jx = r.species_names.index("X")
+    for rows, by in ((1, 2e-8), (1, 5e-7), (slice(1, None), 5e-7)):
+        out = copy.copy(r)
+        x = np.asarray(r._species, dtype=float).copy()
+        x[rows, jx] += by
+        out._species = x
+        rep = out.check(["tolerance"])
+        assert rep["ok"] and "X" not in rep["not_resolved"] and rep["n_between"] == 1, rep
+
+
+def test_a_column_between_the_bands_at_a_loose_rtol_stays_not_resolved():
+    # At rtol 0.05 a pulse about 50 atol high between t = 0 and t = 1, near
+    # zero at the points, is "resolved" by the rtol share alone; within 100
+    # atol everywhere, no difference at its points could ever count: it stays
+    # named, not counted as judged.
+    r = Simulator(
+        bngsim.Model.from_antimony_string("J1: A -> X; 20*A; J2: X -> ; 20*X; A = 1.5e-6; X = 0")
+    ).run(t_span=(0, 10), n_points=11, rtol=0.05, atol=[1e-8, 1e-8])
+    rep = r.check(["tolerance"])
+    assert "X" in rep["not_resolved"] and rep["n_between"] == 0, rep
+
+
+def test_a_column_near_zero_between_its_points_too_stays_not_resolved():
+    # I peaks near 2e-7 everywhere, within 100 of its atol of 1e-8: the run at
+    # 8x the points shows it near zero between them too.
+    r = Simulator(_trace_model(1e-7), method="ode").run(t_span=(0, 30), n_points=31)
+    rep = r.check()
+    assert "I" in rep["not_resolved"], rep
+    assert "at the run's points and between them" in rep["next"]
+
+
+def test_where_the_denser_run_is_not_made_next_says_only_what_the_points_show(monkeypatch):
+    def out(self):
+        raise _check._Out
+
+    monkeypatch.setattr(_check._Context, "fine_run", out)
+    # The jacobian check alone: no verdict needs that run, so the report
+    # stands, and names y on what the points show, saying why that is all.
+    # (Here the 8x run alone is out of budget, as no real budget makes it: it
+    # shows the wording, not a state a run reaches.)
+    rep = _osc(t_span=(0, 10), n_points=11, rtol=1e-8).check(["jacobian"])
+    assert rep["not_resolved"] == ["y"], rep
+    assert "at the run's points (the run at 8x the points" in rep["next"]
+    assert "was not made: the budget ran out" in rep["next"] and "more points" in rep["next"]
+
+
+def test_next_names_why_the_values_between_the_points_were_not_seen(monkeypatch):
+    from bngsim._exceptions import SimulationError
+
+    def raised(self):
+        raise SimulationError("did not converge", code="sim.failed")
+
+    monkeypatch.setattr(_check._Context, "fine_run", raised)
+    rep = _osc(t_span=(0, 10), n_points=11, rtol=1e-8).check(["tolerance"])
+    assert rep["not_resolved"] == ["y"], rep
+    assert "raised: SimulationError" in rep["next"], rep["next"]
+    assert "raised (SimulationError" in rep["checks"][0]["note"], rep["checks"][0]["note"]
+
+
+def test_a_pulse_between_points_then_a_quiet_tail_judges_the_tail_by_its_floor():
+    # BIOMD0000000338's VIIIa: X peaks near 0.2 between t = 0 and t = 1, then
+    # decays to within a few atol of zero. The run differs from its rerun by
+    # 5 atol on that tail: noise inside the 100-atol floor, not 50% of a peak
+    # the points sample as noise. Judged on the values beside the points, X is
+    # resolved and passes; 10% of the pulse at t = 1 is still a diff.
+    r = Simulator(
+        bngsim.Model.from_antimony_string("J1: A -> X; 20*A; J2: X -> ; 20*X; A = 1; X = 0")
+    ).run(t_span=(0, 10), n_points=11, rtol=1e-8, atol=[1e-8, 1e-8])
+    jx = r.species_names.index("X")
+
+    def shifted(rows, by):
+        out = copy.copy(r)
+        x = np.asarray(r._species, dtype=float).copy()
+        x[rows, jx] += by
+        out._species = x
+        return out
+
+    rep = shifted(slice(2, None), 5e-8).check(["tolerance"])
+    assert rep["ok"] and "X" not in rep["not_resolved"] and rep["n_between"] == 1, rep
+    assert rep["checks"][0]["value_100"] <= _check.TOLERANCE_MOVE, rep
+    # The path checks read X's difference on what it reaches between its
+    # points, not on its noise at them.
+    (grid,) = shifted(slice(2, None), 5e-8).check(["grid"])["checks"]
+    assert grid["status"] == "pass" and grid["value"] < 1e-2, grid
+    bad = shifted(1, 0.02).check(["tolerance"])["checks"][0]
+    assert bad["status"] == "diff" and bad["worst_column"] == "X", bad
+
+
+@pytest.mark.parametrize(
+    ("off", "status"), [(2e-6, "diff"), (1.01e-6, "diff"), (1.0005e-6, "pass")]
+)
+def test_a_quiet_tail_the_rerun_puts_past_the_band_is_a_diff(monkeypatch, off, status):
+    # The second review's case: X's pulse reaches 0.2 between t = 0 and t = 1;
+    # the reruns put its tail 200 atol away at 9 of 11 points. Each point is
+    # judged past the band over the larger of the band and what X reaches
+    # beside it, so the pulse excuses no point in the tail: 101 atol is 1% of
+    # the band, a diff; 100.05 atol is 5e-4 of it, a pass.
+    r = Simulator(
+        bngsim.Model.from_antimony_string("J1: A -> X; 20*A; J2: X -> ; 20*X; A = 1; X = 0")
+    ).run(t_span=(0, 10), n_points=11, rtol=1e-8, atol=[1e-8, 1e-8])
+    jx = r.species_names.index("X")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if "rtol" in changes and "n_points" not in changes:
+            out = copy.copy(out)
+            x = np.asarray(out._species, dtype=float).copy()
+            x[2:, jx] += off
+            out._species = x
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    v = r.check(["tolerance"])["checks"][0]
+    assert v["status"] == status and (status == "pass" or v["worst_column"] == "X"), v
+
+
+def test_a_timeout_before_the_denser_run_does_not_call_a_column_not_resolved(monkeypatch):
+    def out(self):
+        raise _check._Out
+
+    monkeypatch.setattr(_check._Context, "fine_run", out)
+    rep = _osc(t_span=(0, 10), n_points=11, rtol=1e-8).check(["tolerance"])
+    v = rep["checks"][0]
+    assert v["status"] == "timeout" and "not judged, near zero at the run's points: y" in v["note"]
+    assert rep["not_resolved"] == [] and rep["n_not_resolved"] == 0 and not rep["ok"], rep

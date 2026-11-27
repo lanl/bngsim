@@ -24,12 +24,15 @@ and each column's absolute floor is the atol the run applied to that species:
   than 1% of the column's peak for the tolerance alone, unless the column is
   within ``PATH_ATOL_FACTOR`` atol of zero, which resolves it no better;
 - a column whose peak is within :data:`TRACE_ATOLS` times its atol, where the
-  atol and not rtol holds it (``atol_j > rtol·peak_j``), is not resolved by
-  the run, and the report names it. It is judged on the run's whole scale
+  atol and not rtol holds it (``atol_j > rtol·peak_j``), at the run's points
+  and between them on the grid check's run, is not resolved by the run, and
+  the report names it. Such a column is judged on the run's whole scale
   alone: against the allowance of a column at the largest peak and atol, with
   the largest drift, so its solver noise is no finding, and a path on which
   it departs from zero as far as the run's own species are large is one
-  (issue #1887);
+  (issue #1887). One within that band only at its points, and past it between
+  them, is resolved: each point is judged past the band, over the larger of
+  the band and what the column reaches beside the point (issue #1974);
 - a column that is not converged at the run's own tolerance (its move past
   :data:`TOLERANCE_MOVE`) is judged on the run's whole scale, as one not
   resolved is: a path on which it blows up still fails. Where no column is
@@ -108,7 +111,9 @@ PATH_ATOL_FACTOR = 100.0
 #: A column whose peak is within this many times the atol the run applied to
 #: it, where that atol (not rtol) holds it, is not resolved by the run: its
 #: values are within the solver's absolute error of zero. No check judges it,
-#: and the report names it.
+#: and the report names it. A column within it at the run's points but past it
+#: between them (on the grid check's run) is resolved, and a difference at its
+#: points counts only past this many atol (issue #1974).
 TRACE_ATOLS = 100.0
 #: How many such columns a report names.
 MAX_NAMED = 20
@@ -223,10 +228,20 @@ def local_moves(
     atol: NDArray[np.float64],
     peak: NDArray[np.float64],
     local: NDArray[np.float64],
+    near: NDArray[np.bool_] | None = None,
 ) -> NDArray[np.float64]:
     """Per column: its largest difference of *x* from *ref* past its atol, at
     each point over the larger of the column's *peak* and its :func:`local_peaks`
-    there; ``inf`` where the two are not finite at the same cells."""
+    there; ``inf`` where the two are not finite at the same cells.
+
+    A column of *near* (one whose peak at the run's points is within
+    :data:`TRACE_ATOLS` atol of zero, resolved only by what it reaches between
+    them, issue #1974) has every value at the points within the band the run
+    does not resolve: at each point its difference counts only past that many
+    atol, over the larger of that band and what the column reaches beside the
+    point. Noise at a few atol beside a transient between two points, or in
+    the tail after it, is no finding; a rerun that leaves the band at a point
+    is one, judged there, so a spike between two points excuses no other."""
     x, ref = np.asarray(x, dtype=float), np.asarray(ref, dtype=float)
     fx, fr = np.isfinite(x), np.isfinite(ref)
     d = np.where(fx & fr, np.abs(x - ref), 0.0)
@@ -234,6 +249,11 @@ def local_moves(
     over = np.maximum(d - atol, 0.0)
     with np.errstate(divide="ignore", invalid="ignore"):
         rel = np.where(scale > atol, over / np.where(scale > 0, scale, 1.0), 0.0)
+        if near is not None and np.any(near):
+            floor = TRACE_ATOLS * np.broadcast_to(np.asarray(atol, dtype=float), scale.shape[1:])
+            band = np.maximum(local, floor[None, :])
+            far = np.maximum(d - floor[None, :], 0.0) / np.where(band > 0, band, 1.0)
+            rel = np.where(near[None, :], far, rel)
     out: NDArray[np.float64] = np.where(
         (fx != fr).any(axis=0), np.inf, rel.max(axis=0) if rel.size else 0.0
     )
@@ -435,16 +455,24 @@ def check(
         out["drift"] = _num(ctx.moved.max())
         out["converged"] = bool(ctx.moved.max() <= TOLERANCE_MOVE)
         trace = [n for n, keep in zip(ctx.names, ctx.relevant, strict=True) if not keep]
+        if ctx.fine_needed and any(
+            c["name"] == "tolerance" and c["status"] == "timeout" for c in out["checks"]
+        ):
+            # The budget ran out before the run that tells a column near zero
+            # only at its points from one near zero between them too: the
+            # tolerance check is a timeout, and its note names them as not
+            # judged, not as not resolved.
+            trace = []
         out["n_not_resolved"] = len(trace)
         out["not_resolved"] = trace[:MAX_NAMED]
     # The columns and series judged on the values beside their points (issue
     # #1926), counted where a pass would otherwise say nothing of them.
     out["n_between"] = ctx.n_between + ctx.sens_between
     out["bound"] = TOLERANCE_MOVE
-    return _finish(out, roundoff)
+    return _finish(out, roundoff, unseen=ctx.between_unseen())
 
 
-def _finish(out: Report, roundoff: bool = False) -> Report:
+def _finish(out: Report, roundoff: bool = False, *, unseen: str | None = None) -> Report:
     statuses = [c["status"] for c in out["checks"]]
     out["ok"] = (
         bool(statuses)
@@ -455,7 +483,7 @@ def _finish(out: Report, roundoff: bool = False) -> Report:
     out["n_pass"] = statuses.count("pass")
     out["n_diff"] = statuses.count("diff")
     out["n_info"] = statuses.count(INFO)
-    out["next"] = _next(out, roundoff)
+    out["next"] = _next(out, roundoff, unseen=unseen)
     return out
 
 
@@ -469,7 +497,7 @@ ROUNDOFF_NEXT = (
 )
 
 
-def _next(out: Report, roundoff: bool = False) -> str:
+def _next(out: Report, roundoff: bool = False, *, unseen: str | None = None) -> str:
     """What to do next, in one sentence. *roundoff*: the run took steps
     where t + h == t."""
     diffs = [c for c in out["checks"] if c["status"] == "diff"]
@@ -589,25 +617,45 @@ def _next(out: Report, roundoff: bool = False) -> str:
     if out.get("n_between"):
         n = out["n_between"]
         between = (
-            f" {n} column(s) moved past the bound on their largest value at the run's points "
-            "and were judged on the values the run reaches between them: the points miss "
-            "part of their trajectory (a zero crossing, or a transient between two points). "
+            f" {n} column(s) were judged on the values the run reaches between its points, "
+            "which the points miss (a zero crossing, or a transient between two points): "
+            "their values at the points alone moved past the bound or stayed near zero. "
             "To see those values, rerun with more points and check that."
         )
     trace = out.get("not_resolved") or []
     if trace:
         more = out["n_not_resolved"] - len(trace)
         names = ", ".join(trace) + (f" and {more} more" if more > 0 else "")
+        one = out["n_not_resolved"] == 1
+        it, its = ("it", "its") if one else ("them", "their")
+        # Near zero between the points too where the grid check's run looked;
+        # where it did not, only the points are known, and why (issue #1974).
+        if unseen is None:
+            where = (
+                f"{'stays' if one else 'stay'} within {TRACE_ATOLS:g} times {its} atol of "
+                "zero, at the run's points and between them"
+            )
+            todo = f"rerun with an atol well below {it} (result.rerun(atol=...))"
+        elif not unseen.startswith("the run at"):
+            # A steady state, or a single point: there is nothing between.
+            where = (
+                f"{'is' if one else 'are'} within {TRACE_ATOLS:g} times {its} atol of zero "
+                f"({unseen})"
+            )
+            todo = f"rerun with an atol well below {it} (result.rerun(atol=...))"
+        else:
+            where = (
+                f"{'is' if one else 'are'} within {TRACE_ATOLS:g} times {its} atol of zero at "
+                f"the run's points ({unseen})"
+            )
+            todo = (
+                f"rerun with an atol well below {it} (result.rerun(atol=...)), or, to see "
+                f"{its} values between the points, with more points"
+            )
         return (
-            "No check moved the answer past its bound, but "
-            f"{names} {'stays' if out['n_not_resolved'] == 1 else 'stay'} within "
-            f"{TRACE_ATOLS:g} times {'its' if out['n_not_resolved'] == 1 else 'their'} atol "
-            "of zero, which the run does not resolve, and "
-            f"{'was' if out['n_not_resolved'] == 1 else 'were'} judged only against the "
-            "run's largest values: to report "
-            f"{'it' if out['n_not_resolved'] == 1 else 'them'}, rerun with an atol well "
-            f"below {'it' if out['n_not_resolved'] == 1 else 'them'} "
-            "(result.rerun(atol=...)) and check that." + between
+            f"No check moved the answer past its bound, but {names} {where}, which the run "
+            f"does not resolve, and {'was' if one else 'were'} judged only against the run's "
+            f"largest values: to report {it}, {todo}, and check that." + between
         )
     return "No check moved the answer past its bound." + between
 
@@ -675,6 +723,11 @@ class _Context:
         self.fine_exc: BaseException | None = None
         # Whether its values did not line up with the run's points.
         self.fine_mismatch = False
+        # Whether a column past the bound needed it when the budget ran out
+        # (the tolerance check is then a timeout), and whether the columns
+        # near zero at the run's points were looked at between them.
+        self.fine_needed = False
+        self.between_checked = False
         # Whether the budget ran out before that run, where a column needed it.
         self.fine_out = False
         # The species' local_peaks, where made; which columns were judged on
@@ -683,9 +736,11 @@ class _Context:
         # checks read it (a column it passed, on the scale it moves on at
         # every point).
         self.local: NDArray[np.float64] | None = None
+        self.near: NDArray[np.bool_] | None = None
         self.rescaled: NDArray[np.bool_] | None = None
         self.n_between = 0
         self.scale: NDArray[np.float64] | None = None
+        self.shown: NDArray[np.float64] | None = None
         # The same for the sensitivity series (issue #1926).
         self.sens_local: Any = None
         self.sens_between = 0
@@ -811,28 +866,77 @@ class _Context:
             # not rtol, holds the column (a loose rtol makes every atol a
             # large share of its species, and those columns are resolved to
             # that share, which the tolerance check judges).
-            self.relevant = resolved(peak, self.atols, float(self.rtol or 0.0))
+            rtol = float(self.rtol or 0.0)
+            self.relevant = resolved(peak, self.atols, rtol)
             self.moved = np.where(self.relevant, moves(d, peak, self.atols), 0.0)
             self.scale = peak
             over = self.relevant & (self.moved > TOLERANCE_MOVE)
-            if over.any():
+            near_zero = ~self.relevant
+            if over.any() or near_zero.any():
                 # A column whose points all fall on or near its zeros has a
-                # peak there about its integration error, and moves past the
-                # bound on it however right the run is (issue #1926): each of
-                # its points is judged on the largest value the column reaches
-                # beside it too, so a spike between two points excuses those
-                # two and no others.
+                # peak there about its integration error (issue #1926). Past
+                # the bound on it, or within TRACE_ATOLS atol of zero at the
+                # points while larger between them (issue #1974), it is judged
+                # point by point on the largest value it reaches beside each
+                # point too, so a spike between two points excuses only those
+                # two. A column near zero between its points as well is the
+                # one not resolved.
                 local = self.local_between(self._view, self.x.shape)
                 if local is not None:
-                    self.local, self.rescaled = local, over
-                    m = local_moves(self._view(tight), self.x, self.atols, peak, local)
-                    self.moved = np.where(over, m, self.moved)
-                    passed = over & (self.moved <= TOLERANCE_MOVE)
+                    self.between_checked = True
+                    # Past TRACE_ATOLS atol between the points (which a loose
+                    # rtol's share alone does not make it).
+                    top = local.max(axis=0)
+                    larger = near_zero & (top > TRACE_ATOLS * self.atols)
+                    self.relevant = self.relevant | larger
+                    judged = over | larger
+                    self.local, self.rescaled, self.near = local, judged, larger
+                    m = local_moves(
+                        self._view(tight), self.x, self.atols, peak, local, near=larger
+                    )
+                    self.moved = np.where(judged, m, self.moved)
+                    passed = judged & (self.moved <= TOLERANCE_MOVE)
                     self.n_between = int(passed.sum())
                     self.scale = np.where(passed, np.maximum(peak, local.min(axis=0)), peak)
+                    # A path's value for a column resolved only between its
+                    # points reads its largest value there, not its noise at
+                    # the points (its allowance stays as the scale sets it).
+                    self.shown = np.where(passed & larger, top, 0.0)
                 elif self.fine_out:
-                    pass  # the tolerance check is a timeout
+                    # A column past the bound, or near zero at the points,
+                    # whose verdict the run at GRID_FACTOR times the points
+                    # decides: the tolerance check is a timeout, not a verdict
+                    # a larger budget could change.
+                    self.fine_needed = True
         return self.tol_error or None
+
+    def _unjudged(self) -> str:
+        """The columns near zero at the run's points that the tolerance check
+        could not tell resolved or not, as its timeout note names them."""
+        names = [n for n, keep in zip(self.names, self.relevant, strict=True) if not keep]
+        if not names:
+            return ""
+        more = len(names) - MAX_NAMED
+        shown = ", ".join(names[:MAX_NAMED]) + (f" and {more} more" if more > 0 else "")
+        return f"; not judged, near zero at the run's points: {shown}"
+
+    def between_unseen(self) -> str | None:
+        """None where the grid check's run showed the values between the run's
+        points; else why it did not, as the report says it."""
+        if self.between_checked:
+            return None
+        if self.steady:
+            return "the run is at a steady state"
+        if np.asarray(self.result._time).size < 2:
+            return "the run has a single point"
+        run = f"the run at {GRID_FACTOR}x the points, which shows the values between them,"
+        if self.fine_exc is not None:
+            return f"{run} raised: {type(self.fine_exc).__name__}: {_first_line(self.fine_exc)}"
+        if self.fine_mismatch:
+            return f"{run} did not line up with the run's points"
+        if self.fine_out:
+            return f"{run} was not made: the budget ran out"
+        return f"{run} was not made"
 
     def fine_run(self) -> Result:
         """The grid check's run, at :data:`GRID_FACTOR` times the points (the
@@ -945,6 +1049,9 @@ class _Context:
         ratio, rel = path_margins(
             d, peak, self.atols, float(self.rtol), self._ensure_spread(), judged, own=converged
         )
+        if self.shown is not None and self.shown.shape == d.shape:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rel = np.where(self.shown > 0, d / np.where(self.shown > 0, self.shown, 1.0), rel)
         worst = self._worst(ratio)
         margin = float(ratio.max()) if ratio.size else 0.0
         value = float(rel.max()) if rel.size else 0.0
@@ -995,13 +1102,13 @@ class _Context:
                 changed=changed,
             )
         assert self.moved is not None
-        if self.fine_out and self.local is None:
+        if self.fine_needed:
             return _verdict(
                 "tolerance",
                 "timeout",
                 note=f"the budget ran out before the run at {GRID_FACTOR}x the points, which "
-                "judges a column past the bound on its peak at the run's points on the values "
-                "beside each of them",
+                "judges a column past the bound, or near zero, at the run's points on the values "
+                "beside each of them" + self._unjudged(),
                 changed=changed,
             )
         moved = float(self.moved.max()) if self.moved.size else 0.0
@@ -1020,7 +1127,9 @@ class _Context:
             if self.local is not None and self.rescaled is not None:
                 m100 = np.where(
                     self.rescaled,
-                    local_moves(self._view(tighter), self.x, self.atols, peak, self.local),
+                    local_moves(
+                        self._view(tighter), self.x, self.atols, peak, self.local, near=self.near
+                    ),
                     m100,
                 )
             extra["value_100"] = _num(m100.max()) if m100.size else 0.0
@@ -1042,10 +1151,10 @@ class _Context:
         extra["n_between"] = self.n_between
         if self.n_between:
             note += (
-                f"; {self.n_between} column(s) past the bound on their peak at the run's points, "
+                f"; {self.n_between} column(s) past the bound or near zero at the run's points, "
                 f"within it on the values beside each point ({GRID_FACTOR}x the points)"
             )
-        past = bool((self.moved > TOLERANCE_MOVE).any())
+        past = bool((self.moved > TOLERANCE_MOVE).any() or extra["n_trace"])
         if self.local is None and past and (self.fine_exc is not None or self.fine_mismatch):
             why = (
                 f"raised ({type(self.fine_exc).__name__}: {_first_line(self.fine_exc)})"
@@ -1053,8 +1162,8 @@ class _Context:
                 else "did not line up with the run's points"
             )
             note += (
-                f"; the run at {GRID_FACTOR}x the points {why}, so a column past the bound is "
-                "judged on its peak at the run's points alone"
+                f"; the run at {GRID_FACTOR}x the points {why}, so a column past the bound, or "
+                "near zero, is judged on its peak at the run's points alone"
             )
         worst = self._worst(self.moved)
         return _verdict(

@@ -101,9 +101,22 @@ bug. Report it with `json.dumps(report)`, `result.record` and the model file.
 ## Species the run does not resolve
 
 The solver holds a species near zero to its `atol`, not to `rtol`. A species
-that stays within 100 times its `atol` of zero is not resolved by the run: its
-value is mostly solver noise. The report names it and judges it only against
-the run's largest species, so its noise is not counted as a failure.
+that stays within 100 times its `atol` of zero, at the output points and on the
+`grid` check's run at 8 times the points between them, is not resolved by the
+run: its value is mostly solver noise. The report names it and judges it only
+against the run's largest species, so its noise is not counted as a failure. A
+species near zero only at the output points, such as an oscillation sampled at
+its zero crossings, but more than 100 times its `atol` between them, is
+resolved, and judged on the values beside each point. At each point its values
+are within the band the run does not resolve, so a difference there counts only
+past 100 times its `atol`, measured against the larger of that band and what
+the species reaches beside the point: noise of a few `atol` beside a short
+transient is no failure, and a transient excuses no point but its two
+neighbours. Telling the two apart needs the `grid` check's run, so where the
+budget runs out before it, `tolerance` is a `timeout`, not a pass, and names
+such species as not judged. A call that asks for `tolerance` or `sensitivity`
+without `grid` makes that run too where a species is near zero at the points.
+The same holds for a sensitivity series near its floor.
 
 ```python
 model.set_param("kf", 1e-12)  # so little binding that C stays near zero

@@ -3492,8 +3492,9 @@ class Result:
             - ``"tolerance"``: the run at ``rtol/10`` and ``atol/10`` (and at
               ``/100``, where the budget allows); passes when no species moves
               by more than 1e-3 of its own peak, past the atol the run applied
-              to it. A species past that on its peak at the run's points is
-              judged again, each point on the larger of that peak and the
+              to it. A species past that on its peak at the run's points, or
+              within 100 of its atol of zero there but larger between them
+              (issue #1974), is judged again, each point on the larger of that peak and the
               largest value the species reaches in the two intervals beside
               the point, read from the grid check's run at 8x the points
               (``n_between`` counts those it then passes, and the report's
@@ -3543,9 +3544,15 @@ class Result:
               ``"sensitivity_second_engine"`` judge a series' convergence on
               its move to ``rtol/10`` alone, so their verdicts do not depend
               on which other checks were asked for. A series within 100 of
-              those tolerances of zero is not resolved by the run, named in
+              those tolerances of zero, at the run's points and between them
+              on the grid check's run, is not resolved by the run, named in
               the verdict's ``not_resolved``, and judged on its column's
-              largest peak. A series past the bound whose move from
+              largest peak; one near zero only at its points, and past 100
+              floors between them, is resolved and judged on the values beside
+              them, a difference at its points counting only past 100 floors,
+              over the larger of those and what it reaches beside the point
+              (issue #1974). A series past
+              the bound whose move from
               ``rtol/10`` to ``rtol/100`` is at least half its move at
               ``rtol/10``, and whose move is within 100 of its floor (those
               tolerances, or its column's roundoff, ``eps`` times the
