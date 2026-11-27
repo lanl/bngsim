@@ -404,8 +404,9 @@ def parked_zero_window(a0: float = 10.0):
 
 def cube_switch():
     """``A = 1 + eps·t``; Y is made at kb once ``A³ > c``, at
-    ``t* = (c^(1/3) - 1)/eps``. The cube root is taken at 30 digits: at eps = 1e-8
-    a double's rounding of it would move t* by 2e-8."""
+    ``t* = (c^(1/3) - 1)/eps``. The cube root is taken at 30 digits. In doubles
+    its rounding would move t* by up to 2e-8 at eps = 1e-8: inside the case's
+    k_state allowance, but the reference need not spend any of it."""
     import mpmath
 
     def t_star(p):
