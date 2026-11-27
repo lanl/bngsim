@@ -351,3 +351,17 @@ def test_only_the_cases_that_say_so_are_judged_by_their_window_peak():
 
 def test_a_point_is_a_dataclass_whose_engine_defaults_to_the_ode():
     assert Point((), 1e-8, Uniform(4), ()).engine == "ode"
+
+
+def test_the_spec_check_runs_only_the_rows_it_is_given(monkeypatch):
+    case = BY_NAME["slow_threshold_run"]
+    seen = []
+    real = S.prepare
+
+    def spy(c, values):
+        seen.append(values["r"])
+        return real(c, values)
+
+    monkeypatch.setattr(S, "prepare", spy)
+    assert S.check_spec(case) == []
+    assert set(seen) == {case.spec_rows[0]["r"]}
