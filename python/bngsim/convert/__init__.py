@@ -73,6 +73,7 @@ from bngsim.convert._validate import (
     _ar_report_delta,
     _dynamic_stoich_signatures,
     _effective_n_reactions,
+    _folded_left_out,
     _max_rhs_delta,
     _stoich_signatures,
     grade_conversion,
@@ -263,13 +264,17 @@ def validate_structural_l1(source_model: Model, net_model: Model) -> StructuralR
     propensities the text format cannot otherwise express.
     """
     mismatches: list[str] = []
+    left_out = _folded_left_out(source_model, net_model)
 
     def _n_params(m: Model) -> int:
         # Exclude writer-synthesized helper functions' shadow parameters (rate
         # wrappers and per-species flux helpers) — they are .net encoding
-        # overhead, not source structure.
+        # overhead, not source structure. And the parameters folded at load
+        # that the writer leaves out, which the output lacks by design.
         return sum(
-            1 for n in m.param_names if not n.startswith((SYNTHETIC_PREFIX, FLUX_HELPER_PREFIX))
+            1
+            for n in m.param_names
+            if not n.startswith((SYNTHETIC_PREFIX, FLUX_HELPER_PREFIX)) and n not in left_out
         )
 
     n_sp = (source_model.n_species, net_model.n_species)

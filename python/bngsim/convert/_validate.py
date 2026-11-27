@@ -990,10 +990,25 @@ def _check_l0_net(target_model: Model | None, load_error: str | None) -> LevelRe
     )
 
 
+def _folded_left_out(src: Model, dst: Model) -> set[str]:
+    """The parameters of *src* that were folded into a number at load and that
+    *dst*, the model loaded from the written network, has not: the writer
+    leaves out one that nothing in the network reads (issue #1792), so it is
+    no parameter the two are to agree on. A parameter lost any other way does
+    not hide here: one that the network still reads and that it no longer
+    declares stops *dst* from loading, and one whose readers went with it
+    moves the right-hand side, which the next level compares."""
+    return set(getattr(src, "_frozen_params", None) or ()) - set(dst.param_names)
+
+
 def _structural_metrics(src: Model, dst: Model) -> dict:
+    left_out = _folded_left_out(src, dst)
+
     def _real_params(m: Model) -> int:
         return sum(
-            1 for n in m.param_names if not n.startswith((SYNTHETIC_PREFIX, FLUX_HELPER_PREFIX))
+            1
+            for n in m.param_names
+            if not n.startswith((SYNTHETIC_PREFIX, FLUX_HELPER_PREFIX)) and n not in left_out
         )
 
     return {

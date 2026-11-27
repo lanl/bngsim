@@ -931,6 +931,7 @@ class Model:
         m._ar_report_map = _ar_report_map_from_net(core)
         _mark_ar_targets_continuous(core, m._ar_report_map)
         m._frozen_params = _unit_conversion_folds(_unit_conversions_in(path), core)
+        m._frozen_params.update(_folded_at_load(_folded_at_load_in(_file_text(path)), core))
         # GH #145: the analytical Functional Jacobian (GH #76) is consumed only by
         # ODE solves, so it is no longer derived here at load — it is deferred to
         # the first ODE-solve setup (Simulator.__init__ →
@@ -1902,6 +1903,14 @@ class Model:
         is listed, with what a derived parameter or a function among them
         reads: the network holds the number, and it is the BNGL source that
         has to change.
+
+        A ``.net`` or ``.bngl`` that ``sbml_to_net`` or ``sbml_to_bngl`` wrote
+        keeps them (issue #1792). A parameter folded when the SBML was loaded,
+        which the written network still reads, has ``folded_at_load=`` and
+        what it was folded into in a comment on its line, and is listed again
+        in the model loaded from the file. (One that nothing in the network
+        reads is left out of the file.) The comment may be written by hand
+        on a parameter line of either format, to the same effect.
 
         Empty for most models.
 
@@ -4017,7 +4026,77 @@ def _where_a_folded_parameter_is_changed(what: str) -> str:
     what it was folded into, which a clone and a subset model carry."""
     if "unit_conversion=" in what:
         return "the BNGL source and generate the network again"
+    if what.endswith(_FOLDED_READ_BACK):
+        return "the SBML document the file was converted from, and convert it again"
     return "the SBML document and load the model again"
+
+
+# What a parameter's ``folded_at_load=`` comment says, on a parameter line of a
+# ``.net`` or a ``.bngl`` (issue #1792): up to the end of the line or another #.
+_FOLDED_AT_LOAD = re.compile(r"\bfolded_at_load\s*=\s*([^#]*?)\s*(?:#|$)")
+# Added to what such a comment says, so that a refusal says where it is from.
+_FOLDED_READ_BACK = ", as the file's folded_at_load comment says"
+
+
+def _file_text(path: str | Path) -> str:
+    """The text of a ``.net`` or ``.bngl``, for its comments; empty if it
+    cannot be read. Read with ``newline=""`` for the reason
+    :func:`_unit_conversions_in` gives."""
+    try:
+        with open(path, errors="replace", newline="", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _folded_at_load_in(text: str) -> list[tuple[str, str]]:
+    """``(parameter, what it was folded into)`` for each ``folded_at_load=``
+    comment on a line of the parameters block of a ``.net`` or ``.bngl`` text
+    (issue #1792; :mod:`bngsim.convert._frozen` writes them).
+
+    The block is found as :func:`_unit_conversions_in` finds the reactions:
+    by the first two words of a line with its comment taken off. A parameter
+    line is ``<index> <name> <value>`` in a ``.net`` and may be
+    ``<name> <value>`` in a ``.bngl``.
+    """
+    if "folded_at_load" not in text:
+        return []
+    found: list[tuple[str, str]] = []
+    inside = False
+    for line in text.split("\n"):
+        code, _, comment = line.partition("#")
+        words = code.split()
+        if not words:
+            continue
+        if words[0] in ("begin", "end"):
+            inside = words[:2] == ["begin", "parameters"]
+            continue
+        if not inside:
+            continue
+        said = _FOLDED_AT_LOAD.search(comment)
+        if said and said.group(1):
+            indexed = len(words) >= 3 and words[0].isdigit()
+            found.append((words[1] if indexed else words[0], said.group(1)))
+    return found
+
+
+def _folded_at_load(found, core: Any) -> dict[str, str]:
+    """``{name: what it was folded into}`` for the parameters of *core* among
+    *found*, which is what :func:`_folded_at_load_in` reads off a file. The
+    same registry as the SBML loader's (:attr:`Model.frozen_params`), so the
+    model loaded from a converted file refuses what the SBML model refused."""
+    names = set(core.param_names)
+    folded: dict[str, str] = {}
+    for entry in found or ():
+        try:
+            name, what = entry
+        except (TypeError, ValueError):
+            raise InvalidModelError(
+                f"folded_at_load: {entry!r} is not a (parameter, reason) pair"
+            ) from None
+        if str(name) in names:
+            folded.setdefault(str(name), str(what) + _FOLDED_READ_BACK)
+    return folded
 
 
 def _unit_conversions_in(path: Path) -> list[tuple[str, str]]:

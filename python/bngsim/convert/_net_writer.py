@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from bngsim._exceptions import ConversionError, ConversionWarning
+from bngsim.convert import _frozen
 from bngsim.convert._sbml_writer import _LOG_TOKEN
 
 if TYPE_CHECKING:
@@ -251,7 +252,28 @@ def capability_report(model: Model) -> dict[str, list[str]]:
             "species' own columns can be wrong there"
         )
 
+    # Issue #1792: a parameter folded at load is left out where nothing in the
+    # network reads it, and marked for bngsim's reader where something does.
+    left_out, marked = _folded_parameters(model)
+    gone, kept = _frozen.notes(left_out, marked)
+    dropped += gone
+    bngsim_only += kept
+
     return {"dropped": dropped, "lossy": lossy, "bngsim_only": bngsim_only}
+
+
+def _folded_parameters(model: Model) -> tuple[list[str], list[str]]:
+    """The frozen parameters :func:`write_net` leaves out, and the ones it
+    marks, read off the text it writes (:mod:`bngsim.convert._frozen`)."""
+    if not _frozen.has_folded(model):
+        return [], []
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # the writer's own, said when it writes
+            text = "\n".join(_net_lines(model, None, "model"))
+    except Exception:  # whatever stops the writer stops it at the write, in its words
+        return [], []
+    return _frozen.fold(model, text)[1:]
 
 
 def _apply_capability_policy(
@@ -695,6 +717,20 @@ def write_net(
     str
         The ``.net`` text.
     """
+    name = model_name or getattr(model, "name", None) or "model"
+    _apply_capability_policy(capability_report(model), strict=strict, model_name=str(name))
+    # Issue #1792: the parameters folded at load, left out or marked.
+    text = _frozen.fold(model, "\n".join(_net_lines(model, header, str(name))))[0]
+    if out_path is not None:
+        # UTF-8, which the loader reads, whatever the locale: in the locale's
+        # encoding a Latin-1 or cp1252 locale (Windows) wrote `Aµ()` as a byte
+        # the loader refuses, and could not write `AΩ()` at all (issue #1653).
+        Path(out_path).write_text(text, encoding="utf-8")
+    return text
+
+
+def _net_lines(model: Model, header: str | None, name: str) -> list[str]:
+    """The lines of the ``.net`` for *model*, every parameter written."""
     core = model._core
     data = core.codegen_data()
     params = data["parameters"]
@@ -703,9 +739,6 @@ def write_net(
     observables = data["observables"]
     functions = data["functions"]
     reactions = data["reactions"]
-
-    name = model_name or getattr(model, "name", None) or "model"
-    _apply_capability_policy(capability_report(model), strict=strict, model_name=str(name))
 
     species_names = [s["name"] for s in species]
     func_names = {f["name"] for f in functions}
@@ -849,11 +882,4 @@ def write_net(
     lines.extend(rxn_lines)
     lines.append("end reactions")
     lines.append("")
-
-    text = "\n".join(lines)
-    if out_path is not None:
-        # UTF-8, which the loader reads, whatever the locale: in the locale's
-        # encoding a Latin-1 or cp1252 locale (Windows) wrote `Aµ()` as a byte
-        # the loader refuses, and could not write `AΩ()` at all (issue #1653).
-        Path(out_path).write_text(text, encoding="utf-8")
-    return text
+    return lines

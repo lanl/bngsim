@@ -57,6 +57,20 @@ What to watch out for:
   own column differs. The writer warns with a `ConversionWarning` naming
   these species and never refuses them. `capability_report`, `sbml_to_net` and
   `validate_conversion` list them under `bngsim_only`.
+- **A parameter folded at load stays unwritable.** Some SBML parameters are
+  read once, when the model loads: a stoichiometry written over a parameter, a
+  compartment's size, an initial value an initialAssignment sets.
+  `Model.frozen_params` lists them, and `set_param` refuses to change one,
+  because the write would not move the number it went into. `sbml_to_net` and
+  `sbml_to_bngl` leave such a parameter out of the file when nothing in the
+  written network reads it, with a note under `dropped`; a write to it then
+  fails in BNGsim and in BNG2.pl, as a name the model does not have. Where a
+  rate law or another expression still reads it, the parameter is written with
+  a `folded_at_load=` comment on its line. BNGsim reads that comment from a
+  `.net` or a `.bngl` and refuses the write on the reloaded model too. Other
+  tools do not read it: there a write moves what still reads the parameter and
+  not the folded number. These parameters are listed under `bngsim_only`. To
+  change one, edit the SBML and convert again.
 
 ## Compartmental BNGL (SBML to cBNGL)
 
