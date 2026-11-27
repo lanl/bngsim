@@ -4117,6 +4117,44 @@ static double near_output(sunrealtype t, double out) {
                     kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
                         kPlainInstantFloor);
 }
+// An output point after the time a run stands at, but inside CVODE's band
+// (near_output), is taken as reached and its row is the state where the run
+// stands (issue #1501). That is the row only where the model barely moves over
+// the distance: far from 0 the band is wide, 44 time units at t = 1e17, whose
+// doubles are 16 apart, and A -> B at k = 1 over (1e17, 1e17 + 64) came back
+// B = 0 at t0 + 16 and t0 + 32, where B is 1, with no error or warning. Refused
+// where any species would move past its error weight, atol_i + rtol·|y_i|,
+// over the distance at its rate there; a distance it moves less over is kept.
+static void refuse_an_output_inside_the_roundoff(NetworkModel &model, sunrealtype t, N_Vector y,
+                                                 double out, double rtol, double atol,
+                                                 const std::vector<double> &atol_v) {
+    const double now = static_cast<double>(t);
+    const double gap = out - now;
+    if (!(gap > 0.0))
+        return;
+    const auto n = static_cast<std::size_t>(N_VGetLength(y));
+    const double *x = N_VGetArrayPointer(y);
+    std::vector<double> f(n, 0.0);
+    model.compute_derivs(now, x, f.data());
+    for (std::size_t i = 0; i < n; ++i) {
+        const double a = i < atol_v.size() ? atol_v[i] : atol;
+        if (!(std::fabs(f[i]) * gap <= a + rtol * std::fabs(x[i]))) {
+            char text[640];
+            std::snprintf(
+                text, sizeof(text),
+                "An ODE output point at t = %.17g is %.3g after the time the run stands at, "
+                "t = %.17g, which CVODE cannot integrate over there: the doubles near it are "
+                "%.3g apart, and CVODE steps no shorter than about twice that. The model "
+                "moves over that distance, so the row would be wrong. Measure time in a "
+                "larger unit, or start the run nearer t = 0.",
+                out, gap, now,
+                std::nextafter(std::fabs(now), std::numeric_limits<double>::infinity()) -
+                    std::fabs(now));
+            throw TimeSpanOutOfReach(text);
+        }
+    }
+}
+
 // How far short of the next crossing, as a part of the stretch from the last
 // restart to it, the run stops for its comoving columns (issue #760): a frame
 // entered at a crossing is left there, and a column that enters ahead of its
@@ -6142,6 +6180,8 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         sunrealtype t_ret;
         if (t_out[i] <= times.t_start ||
             t_out[i] - times.t_start < near_output(times.t_start, t_out[i])) {
+            refuse_an_output_inside_the_roundoff(model, times.t_start, w.y, t_out[i], rtol, atol,
+                                                 atol_v);
             t_ret = static_cast<sunrealtype>(t_out[i]);
         } else {
             int flag = CVode(cvode_mem, t_out[i], w.y, &t_ret, CV_NORMAL);
@@ -17611,9 +17651,31 @@ std::tuple<long, int, double> CvodeSimulator::last_run_roundoff_steps() const {
 // is ended where it does (check_inside_call, refuse_a_clock_past_the_doubles).
 // Throws TimeSpanOutOfReach (UsageError in Python).
 static void require_steppable_ode_span(const TimeSpec &times) {
-    if (!times.sample_times.empty() || times.n_points < 3 ||
-        std::isfinite(times.t_end - times.t_start))
+    if (!times.sample_times.empty() || times.n_points < 3)
         return;
+    if (std::isfinite(times.t_end - times.t_start)) {
+        // A grid finer than the doubles across it: its output times round onto
+        // each other, (1e17, 1e17 + 10) over 11 points came back as t0 six
+        // times and t0 + 16 five, and its rows with them. Sample times are the
+        // caller's own, so a time named twice there is kept (issue #1501).
+        const std::vector<double> t = times.output_times();
+        for (std::size_t i = 1; i < t.size(); ++i) {
+            if (t[i] > t[i - 1])
+                continue;
+            char text[640];
+            std::snprintf(text, sizeof(text),
+                          "An ODE run from t = %.17g to %.17g over %d output points spaces them "
+                          "%.3g apart, closer than the doubles there tell apart (%.3g): its "
+                          "output times round onto each other. Ask for fewer points, measure "
+                          "time in a larger unit, or start the run nearer t = 0.",
+                          times.t_start, times.t_end, times.n_points,
+                          (times.t_end - times.t_start) / (times.n_points - 1),
+                          std::nextafter(std::fabs(t[i]), std::numeric_limits<double>::infinity()) -
+                              std::fabs(t[i]));
+            throw TimeSpanOutOfReach(text);
+        }
+        return;
+    }
     char text[512];
     std::snprintf(text, sizeof(text),
                   "An ODE run from t = %.17g to %.17g over %d output points is too long: its "
@@ -21935,6 +21997,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     }
                 }
                 if (!stop_before_output) {
+                    if (sens.n_total == 0)
+                        refuse_an_output_inside_the_roundoff(model, t_now, y, t_out[i], rtol,
+                                                             atol, atol_v);
                     break;
                 }
             }
