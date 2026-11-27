@@ -255,7 +255,7 @@ def grid_mismatch(request: dict, times) -> str | None:
     if not len(off):
         return None
     i = int(off[0])
-    return f"the row asked for at t={want[i]!r} came back at t={got[i]!r} ({len(off)} rows moved)"
+    return f"the row asked for at t={float(want[i])!r} came back at t={float(got[i])!r} ({len(off)} rows moved)"
 
 
 def _set(row: Row, outcome: str, note: str) -> Row:
