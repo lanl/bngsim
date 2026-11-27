@@ -47,6 +47,7 @@ RUNNERS = {
     "differential-nf": ["parity_checks/differential/differential_run.py"],
     "bng-stoch": ["parity_checks/bng_parity/bng_stoch_run.py"],
     "amici-sens": ["parity_checks/amici_parity/amici_sens_run.py"],
+    "discontinuity": ["parity_checks/discontinuity/discontinuity_run.py"],
 }
 
 
@@ -67,6 +68,7 @@ def _run(paths: list[str], *args: str) -> dict[str, bool]:
         (["parity_checks/differential/_differential.py"], DIFF, True),
         (["parity_checks/fd_sens/fd_sens_jobs.json"], {"fd-sens", "differential"}, True),
         (["parity_checks/fd_sens/fd_sens_run.py"], {"fd-sens"}, False),
+        (["parity_checks/discontinuity/_cases/step.py"], {"discontinuity"}, False),
         (
             ["parity_checks/amici_parity/_amici_sens.py"],
             {"amici-sens", "fd-sens", *DIFF},
@@ -125,6 +127,7 @@ def _run(paths: list[str], *args: str) -> dict[str, bool]:
         "differential only",
         "fd_sens's models",
         "fd_sens's runner",
+        "a discontinuity case",
         "amici_parity's scheduler",
         "amici_sens's runner",
         "amici_sens's jobs",
