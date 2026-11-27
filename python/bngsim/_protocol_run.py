@@ -597,8 +597,7 @@ class _Runner:
         name = _species_name(self.model, change.target or "")
         if name is None:
             raise ConversionError(
-                f"{_action(change)}: the network has no species {change.target!r}; "
-                "BNG2.pl refuses it too"
+                f"{_action(change)}: the network has no species {change.target!r}"
             )
         return self.index[name]
 

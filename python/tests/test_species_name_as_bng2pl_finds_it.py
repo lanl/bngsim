@@ -18,7 +18,8 @@ own on the model beside it (``generate_network``, ``setConcentration(<spelling>,
 777)``, ``writeNET``); the networks are the ones it wrote. Where BNG2.pl is
 installed, a test runs it again on the same models. A second, independent
 oracle for the matching itself: every pairing of molecules and components tried
-in turn, on small random species.
+in turn, on small random species; and for a large branched species, the code of
+its tree of molecules.
 """
 
 from __future__ import annotations
@@ -117,9 +118,32 @@ end reaction rules
 end model
 generate_network({overwrite=>1})
 """,
+    "two bonds between two sites": """begin model
+begin parameters
+  k 0.001
+end parameters
+begin molecule types
+  W(x,y)
+  E(e)
+  F(f)
+end molecule types
+begin seed species
+  W(x!1!2,y!1!2) 50
+  E(e!1!2).F(f!1!2) 60
+  W(x,y) 10
+end seed species
+begin observables
+  Molecules Wtot W()
+end observables
+begin reaction rules
+  W(x,y) -> 0 k
+end reaction rules
+end model
+generate_network({overwrite=>1})
+""",
 }
 
-# The networks BNG2.pl 2.9.3 wrote for the models (parameters, species, reactions, groups).
+# The networks BNG2.pl 2.9.3 wrote for them (parameters, species, reactions, groups).
 NET = {
     "plain": """begin parameters
     1 kf    0.001  # Constant
@@ -187,6 +211,21 @@ begin reactions
 end reactions
 begin groups
     1 Ltot                 1,5
+end groups
+""",
+    "two bonds between two sites": """begin parameters
+    1 k     0.001  # Constant
+end parameters
+begin species
+    1 W(x!1!2,y!1!2) 50
+    2 E(e!1!2).F(f!1!2) 60
+    3 W(x,y) 10
+end species
+begin reactions
+    1 3 0 k #_R1
+end reactions
+begin groups
+    1 Wtot                 1,3
 end groups
 """,
 }
@@ -299,6 +338,33 @@ ROWS = {
         ("$L(r)@EC", "@EC::L(r)"),
         ("@EC::$B()", "@EC::B()"),
         ("$B()@CP", "@CP::B()"),
+        ("@CP:B()@EC", None),
+        ("@EC:B()@CP", None),
+        ("@EC:B()@EC", "@EC::B()"),
+        ("@EC:L(r!1).R(l!1)@PM", None),
+        ("@PM:L(r!1)@EC.R(l!1)@PM", "@PM::L(r!1)@EC.R(l!1)"),
+        ("@EC::L(r)@EC", "@EC::L(r)"),
+        ("@PM:L(r)@EC", None),
+        ("@PM:R(l!1).L(r!1)@EC", "@PM::L(r!1)@EC.R(l!1)"),
+        ("@EC:R(l!1)@PM.L(r!1)", None),
+        ("@ EC:L(r)", None),
+        ("L(r)@ EC", None),
+        ("L(r) @EC", None),
+        ("@EC :L(r)", None),
+        ("@EC: L(r)", "@EC::L(r)"),
+    ],
+    "two bonds between two sites": [
+        ("W(x!1!2,y!1!2)", "W(x!1!2,y!1!2)"),
+        ("W(y!1!2,x!1!2)", "W(x!1!2,y!1!2)"),
+        ("W(y!7!8,x!8!7)", "W(x!1!2,y!1!2)"),
+        ("W(x!2!1,y!1!2)", "W(x!1!2,y!1!2)"),
+        ("F(f!1!2).E(e!1!2)", "E(e!1!2).F(f!1!2)"),
+        ("E(e!3!4).F(f!4!3)", "E(e!1!2).F(f!1!2)"),
+        ("E(e!1).F(f!1)", None),
+        ("W(x!1,y!1)", None),
+        ("W(x!1!1,y)", None),
+        ("W(x!1!2,y!1)", None),
+        ("W(y,x)", "W(x,y)"),
     ],
 }
 
@@ -306,16 +372,17 @@ ROWS = {
 # name a wrong species: the looser ones spell one species only, and the
 # stricter ones are refused.
 LOOSER = {
-    # A space after or inside the name. BNG2.pl aborts on these and takes one
-    # before the name; the action replay took such names in a one-molecule name
-    # before this, and keeps doing so.
-    "B(a) ",
-    "B (a)",
-    "B( a)",
-    "A(s~U, x,y)",
-    "A(s~U,x!1,y). B(a!1)",
+    # A space after or inside the name, with the species each one spells.
+    # BNG2.pl aborts on these and takes one before the name; the action replay
+    # took such names in a one-molecule name before this, and keeps doing so.
+    "B(a) ": "B(a)",
+    "B (a)": "B(a)",
+    "B( a)": "B(a)",
+    "A(s~U, x,y)": "A(s~U,x,y)",
+    "A(s~U,x!1,y). B(a!1)": "A(s~U,x!1,y).B(a!1)",
+    "L(r) @EC": "@EC::L(r)",
     # A fixed species' $ before the compartment: Model drops a $ in either place.
-    "$@EC::L(r)",
+    "$@EC::L(r)": "@EC::L(r)",
 }
 STRICTER = {
     # Malformed names that BNG2.pl's parser lets through. (A doubled comma it
@@ -343,9 +410,9 @@ def test_the_table_is_the_one_the_tests_read():
     # Every spelling is in exactly one of the three groups, and the two lists
     # of chosen differences are the rows where bngsim and BNG2.pl part.
     every = {s for rows in ROWS.values() for s, _ in rows}
-    assert every >= LOOSER and every >= STRICTER
+    assert every >= set(LOOSER) and every >= STRICTER
     assert {s for rows in ROWS.values() for s, want in rows if want} >= STRICTER
-    assert {s for rows in ROWS.values() for s, want in rows if not want} >= LOOSER
+    assert {s for rows in ROWS.values() for s, want in rows if not want} >= set(LOOSER)
     assert len(SETS) + len(REFUSED) + len(LOOSER) + len(STRICTER) == sum(map(len, ROWS.values()))
     # BNG2.pl only ever sets a species of the network it wrote.
     for which, rows in ROWS.items():
@@ -386,13 +453,11 @@ def test_a_spelling_bng2pl_aborts_on_is_refused(tmp_path, which, spelling):
 
 @pytest.mark.parametrize("spelling", sorted(LOOSER))
 def test_a_space_or_a_fixed_mark_bng2pl_aborts_on_still_names_one_species(tmp_path, spelling):
-    which = "compartments" if "@" in spelling else "plain"
-    want = parse(spelling)
-    assert want is not None
-    (name,) = [n for n in _species_block(NET[which]) if same_species(parse(n), want)]
+    (which,) = [m for m, rows in ROWS.items() if spelling in dict(rows)]
     model = _model(tmp_path, which)
     model.set_concentration(spelling, 777.0)
-    assert _holding(model, 777.0) == [name]
+    assert _holding(model, 777.0) == [LOOSER[spelling]]
+    assert _species_name(model, spelling) == LOOSER[spelling]
 
 
 @pytest.mark.parametrize("spelling", sorted(STRICTER))
@@ -487,6 +552,18 @@ def test_an_isomorphic_complex_set_to_its_own_amount_is_no_dropped_change(tmp_pa
     assert len(dropped_state_changes(model, text % ("D(d!1,d!2).D(d!1,d!2)", 0))) == 1
 
 
+@pytest.mark.parametrize("spelling", sorted(STRICTER))
+def test_the_replay_refuses_a_malformed_name_without_saying_bng2pl_does(tmp_path, spelling):
+    # BNG2.pl 2.9.3 lets each of these through (the table's rows); the
+    # replay's refusal says what bngsim found and claims nothing of BNG2.pl.
+    model = _model(tmp_path, "plain")
+    steps = (_change("set_concentration", spelling, 40), RUN)
+    with pytest.raises(bngsim.ConversionError) as caught:
+        bngsim.run_protocol(model, ProtocolSpec(steps=steps))
+    assert "the network has no species" in str(caught.value)
+    assert "BNG2.pl" not in str(caught.value)
+
+
 # --- the index: built late, one per model, and never two answers ------------
 
 
@@ -549,6 +626,20 @@ def test_an_sbml_species_is_found_by_its_exact_id_only():
     assert _species_name(model, "S1(x)") is None
 
 
+def test_a_write_by_another_spelling_is_booked_under_the_networks_name(tmp_path):
+    # set_concentration supersedes what the species' initial condition was
+    # declared to depend on. The declaration is kept under the network's name,
+    # so a write by another spelling has to drop it there. Oracle: the same
+    # write by the network's own name, which main dropped it for.
+    declared = {"A(s~U,x,y)": {"kf": 2.0}, "B(a)": {"kf": 3.0}}
+    for spelling in ("A(s~U,x,y)", "A(y,x,s~U)"):
+        model = _model(tmp_path, "plain")
+        model.declare_ic_sensitivity(declared)
+        assert model._declared_ic_sens == declared
+        model.set_concentration(spelling, 5.0)
+        assert model._declared_ic_sens == {"B(a)": {"kf": 3.0}}, spelling
+
+
 def test_a_doubled_comma_is_read_as_bng2pl_and_the_replay_always_read_it(tmp_path):
     model = _model(tmp_path, "plain")
     assert dict(ROWS["plain"])["A(x,,y,s~U)"] == "A(s~U,x,y)"
@@ -566,6 +657,9 @@ def test_a_doubled_comma_is_read_as_bng2pl_and_the_replay_always_read_it(tmp_pat
         "S(a,b!1).T(s!1,u!1)",  # a bond with three ends
         "A(x!1,y)",  # a bond with one
         "A(x,y,s~U~P)",  # two states
+        "W(x!1!1,y)",  # a site bonded to itself
+        "@ EC:L(r)",  # a space inside the compartment before the name
+        "@EC :L(r)",
         "A(x!+,y)",
         "A(x!?,y)",
         "A(x,y,s~?)",
@@ -580,8 +674,14 @@ def test_a_doubled_comma_is_read_as_bng2pl_and_the_replay_always_read_it(tmp_pat
 )
 def test_what_is_no_complete_species_is_not_read(text):
     assert parse(text) is None
-    # A bond between two sites of one molecule is a species all the same.
-    assert parse("A(x!1,y!1)") is not None
+
+
+def test_a_bond_inside_one_molecule_and_two_bonds_between_two_sites_are_read():
+    # Species all the same: BNG2.pl writes both in a network.
+    one, two = parse("A(x!1,y!1)"), parse("W(x!1!2,y!1!2)")
+    assert one is not None and two is not None
+    # Two sites and a molecule, and a node for each bond.
+    assert len(one.labels) == 4 and len(two.labels) == 5
 
 
 @pytest.mark.parametrize(
@@ -596,6 +696,8 @@ def test_what_is_no_complete_species_is_not_read(text):
         ("A(x!1).B(a!1)@EC", "A(x!1)@EC.B(a!1)"),  # and whose it is
         ("A(x,y!1).B(a!1)", "A(x!1,y).B(a!1)"),  # which site is bonded
         ("A(x,x)", "A(x)"),  # how many sites
+        ("W(x!1!2,y!1!2)", "W(x!1,y!1)"),  # two bonds between two sites, and one
+        ("E(e!1!2).F(f!1!2)", "E(e!1).F(f!1)"),
     ],
 )
 def test_two_names_that_differ_in_one_thing_are_two_species(one, other):
@@ -613,7 +715,7 @@ STATES = {"s": ("U", "P")}
 
 def _random_species(rng: random.Random):
     """Molecules as (name, compartment, [(component, state, bonds)]), with
-    each bond on two components."""
+    each bond on two components, and now and then two bonds on the same two."""
     species = []
     for _ in range(rng.randint(1, 3)):
         name = rng.choice(sorted(MOLECULES))
@@ -623,9 +725,9 @@ def _random_species(rng: random.Random):
     rng.shuffle(sites)
     for label in range(1, rng.randint(0, len(sites) // 2) + 1):
         one, two = sites.pop(), sites.pop()
-        if not set(one[2]) & set(two[2]):  # one pair is bonded once
-            one[2].append(label)
-            two[2].append(label)
+        for bond in (label, label + 50)[: 2 if rng.random() < 0.15 else 1]:
+            one[2].append(bond)
+            two[2].append(bond)
     return species
 
 
@@ -767,7 +869,9 @@ def test_a_species_of_hundreds_of_molecules_is_matched():
 
     for molecules in (chain, ring):
         a, b = parse(".".join(molecules)), parse(again(molecules))
-        assert a is not None and b is not None and len(a.labels) == 3 * n
+        assert a is not None and b is not None
+        # A node for each molecule, each of its two sites, and each bond.
+        assert len(a.labels) == 3 * n + (n if molecules is ring else n - 1)
         assert same_species(a, b) and same_species(b, a)
     assert not same_species(parse(".".join(chain)), parse(".".join(ring)))
     # A chain with one molecule's sites the other way round is another species
@@ -777,6 +881,97 @@ def test_a_species_of_hundreds_of_molecules_is_matched():
     c = parse(".".join(turned))
     assert c is not None and c.key == parse(".".join(chain)).key
     assert not same_species(parse(".".join(chain)), c)
+
+
+def _tree(n: int, rng: random.Random) -> list[tuple[str, list[int]]]:
+    """A random tree of *n* molecules, L(r,r,r) and R(l,l) in turn along every
+    branch, as each molecule's kind and the molecules it is bonded to."""
+    tree: list[tuple[str, list[int]]] = [("L", [])]
+    while len(tree) < n:
+        at = rng.randrange(len(tree))
+        kind, bonded = tree[at]
+        if len(bonded) < (3 if kind == "L" else 2):
+            bonded.append(len(tree))
+            tree.append(("R" if kind == "L" else "L", [at]))
+    return tree
+
+
+def _tree_name(tree: list[tuple[str, list[int]]], rng: random.Random) -> str:
+    """One spelling of *tree*: its molecules in a random order, each bond on
+    any of the molecule's sites, under a random label."""
+    order = rng.sample(range(len(tree)), len(tree))
+    bonds = sorted({(min(i, j), max(i, j)) for i, (_, bonded) in enumerate(tree) for j in bonded})
+    label = dict(zip(bonds, rng.sample(range(1, 10 * len(tree)), len(bonds)), strict=True))
+    molecules = []
+    for i in order:
+        kind, bonded = tree[i]
+        site = "r" if kind == "L" else "l"
+        sites = [f"{site}!{label[min(i, j), max(i, j)]}" for j in bonded]
+        sites += [site] * ((3 if kind == "L" else 2) - len(bonded))
+        rng.shuffle(sites)
+        molecules.append(f"{kind}({','.join(sites)})")
+    return ".".join(molecules)
+
+
+def _tree_code(tree: list[tuple[str, list[int]]]) -> str:
+    """A code two trees share exactly when they are one tree (Aho, Hopcroft
+    and Ullman): a molecule's code is its kind and its branches' codes in
+    order, and the tree's is that of its centre, the smaller of two."""
+    degree = [len(bonded) for _, bonded in tree]
+    outer = [i for i, d in enumerate(degree) if d <= 1]
+    left = len(tree)
+    while left > 2:  # strip the leaves until the centre is left
+        left -= len(outer)
+        inner = []
+        for i in outer:
+            for j in tree[i][1]:
+                degree[j] -= 1
+                if degree[j] == 1:
+                    inner.append(j)
+        outer = inner
+
+    def code(i: int, parent: int | None) -> str:
+        return f"{tree[i][0]}({''.join(sorted(code(j, i) for j in tree[i][1] if j != parent))})"
+
+    return min(code(centre, None) for centre in outer)
+
+
+def test_a_branched_species_whose_sites_share_a_name_is_matched():
+    # A tree of 300 molecules: at every fork the branches hang on sites of one
+    # name, so a search that places a node wherever its label fits can take a
+    # wrong branch at each of them. Oracle for the species told apart: the
+    # tree code, which reads neither a site nor a label.
+    rng = random.Random(300)
+    for _ in range(3):
+        tree = _tree(300, rng)
+        a, b = parse(_tree_name(tree, rng)), parse(_tree_name(tree, rng))
+        assert a is not None and b is not None
+        assert same_species(a, b) and same_species(b, a)
+        # One leaf moved to another molecule: the same molecules, sites and
+        # bonds in every count, and another tree unless the code says not.
+        told_apart = 0
+        for _ in range(4):
+            moved = [(kind, list(bonded)) for kind, bonded in tree]
+            leaf = rng.choice([i for i, (_, bonded) in enumerate(moved) if len(bonded) == 1 and i])
+            (old,) = moved[leaf][1]
+            new = rng.choice(
+                [
+                    i
+                    for i, (kind, bonded) in enumerate(moved)
+                    if kind == moved[old][0]
+                    and i != old
+                    and len(bonded) < (3 if kind == "L" else 2)
+                ]
+            )
+            moved[old][1].remove(leaf)
+            moved[new][1].append(leaf)
+            moved[leaf][1][0] = new
+            c = parse(_tree_name(moved, rng))
+            assert c is not None and c.key == a.key
+            same = _tree_code(moved) == _tree_code(tree)
+            assert same_species(a, c) == same and same_species(c, b) == same
+            told_apart += not same
+        assert told_apart  # the oracle is not always "the same"
 
 
 def _scrambled(name: str, rng: random.Random) -> str:
@@ -981,24 +1176,20 @@ def test_bng2pl_sets_what_the_table_says_it_sets(tmp_path, which):
         assert after[want] == str(1000 + i), spelling
 
 
+ABORTS = [(m, s) for m, rows in ROWS.items() for s, want in rows if not want]
+
+
 @pytest.mark.skipif(not HAS_BNG2, reason="BNG2.pl not found")
-@pytest.mark.parametrize(
-    ("which", "spelling"),
-    [
-        ("plain", "G"),
-        ("plain", "Gobs"),
-        ("plain", "A(x,s~U)"),
-        ("plain", "A(s~U,x!+,y)"),
-        ("plain", "D(d!1,d!2).D(d!1,d!2)"),
-        ("plain", "B(a) "),
-        ("compartments", "B"),
-        ("compartments", "@PM::L(r!1).R(l!1)"),
-    ],
-)
+@pytest.mark.parametrize(("which", "spelling"), ABORTS, ids=[repr(s) for _, s in ABORTS])
 def test_bng2pl_aborts_where_the_table_says_it_aborts(tmp_path, which, spelling):
-    assert dict(ROWS[which])[spelling] is None
-    done = _bng2pl(tmp_path, BNGL[which] + f'setConcentration("{spelling}", 777)\n')
+    # One run of BNG2.pl for each: an abort ends the run. The network it wrote
+    # before the action is the table's, so the abort is the action's own, and
+    # nothing is written after it.
+    action = f'setConcentration("{spelling}", 777)\nwriteNET({{prefix=>"after"}})\n'
+    done = _bng2pl(tmp_path, BNGL[which] + action)
     assert done.returncode != 0 and "ABORT" in done.stdout + done.stderr
+    assert list(_amounts(tmp_path / "m.net")) == _species_block(NET[which])
+    assert not (tmp_path / "after.net").exists()
 
 
 # --- #1480's own case, end to end through run_bngl ---------------------------
@@ -1039,7 +1230,7 @@ generate_network({overwrite=>1})
     ],
 )
 def test_run_bngl_applies_an_action_on_a_complex_written_another_way(tmp_path, action):
-    # The repro on #1480: these stopped the run ("BNG2.pl refuses it too"),
+    # The repro on #1480: these stopped the run ("the network has no species"),
     # while BNG2.pl 2.9.3 applies each to the network's A(b!1).B(a!1); the last
     # is the network's own spelling, the control. Oracle, closed form: from
     # A = 10, B = 8 with AB set to 4, A + AB = 14 and B + AB = 12, so
