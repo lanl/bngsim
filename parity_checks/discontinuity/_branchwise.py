@@ -387,9 +387,9 @@ class Branchwise:
         signs = [1 if b else -1 for b in branches]
         a = t_lo
         for b in scan:
-            # A scan time at the restart itself (a crossing that fell on one)
-            # is that crossing, not a new one.
-            if b - t_lo <= tie * max(1, abs(b)):
+            # A crossing that fell on a scan time restarted exactly there
+            # (below), so that scan time is behind this segment.
+            if b <= t_lo:
                 continue
             gb = fns.g(b, *fn(b)[:n], *pv)
             changed = [k for k, v in enumerate(gb) if v == 0 or (v > 0) != (signs[k] > 0)]

@@ -316,3 +316,26 @@ def test_a_surface_the_check_never_sees_from_both_sides_is_named():
     spec = BY_NAME["time_window"].spec
     never = (spec.surfaces[0], Surface("off", lambda x, t, p: t - 100.0))
     assert any("never compared on both its sides" in p for p in _spec_problems(surfaces=never))
+
+
+@pytest.mark.parametrize("value", [1e6, np.nan])
+def test_a_species_whose_reference_is_zero_is_still_judged_by_the_run(value):
+    case = BY_NAME["clock_step"]
+    values = case.values()
+    t = np.linspace(0.0, 20.0, 21)  # Y() is 0 until the step at t = 25
+    sol = CF.clock_exposure("step").solve(values, SPAN, t, case.observe, ())
+    x = sol.species.lo.copy()
+    x[-1, 2] = value
+    v = J.judge(
+        sol,
+        x,
+        None,
+        rtol=1e-10,
+        atol=1e-12,
+        observe=case.observe,
+        sens=(),
+        params=values,
+        k_state=1e3,
+        k_sens=1e3,
+    )
+    assert v.outcome == "DIFF", v.note
