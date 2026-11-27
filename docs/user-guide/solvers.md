@@ -585,6 +585,19 @@ A grid of three or more output points over a span longer than the largest
 double, such as `(-1e308, 1e308)`, is refused before it starts: its output
 times are not finite. Measure time in a larger unit instead.
 
+**An output point too close to where the run stands.** CVODE does not
+integrate over less than about twice the spacing of the doubles at the time it
+stands at, and an output point inside that distance is taken as reached, its
+row the state where the run stands: repeated samples at `t = 0`, such as
+`[0, 0, 0, 5]`, read so. Far from 0 that distance is wide: the doubles near
+`t = 1e17` are 16 apart, and an output 16 or 32 after a run's start there was
+given the start state. Such an output is now refused (`UsageError`,
+`usage.span_out_of_reach`) where a species would move past its tolerance over
+the distance; where none would, the row is kept. A grid of output points finer
+than the doubles across it, whose times would round onto each other, such as
+11 points over `(1e17, 1e17 + 10)`, is refused before the run starts. Sample
+times are your own, so a time named twice there is kept.
+
 ### Steps too small to move the clock
 
 Before each step CVODE checks whether `t + h == t` in double precision. Where

@@ -204,7 +204,7 @@ Read the message for what does.
 (code-usage-span-out-of-reach)=
 ### `usage.span_out_of_reach`
 
-Raised as `UsageError`. An ODE run CVODE cannot step through: a grid of three or more output points spans more than the largest double, or CVODE's step, or its clock (t + h), passed it before the run ended. Whether a run gets there can turn on the model and its values.
+Raised as `UsageError`. An ODE run CVODE cannot step through: a grid of three or more output points spans more than the largest double, or CVODE's step, or its clock (t + h), passed it before the run ended, or an output point is too close to the time the run stands at for CVODE to integrate to it, or the output points are finer than the doubles across them. Whether a run gets there can turn on the model and its values.
 
 Measure time in a larger unit, so that the run's times are smaller.
 
