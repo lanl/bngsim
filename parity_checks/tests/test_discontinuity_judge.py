@@ -211,3 +211,16 @@ def test_the_runners_report_reads_as_a_verdict_file_holding_every_key(tmp_path):
     assert v["tally"]["PASS"] == len(case.all_keys()), json.dumps(v["tally"])
     some = next(iter(v["cases"].values()))
     assert some.get("work", {}).get("n_steps", 0) > 0 or some["outcome"] == "PASS"
+
+
+def test_a_spec_that_says_another_model_than_its_text_is_caught():
+    case = BY_NAME["time_window"]
+    spec = case.spec
+    fast = dataclasses.replace(
+        spec, rhs=lambda x, s, t, p: {k: 2 * v for k, v in spec.rhs(x, s, t, p).items()}
+    )
+    problems = S.check_spec(dataclasses.replace(case, spec=fast))
+    assert problems and all("flows" in p for p in problems)
+    moved = dataclasses.replace(spec, x0=lambda p: {"X()": 11, "Y()": 0})
+    problems = S.check_spec(dataclasses.replace(case, spec=moved))
+    assert any("starts at" in p for p in problems)
