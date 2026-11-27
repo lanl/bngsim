@@ -519,7 +519,7 @@ def check_spec(case: Case) -> list[str]:
     order = [names.index(s) for s in spec.states]
     problems: list[str] = []
     sides: list[set[int]] = [set() for _ in spec.surfaces]
-    for row in case.rows():
+    for row in case.spec_check_rows():
         values = case.values(row)
         where = case.row_id(row)
         model = prepare(case, values)

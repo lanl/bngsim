@@ -339,6 +339,10 @@ class Case:
     * ``slice``: the points the PR slice runs, at most ``SLICE_CAP``.
     * ``steady_mask``: for ``SteadyState`` points, the species the convergence
       test reads (``steady_state(mask=...)``); empty for all of them.
+    * ``spec_rows``: the parameter rows the spec check reads, every row when
+      None. The spec is one model whatever the row, and the check moves every
+      parameter it reads anyway, so a case whose rows stall a plain run (#1779,
+      #1802) names a row that runs.
     """
 
     name: str
@@ -359,6 +363,7 @@ class Case:
     known: Mapping[str, Known] = field(default_factory=dict)
     timeout: float = 60.0
     steady_mask: tuple[str, ...] = ()
+    spec_rows: tuple[Mapping[str, float], ...] | None = None
     note: str = ""
 
     # Values and keys
@@ -395,6 +400,10 @@ class Case:
 
     def rows(self) -> list[tuple[tuple[str, float], ...]]:
         return [_row(r) for r in self.axes.params]
+
+    def spec_check_rows(self) -> list[tuple[tuple[str, float], ...]]:
+        """The rows the spec check reads (``spec_rows``)."""
+        return self.rows() if self.spec_rows is None else [_row(r) for r in self.spec_rows]
 
     def points(self, row: tuple[tuple[str, float], ...] | None = None) -> list[Point]:
         """The sweep, in a fixed order: rows, then sens, engines, grids, rtol
@@ -442,7 +451,11 @@ class Case:
             raise CaseError(f"{where}: family {self.family!r} is not one of {FAMILIES}")
         if self.fmt not in FORMATS:
             raise CaseError(f"{where}: fmt {self.fmt!r} is not one of {FORMATS}")
-        if not self.switches:
+        # A smooth pulse (#1795's Gaussian) has no switch for #1922 to find, and
+        # no crossing; such a case says in its note why it is here.
+        if not self.switches and (
+            self.reference.crossings(self.values(), self.window()) or not self.note
+        ):
             raise CaseError(f"{where}: names no switch")
         if len({s.name for s in self.switches}) != len(self.switches):
             raise CaseError(f"{where}: two switches share a name")
@@ -560,3 +573,7 @@ class Case:
             raise CaseError(f"{where}: steady_mask applies to SteadyState grids only")
         if self.steady_mask and not set(self.observe) <= set(self.steady_mask):
             raise CaseError(f"{where}: every observed species must be in steady_mask")
+        if self.spec_rows is not None:
+            stray = [dict(r) for r in self.spec_check_rows() if r not in self.rows()]
+            if not self.spec_rows or stray:
+                raise CaseError(f"{where}: spec_rows {stray or '()'} are not rows it sweeps")
