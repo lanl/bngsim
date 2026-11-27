@@ -32,6 +32,10 @@ name: nightly-parity
 #                8x the output points
 #   differential NFsim against RuleMonkey, in     bng-nf's 234 single-segment models,
 #   _nf          distribution                     from its reference archive (#1312)
+#   discontinu-  closed forms, and the model      the switch cases in
+#   ity          integrated branch by branch at   parity_checks/discontinuity, each swept
+#                30 digits: no switch machinery   over parameters, tolerances, grids and
+#                                                 sensitivity columns (#1912)
 #
 # THE REPORT IS THE VERDICT, NOT THE EXIT CODE. Every parity runner exits 1 whenever
 # any model is DIFF/EXCEPTION/TIMEOUT and a full corpus always has some; the SBML
@@ -118,6 +122,7 @@ on:
       - "parity_checks/amici_parity/**"
       - "parity_checks/fd_sens/**"
       - "parity_checks/differential/**"
+      - "parity_checks/discontinuity/**"
       - "benchmarks/suites/sbml_test_suite/**"
       - "benchmarks/_effort.py"
       # The corpus job hashes it into its key and checks the mirror against it.
@@ -171,6 +176,7 @@ jobs:
       differential-nf: ${{ steps.legs.outputs.differential-nf }}
       bng-stoch: ${{ steps.legs.outputs.bng-stoch }}
       amici-sens: ${{ steps.legs.outputs.amici-sens }}
+      discontinuity: ${{ steps.legs.outputs.discontinuity }}
       corpus: ${{ steps.legs.outputs.corpus }}
     steps:
       - uses: actions/checkout@v4
@@ -846,6 +852,55 @@ jobs:
           retention-days: 30
 
   # ------------------------------------------------------------------------- #
+  # The discontinuity suite (#1912, phase 0 of #1781): models whose rate laws
+  # switch, each swept over its parameters, tolerances, output grids and
+  # sensitivity columns, and judged against a reference that does not go
+  # through bngsim's switch machinery (closed forms, or the model integrated
+  # branch by branch at 30 digits). No reference engine and no corpus: the
+  # cases are Python modules in parity_checks/discontinuity. Its PR slice runs
+  # in python-tests.yml; this is the full sweep. About 3 s of runs on 4
+  # workers locally once compiled.
+  # ------------------------------------------------------------------------- #
+  discontinuity:
+    name: Discontinuity sweep
+    needs: plan
+    if: needs.plan.outputs.discontinuity == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/sundials-archive
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          prune-cache: true
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Provision from uv.lock
+        run: uv sync --extra dev --python 3.12
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
+      - name: Build identity
+        run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp; print('bngsim', bngsim.__version__); bp.print_identity()"
+      - name: Run discontinuity_run.py
+        env:
+          BNGSIM_CODEGEN_CACHE_DIR: ${{ runner.temp }}/codegen
+        run: uv run --no-sync python parity_checks/discontinuity/discontinuity_run.py --workers 4 --out "$RUNNER_TEMP/discontinuity.json" || true
+      - name: Compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash parity_checks/nightly/compare.sh discontinuity core "$RUNNER_TEMP/discontinuity.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-discontinuity
+          path: nightly-out/discontinuity/
+          retention-days: 30
+
+  # ------------------------------------------------------------------------- #
   # Stochastic tracks against run_network's SSA and standalone NFsim. Seeds are
   # fixed on both sides.
   # ------------------------------------------------------------------------- #
@@ -1133,7 +1188,7 @@ jobs:
   # ------------------------------------------------------------------------- #
   report:
     name: Report
-    needs: [plan, corpus, sbml, rr-ode, bng-ode, bng-stoch, amici-sens, rr-ssa, fd-sens, differential, differential-nf, publish]
+    needs: [plan, corpus, sbml, rr-ode, bng-ode, bng-stoch, amici-sens, rr-ssa, fd-sens, differential, differential-nf, discontinuity, publish]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15

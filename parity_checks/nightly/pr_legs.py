@@ -38,6 +38,7 @@ LEGS = (
     "differential-nf",
     "bng-stoch",
     "amici-sens",
+    "discontinuity",
 )
 # The legs that read the BioModels corpus, which the corpus job fetches.
 CORPUS_LEGS = frozenset({"rr-ode", "rr-ssa", "amici-sens", "differential"})
@@ -64,6 +65,7 @@ TRIGGERS = (
     "parity_checks/amici_parity/",
     "parity_checks/fd_sens/",
     "parity_checks/differential/",
+    "parity_checks/discontinuity/",
     "benchmarks/suites/sbml_test_suite/",
     "benchmarks/_effort.py",
     "benchmarks/suites/biomodels/biomodels_provenance.json",
@@ -124,6 +126,9 @@ RULES: tuple[tuple[str, frozenset[str]], ...] = (
     ("parity_checks/fd_sens/fd_sens_run.py", frozenset({"fd-sens"})),
     ("parity_checks/fd_sens/", _FD),
     ("parity_checks/differential/", _DIFF),
+    # The suite's cases, references and runner (#1912). Its PR slice runs in
+    # python-tests.yml whatever a PR touches; this leg is the full sweep.
+    ("parity_checks/discontinuity/", frozenset({"discontinuity"})),
     ("benchmarks/suites/sbml_test_suite/", frozenset({"sbml"})),
     ("benchmarks/_effort.py", frozenset({"sbml"})),
     # The corpus job's key hashes it and the mirror's fetch checks against it.
