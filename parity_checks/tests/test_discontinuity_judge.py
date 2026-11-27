@@ -224,3 +224,14 @@ def test_a_spec_that_says_another_model_than_its_text_is_caught():
     moved = dataclasses.replace(spec, x0=lambda p: {"X()": 11, "Y()": 0})
     problems = S.check_spec(dataclasses.replace(case, spec=moved))
     assert any("starts at" in p for p in problems)
+
+
+@pytest.mark.parametrize(("times", "outcome"), [(2.0, "DIFF"), (0.5, "PASS")])
+def test_a_species_off_by_its_allowance_fails_a_plain_point(times, outcome):
+    _, values, sol = _window(sens=())
+    x = sol.species.lo.copy()
+    i = int(np.flatnonzero(sol.times == 20.0)[0])
+    peak = np.abs(sol.species.lo[:, 1]).max()
+    x[i, 1] += times * 1e3 * (1e-12 + 1e-10 * peak)
+    v = _judge(sol, x, None, values, sens=())
+    assert v.outcome == outcome and v.sens_ratio is None
