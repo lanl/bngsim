@@ -6,7 +6,15 @@ from __future__ import annotations
 import sympy
 from _branchwise import Spec, Surface
 from _case import Aligned, Axes, Case, Judge, Known, Offset, Switch, Uniform, point
-from _closed_forms import gaussian_pulse, periodic_window, table_pulse, window_decay
+from _closed_forms import (
+    gaussian_pulse,
+    periodic_window,
+    pulse_exposure,
+    table_pulse,
+    window_decay,
+)
+
+from _cases import _families as F
 
 WINDOW_NET = """\
 begin parameters
@@ -279,6 +287,241 @@ CASES = (
             "switch (and declares none), but a step over it misses it whole, so it needs the "
             "stops Simulator.run places (#1286). run_diffrax places none and returns X(100) = 0. "
             "atol = rtol, as the issue ran it."
+        ),
+    ),
+)
+
+
+# ── #1914: the pulse family, swept ──────────────────────────────────────────
+#
+# A rectangle of area kx on a condition that reads time() or a counter clock,
+# narrow and wide, and the Gaussian of the triangle's area and width that has
+# no corner: the bend family's control (``bend.py``).
+
+
+PULSE_JUDGE = Judge(
+    k_state=5e3,
+    k_sens=5e3,
+    peak="window",
+    converge=False,
+    why=(
+        "a pulse 0.003 wide drives its columns 1e4 to 1e5 times their end values inside it, "
+        "and CVODES holds them to rtol of that running size there, so each column is scaled by "
+        "its peak over the window (a grid with no sample inside the pulse would judge it against "
+        "its end value). Over 263 runs whose atol differed by up to 2.5e-11 of itself, these "
+        "cases' passing points reach 2.15e3 times that tolerance at rtol 1e-12 "
+        "(pulse_clock[c=50.74], offset31, a plain run; triangle_clock at k_clock = 8, u4), and "
+        "2.33e3 on another set of draws (pulse_clock at k_clock = 8, offset31, a plain run that "
+        "usually reads about 2e2); the corner-free control gauss_clock, which has no switch, "
+        "2.13e3, and gauss_time 962, on columns that cancel to 0 past the pulse (c and w); at "
+        "1e-10 they reach 776. So k = 5e3 is 2.1 times the worst of them, and the marks of "
+        "#1997 and #1998 judged by it lie 1.5 "
+        "times above it at their lowest (triangle_clock on one run of 263) and 2.2 times "
+        "otherwise. The convergence rows are off: from 1e-10 to 1e-12 the control's error grows "
+        "about 25 to 30 times, which the rule reads as an error that stops falling"
+    ),
+)
+
+TIME_ROWS = (
+    {},  # 0.003 wide, height 333: the narrow pulse
+    {"w": 0.1},
+    {"w": 4.0},  # wide
+    F.at25("time", t=25.37),  # between every uniform point
+    {"kx": 0.003},  # narrow, height 1
+    {"c": 2.5, "w": 0.1},  # early, where the doubles are finer
+)
+CLOCK_ROWS = (
+    {},  # the counter at 50 across the pulse
+    F.at25("clock", T0=-49.95),  # the counter at 0.05 across it
+    F.at25("clock", k_clock=0.5),
+    F.at25("clock", k_clock=8.0),
+    {"w": 0.1},
+    {"w": 4.0},
+    F.at25("clock", t=25.37),
+)
+GAUSS_TIME_ROWS = ({}, {"w": 0.1}, F.at25("time", t=25.37))
+GAUSS_CLOCK_ROWS = ({}, F.at25("clock", T0=-49.95), {"w": 0.1})
+
+
+T0_ROW = F.at25("clock", T0=-49.95)
+STALL = (
+    "SimulationError",
+    "#1995: a sensitivity run makes no progress at the time switch's stop, with h below the ulp of t",
+)
+CLOCK_PLAIN = (
+    "SimulationError",
+    "#1996: a plain run fails with CV_ERR_FAILURE just past the clock pulse's leading edge",
+)
+W_COLUMN = (
+    AssertionError,
+    "#1997: dX/dw ends about 1e-3 off where it is 0, at every rtol; on some step sequences the "
+    "row on the trailing edge also comes back short of its time (#1799), which the judge reports "
+    "first",
+)
+MOVED_ROW = (
+    AssertionError,
+    "#1799: a sensitivity run records the row on a stop up to 1e-12 from the time asked",
+)
+
+
+def _known(case, table):
+    """``{(issue, raises, reason): cells}`` as Known marks."""
+    return {
+        k: Known(issue, raises, reason)
+        for (issue, (raises, reason)), cells in table.items()
+        for k in F.keys(case, cells)
+    }
+
+
+def _pulse_time():
+    cols = F.columns("window", "time")
+    case = F.family_case(
+        "pulse_time",
+        "pulse",
+        "window",
+        "time",
+        TIME_ROWS,
+        pulse_exposure("window", "time"),
+        slice_=(
+            point(1e-10, F.Uniform(4), cols),
+            point(1e-12, F.Offset(31), cols, w=0.1),
+            point(1e-12, F.Aligned(31), cols, w=4.0),
+            point(1e-8, F.Aligned(2), cols),
+            point(1e-6, F.Uniform(31), ()),
+        ),
+        judge=PULSE_JUDGE,
+        note=(
+            "A rectangle of area kx on time(), from c to c + w: both edges jump. Its sensitivity "
+            "runs make no progress at the leading edge's stop once the jump is large there (#1995): "
+            "0.003 wide (height 333) from rtol 1e-10, 0.1 wide at 1e-12."
+        ),
+    )
+    return F.with_marks(
+        case,
+        _known(
+            case,
+            {
+                (1995, STALL): [
+                    ({}, cols, ("1e-10", "1e-12"), F.ALL_GRIDS),
+                    ({"c": 25.37}, cols, ("1e-10", "1e-12"), F.ALL_GRIDS),
+                    ({"w": 0.1}, cols, ("1e-12",), F.ALL_GRIDS),
+                ]
+            },
+        ),
+    )
+
+
+def _pulse_clock():
+    cols = F.columns("window", "clock")
+    case = F.family_case(
+        "pulse_clock",
+        "pulse",
+        "window",
+        "clock",
+        CLOCK_ROWS,
+        pulse_exposure("window", "clock"),
+        slice_=(
+            point(1e-12, F.Uniform(4), ()),
+            point(1e-12, F.Uniform(31), cols),
+            point(1e-10, F.Offset(31), cols, k_clock=8.0, c=200.0),
+            point(1e-12, F.Uniform(4), cols, **T0_ROW),
+            point(1e-8, F.Aligned(2), cols),
+            point(1e-6, F.Aligned(31), cols, w=4.0),
+        ),
+        judge=PULSE_JUDGE,
+        note=(
+            "A rectangle of area kx on a counter clock Tobs, from c to c + w in T. Its w column "
+            "ends 1e-3 off where it is 0 (#1997), and its plain runs fail at rtol 1e-12 (#1996). "
+            "With the counter at 0.05 across it (T0 = -49.95) the w column is 1,700 times "
+            "nearer, and its points pass."
+        ),
+    )
+    kc05, kc8, late = (
+        F.at25("clock", k_clock=0.5),
+        F.at25("clock", k_clock=8.0),
+        F.at25("clock", t=25.37),
+    )
+    return F.with_marks(
+        case,
+        _known(
+            case,
+            {
+                (1996, CLOCK_PLAIN): [
+                    ({}, (), ("1e-12",), ("u4", "u31")),
+                    (kc8, (), ("1e-12",), ("u4", "u31")),
+                    (kc05, (), ("1e-12",), ("u31",)),
+                ],
+                (1997, W_COLUMN): [
+                    (row, cols, rtols, F.ALL_GRIDS)
+                    for row, rtols in (
+                        ({}, ("1e-10", "1e-12")),
+                        (kc8, ("1e-10", "1e-12")),
+                        (late, ("1e-10", "1e-12")),
+                        (kc05, ("1e-12",)),
+                        ({"w": 0.1}, ("1e-12",)),
+                    )
+                ],
+            },
+        ),
+    )
+
+
+def _gauss(reads, rows, slice_, note):
+    cols = F.columns("gauss", reads)
+    case = F.family_case(
+        f"gauss_{reads}",
+        "pulse",
+        "gauss",
+        reads,
+        rows,
+        pulse_exposure("gauss", reads),
+        slice_=slice_(cols),
+        judge=PULSE_JUDGE,
+        note=note,
+    )
+    marks = {(1799, MOVED_ROW): [({}, cols, tuple(F.RTOL_LABELS), ("aligned31", "offset31"))]}
+    return F.with_marks(case, _known(case, marks))
+
+
+CASES = (
+    *CASES,
+    _pulse_time(),
+    _pulse_clock(),
+    _gauss(
+        "time",
+        GAUSS_TIME_ROWS,
+        lambda cols: (
+            point(1e-10, F.Aligned(31), cols),
+            point(1e-12, F.Uniform(4), cols),
+            point(1e-6, F.Offset(31), ()),
+            point(1e-8, F.Aligned(2), cols, w=0.1),
+            point(1e-12, F.Uniform(31), cols, c=25.37),
+        ),
+        (
+            "The control beside triangle_time: a Gaussian of the triangle's area, 1/2, and "
+            "s = w/4, on time(). It has no corner and no switch, so it declares none. bngsim "
+            "stops at its middle, t = 25, and a sensitivity run records a row asked for there "
+            "an ulp short (#1799). It has no crossing, so its aligned31 and offset31 grids ask "
+            "for the same rows; its rows are the triangles' narrow, 0.1-wide and off-grid ones."
+        ),
+    ),
+    _gauss(
+        "clock",
+        GAUSS_CLOCK_ROWS,
+        lambda cols: (
+            point(1e-8, F.Offset(31), cols),
+            point(1e-12, F.Uniform(31), cols),
+            point(1e-12, F.Aligned(2), cols, **T0_ROW),
+            point(1e-6, F.Uniform(4), ()),
+            point(1e-10, F.Aligned(31), cols, w=0.1),
+        ),
+        (
+            "The control beside triangle_clock: the Gaussian of gauss_time on a counter clock, no "
+            "corner and no switch. With the counter at 0.05 its middle row has #1998's moved "
+            "state on 107 of 263 runs whose atol differed by up to 2.5e-11 of itself (left out), "
+            "where triangle_clock's apex rows have it on every run, at 1.2e4 to 6.2e4 times their "
+            "tolerance. It has no crossing, so its aligned31 and offset31 grids ask for the same "
+            "rows; its rows are the triangles' narrow and 0.1-wide ones."
         ),
     ),
 )

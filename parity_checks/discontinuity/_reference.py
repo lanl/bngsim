@@ -166,12 +166,15 @@ OwesFn = Callable[[dict, tuple[str, ...]], "Owed | None"]
 class ClosedForm:
     """Formulas written by hand. ``crossings(params)`` lists the crossing
     times, which the grids and the two-sided rows need. ``owes`` says where a
-    point owes a refusal instead of a value (``Owed``)."""
+    point owes a refusal instead of a value (``Owed``). ``peaks(params)`` lists
+    stretches of time where a column may peak away from every crossing (a
+    smooth pulse's middle), which ``window_peak`` scans densely."""
 
     fn: ClosedFormFn
     crossings_fn: Callable[[dict], Sequence[float]]
     floor: float = CLOSED_FORM_FLOOR
     owes: OwesFn | None = None
+    peaks_fn: Callable[[dict], Sequence[tuple[float, float]]] | None = None
     kind: str = field(default="closed", init=False)
 
     def crossings(self, params: dict, t_span) -> tuple[float, ...]:
@@ -180,6 +183,18 @@ class ClosedForm:
 
     def owed(self, params: dict, sens: Sequence[str]) -> Owed | None:
         return None if self.owes is None else self.owes(dict(params), tuple(sens))
+
+    def peaks(self, params: dict, t_span) -> tuple[tuple[float, float], ...]:
+        """The stretches ``peaks_fn`` names, clipped to the window."""
+        if self.peaks_fn is None:
+            return ()
+        t0, t1 = map(float, t_span)
+        out = []
+        for lo, hi in self.peaks_fn(dict(params)):
+            lo, hi = max(t0, float(lo)), min(t1, float(hi))
+            if hi > lo:
+                out.append((lo, hi))
+        return tuple(out)
 
     def solve(
         self, params: dict, t_span, times, observe: Sequence[str], sens: Sequence[str]
@@ -234,14 +249,19 @@ def window_peak(
     ref, params: dict, t_span, observe: Sequence[str], sens: Sequence[str], n: int = PEAK_SCAN
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Each column's largest magnitude over the whole window, from the
-    reference alone: at ``n`` uniform times and at both limits of every
-    crossing. A column whose peak lies at a crossing (a triangle's apex, a
-    sawtooth's jump) is caught there, however narrow its pulse; a smooth peak
-    between crossings is caught to the scan's resolution. Returns
+    reference alone: at ``n`` uniform times, at both limits of every
+    crossing, and at ``n`` times across each stretch the reference names as a
+    possible peak away from its crossings (``ClosedForm.peaks``). A column
+    whose peak lies at a crossing (a triangle's apex, a sawtooth's jump) is
+    caught there, however narrow its pulse; a smooth peak is caught to the
+    resolution of the scan that covers it, so a smooth pulse narrower than
+    the uniform scan (a Gaussian 1e-3 wide) needs its stretch named. Returns
     ``(species (n_obs,), columns (n_obs, n_cols) or None)``."""
     t0, t1 = map(float, t_span)
     cross = [c for c in ref.crossings(params, t_span) if t0 <= c <= t1]
-    times = np.unique(np.concatenate([np.linspace(t0, t1, n), np.asarray(cross, float)]))
+    peaks = getattr(ref, "peaks", None)
+    dense = [np.linspace(lo, hi, n) for lo, hi in (peaks(params, t_span) if peaks else ())]
+    times = np.unique(np.concatenate([np.linspace(t0, t1, n), np.asarray(cross, float), *dense]))
     sol = ref.solve(params, t_span, times, observe, sens)
     sp = np.maximum(sol.species.magnitude(), sol.species_left.magnitude()).max(axis=0)
     if sol.sens is None:

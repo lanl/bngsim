@@ -9,9 +9,14 @@ from _closed_forms import (
     clock_exposure,
     cube_switch,
     late_switch,
+    level_step,
+    state_step,
     table_kink_switch_time,
     table_step_switch_time,
 )
+
+from _cases import _families as F
+from _cases.pulse import MOVED_ROW, STALL, _known
 
 # #1776's model, with the residual's coefficients as parameters so the sweep
 # can move them. u = a*time() - b*Tobs runs at r = a - b*k_clock; c is placed
@@ -509,6 +514,186 @@ CASES = (
             "#1836: a counter from 0.5 switches X on when it reaches sigma = 2^e - 2, 2.5 before "
             "the window's end at 2^e. Past 2^30 the restart's small steps round where the "
             "doubles are coarse; over 2^50 the jump is lost."
+        ),
+    ),
+)
+
+
+# ── #1914: the step family, swept ───────────────────────────────────────────
+#
+# A rate that steps from k0 to k1, up or down, as time() or a counter clock
+# crosses c; and a species that switches its own decay rate as it falls
+# through a threshold (the clock_step seed is #1776's coupled step).
+
+
+STEP_TIME_ROWS = (
+    {},  # 0.1 to 1 at t = 25
+    {"k1": 0.01},  # a step down
+    F.at25("time", t=25.37),
+    {"k1": 30.0},  # a large jump
+    {"c": 2.5},  # early, where the doubles are finer
+)
+STEP_CLOCK_ROWS = (
+    {},
+    {"k1": 0.01},
+    F.at25("clock", k_clock=0.5),
+    F.at25("clock", k_clock=8.0),
+    F.at25("clock", T0=-49.95),
+    F.at25("clock", t=25.37),
+    {"k1": 30.0},
+)
+
+STATE_STEP_NET = """\
+begin parameters
+    1 k1 0.2
+    2 k2 1.0
+    3 th 3.0
+end parameters
+begin functions
+    1 rate() if(Xobs>th,k1,k2)
+end functions
+begin species
+    1 X() 10
+    2 Y() 0
+end species
+begin reactions
+    1 1 2 rate
+end reactions
+begin groups
+    1 Xobs 1
+end groups
+"""
+
+STATE_STEP_SPEC = Spec(
+    states=("X()", "Y()"),
+    params=("k1", "k2", "th"),
+    rhs=lambda x, s, t, p: {
+        "X()": -(p["k2"] + (p["k1"] - p["k2"]) * s[0]) * x["X()"],
+        "Y()": (p["k2"] + (p["k1"] - p["k2"]) * s[0]) * x["X()"],
+    },
+    surfaces=(Surface("X>th", lambda x, t, p: x["X()"] - p["th"]),),
+    x0=lambda p: {"X()": 10, "Y()": 0},
+)
+STATE_COLS = ("k1", "k2", "th")
+#: A state switch's crossing is located only to the run's own accuracy, about
+#: rtol*X/|X'| (5e-6 at rtol 1e-6 here), and the k1 and th columns jump there:
+#: by 72 and 4 on the base row, by 433 and 24 at k2 = 5. Offset's default hair,
+#: 1e-9 of t*, lies inside that, where a correct run may read either side; 1e-4
+#: of t* lies outside it at every tolerance.
+STATE_GRIDS = (*F.GRIDS[:-1], Offset(31, shift=1e-4))
+STATE_JUDGE = Judge(
+    peak="window",
+    why=(
+        "a state switch's crossing is located only to the run's own accuracy, about rtol*X/|X'| "
+        "(5e-6 at rtol 1e-6), so a row on it reads a column that starts at 0 there (dX/dk2) at "
+        "that distance into the far branch; scaled by its samples alone, a column that decays "
+        "past the crossing (k2 = 1: to e^-24 by t = 30) would be judged against its tail"
+    ),
+)
+
+
+MOVED_STATE = (
+    AssertionError,
+    "#1998: the sensitivity run's state is moved along the flow at the clock-carried crossing, "
+    "and the row on it reads the moved state",
+)
+
+
+def _step(reads, rows, slice_, note, marks):
+    case = F.family_case(
+        f"step_{reads}", "step", "step", reads, rows, level_step(reads), slice_=slice_, note=note
+    )
+    return F.with_marks(case, _known(case, marks))
+
+
+_SCOLS = {r: F.columns("step", r) for r in ("time", "clock")}
+
+CASES = (
+    *CASES,
+    _step(
+        "time",
+        STEP_TIME_ROWS,
+        (
+            point(1e-12, Uniform(31), _SCOLS["time"], k1=30.0),
+            point(1e-12, Aligned(31), _SCOLS["time"]),
+            point(1e-10, Aligned(2), _SCOLS["time"], c=2.5),
+            point(1e-8, Offset(31), _SCOLS["time"], k1=0.01),
+            point(1e-6, Uniform(4), ()),
+        ),
+        (
+            "X -> Y at a rate that steps from k0 to k1 as time() passes c. A step to 30 makes "
+            "the sensitivity run stall at the stop at rtol 1e-12 (#1995)."
+        ),
+        {(1995, STALL): [({"k1": 30.0}, _SCOLS["time"], ("1e-12",), F.ALL_GRIDS)]},
+    ),
+    _step(
+        "clock",
+        STEP_CLOCK_ROWS,
+        (
+            point(1e-12, Aligned(2), _SCOLS["clock"], k1=30.0),
+            point(1e-12, Uniform(4), _SCOLS["clock"], k1=30.0),
+            point(1e-10, Aligned(31), _SCOLS["clock"], **F.at25("clock", T0=-49.95)),
+            point(1e-8, Offset(31), _SCOLS["clock"], **F.at25("clock", k_clock=8.0)),
+            point(1e-6, Uniform(31), ()),
+        ),
+        (
+            "X -> Y at a rate that steps from k0 to k1 as a counter clock passes c. On a step to "
+            "30 the step's own row reads dX/dk1 = -1.17e-12 where it is 0, at rtol 1e-12: -dt*X(25) "
+            "for the 1.4e-12 the sensitivity run moved its state along the flow at the crossing "
+            "(#1998); u4, with no row there, is right. The default judge holds that row to "
+            "CVODES's own column tolerance, atol/|k1| = 3.3e-16, 3.5e3 times under the error: the "
+            "column is 0 there and has decayed to 1e-13 by the next row, so the samples hold no "
+            "larger peak. By the window peak (1e-2, just past the step) it would be 112 times its "
+            "tolerance, and at rtol 1e-10 the same -1.2e-12 passes. The moved state is an error "
+            "whatever the scale, so the default stands, and the marks are #1998's."
+        ),
+        {(1998, MOVED_STATE): [({"k1": 30.0}, _SCOLS["clock"], ("1e-12",), F.ON_CROSSING)]},
+    ),
+    Case(
+        name="step_state",
+        family="step",
+        model=STATE_STEP_NET,
+        fmt="net",
+        switches=(Switch("X>th", "state", "jump"),),
+        params={"k1": 0.2, "k2": 1.0, "th": 3.0},
+        t_span=(0.0, 30.0),
+        observe=("X()", "Y()"),
+        reference=state_step(),
+        spec=STATE_STEP_SPEC,
+        axes=Axes(
+            params=(
+                {},  # t* = 6.02, then five times faster
+                {"k2": 0.02},  # then ten times slower
+                {"th": 9.0},  # t* = 0.53, early
+                {"k1": 0.05, "th": 5.0},  # t* = 13.9, slow
+                {"k2": 5.0},
+            ),
+            grids=STATE_GRIDS,
+            sens=((), STATE_COLS),
+        ),
+        slice=(
+            point(1e-12, Aligned(2), STATE_COLS, th=9.0),
+            point(1e-12, STATE_GRIDS[-1], STATE_COLS, th=9.0),
+            point(1e-10, Aligned(31), STATE_COLS),
+            point(1e-8, Uniform(31), ()),
+            point(1e-6, Uniform(4), STATE_COLS, k2=5.0),
+        ),
+        judge=STATE_JUDGE,
+        note=(
+            "X -> Y at if(Xobs>th,k1,k2): X switches its own rate as it falls through th, "
+            "at t* = ln(10/th)/k1, so its k1 column jumps there by the saltation term. At "
+            "th = 9, rtol 1e-12, a sensitivity run records the row asked for at t* 7.9e-14 "
+            "short (#1799)."
+        ),
+    ),
+)
+CASES = (
+    *CASES[:-1],
+    F.with_marks(
+        CASES[-1],
+        _known(
+            CASES[-1],
+            {(1799, MOVED_ROW): [({"th": 9.0}, STATE_COLS, ("1e-12",), F.ALIGNED)]},
         ),
     ),
 )

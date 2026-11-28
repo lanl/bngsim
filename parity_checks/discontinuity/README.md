@@ -59,8 +59,12 @@ A case is a `Case` in `_cases/<family>.py` (`_case.py` documents each field):
 * **its slice**: at most 8 points, which between them take every tolerance, grid
   and column set the case sweeps;
 * **points left out** (`exclude`), each with its reason: only a point whose
-  outcome is a coin flip, passing or failing as atol moves by 1 part in 1e12.
-  No mark can hold such a point, and it would flap from night to night;
+  outcome rides on the step sequence. That is a point that passes on some runs
+  and fails on others as atol moves in its last digits (by 1 part in 1e12 to 2.5
+  in 1e11), or one that passed every such run but came within 2 times of its
+  allowance on one, from a median well below it. No mark can hold such a point,
+  and it would flap from night to night. #1914's family cases take theirs from
+  `_cases/_flips.py`, which says how they were measured;
 * **its known failures**: a point that fails on main for a filed bug names the
   issue (`Known`), and the narrowest type it fails with, as a class or as the
   name of one of bngsim's (`"SimulationError"`, `"SimulationTimeout"` for a
@@ -81,7 +85,7 @@ opinion.
 
 | kind | module | what it is |
 |---|---|---|
-| closed form | `_closed_forms.py` | formulas written by hand. `clock_exposure` is lifted from `python/tests/test_clock_carried_crossing.py`'s `_exact` and extended to every time and column; a test holds the two together. An event is written in as a jump of the species it resets, read through `past()`, so both limits at its time are there. Each column is checked against a central difference of its own closed form's species |
+| closed form | `_closed_forms.py` | formulas written by hand. `clock_exposure` is lifted from `python/tests/test_clock_carried_crossing.py`'s `_exact` and extended to every time and column; a test holds the two together. `pulse_exposure` generalizes it to a condition on `time()`, on a clock started at `T0`, or on #1776's residual, to more shapes (a window, a Gaussian) and to the width's column, and a test holds it to `clock_exposure` on every row they share. An event is written in as a jump of the species it resets, read through `past()`, so both limits at its time are there. Each column is checked against a central difference of its own closed form's species, and each family case's closed form against its spec integrated branch by branch |
 | limit | `_reference.py` | a steady state written by hand (`Limit`), for `SteadyState` grids. The run must also report `converged=True` |
 | branch by branch | `_branchwise.py` | the spec integrated one smooth branch at a time by mpmath's Taylor method at 30 digits, with sensitivity columns. Each crossing is located on its branch's own solution, and the columns jump by the saltation formula. It refuses rather than guesses at a start on a surface, a grazing crossing, a slide, coincident surfaces, or a crossing count other than the case declares |
 | frozen | `_frozen.py` | enclosures recorded offline by validated integrators. Ariadne certifies the crossing structure, CAPD encloses the columns, and both enclose the species, whose bands must overlap. Both are GPL-3.0, so they are never a dependency: their output is committed as data, tied to its case by a fingerprint. The recorders come with the first cases that need them (#1915) |
@@ -105,7 +109,9 @@ distance between the run and the reference over the window, in units of
 `k_state` and `k_sens` (default 1e3, `bngsim._check.PATH_RTOL_FACTOR`). The
 peak is the largest over the samples. A case may ask for the largest over the
 whole window instead (`Judge(peak="window")`): both limits at every crossing,
-and a dense scan. A narrow pulse's column runs 1e4 to 1e5 times its end value
+and a dense scan. A closed form may also name stretches where a column peaks away from
+every crossing (`ClosedForm.peaks`, a smooth pulse's middle), which the scan
+covers densely: a Gaussian 1e-3 wide lies between two of its 2001 uniform times. A narrow pulse's column runs 1e4 to 1e5 times its end value
 inside the pulse, and CVODES holds it to rtol of that running size there, so a
 grid with no sample inside the pulse would judge it against its end value. A column
 that neither the run nor the reference resolves is named but not judged; the
@@ -171,3 +177,81 @@ case:
 * #1777's residue cannot be told apart from how a narrow pulse's column is
   conditioned: a corner-free Gaussian of the same width comes out 5 to 10 times
   further off.
+
+## #1914's families: pulses, steps, sawtooths and bends
+
+Each family is one shape of rate law on each spelling of its condition, built by
+`_cases/_families.py`: on `time()` itself, on a counter clock `Tobs` (from `T0`
+at `k_clock`), and, for the sawtooth, on #1776's residual `a*time() - b*Tobs`.
+Every model keeps the clock T, read or not: its exact value, `T0 + k_clock*t`,
+says which time the state a run reports belongs to. Each pulse's crossing sits at
+t = 25, a point of `Uniform(31)`, and a row at c for t = 25.37 puts it between
+every uniform point. Each case sweeps rtol 1e-6 to 1e-12, the grids `u4`, `u31`,
+`aligned2`, `aligned31` and `offset31`, and a plain run beside one with the
+columns of its law's own parameters (for #1776's residual, kx, k_clock, c and w:
+a and b, which its rows move, have none). Its rows move the width (0.003, 0.1 and
+4), the clock rate (0.5, 2 and 8), where the counter stands across the pulse (50,
+or 0.05), and whether the crossing sits on a grid point. The Gaussians, the
+triangles' controls, take three of the triangles' rows each; having no crossing,
+their `aligned31` and `offset31` grids ask for the same rows.
+
+| family | cases | law |
+|---|---|---|
+| pulse | `pulse_time`, `pulse_clock` | a rectangle of area kx, `if(u>c&&u<c+w, kx/w, 0)` |
+| pulse | `gauss_time`, `gauss_clock` | a Gaussian of the triangle's area and s = w/4: no corner, no switch, the triangles' control |
+| step | `step_time`, `step_clock` | `if(u>c, k1, k0)`, up and down |
+| step | `step_state` | `X -> Y` at `if(Xobs>th, k1, k2)`: a species that switches its own rate |
+| sawtooth | `sawtooth_time`, `sawtooth_clock`, `sawtooth_coupled` | a jump up at c and a line back to 0 by c + w; `sawtooth_coupled` is #1776's own model and its healthy couplings |
+| bend | `triangle_time`, `triangle_clock` | `kx*(1/w)*max(0,1-abs(u-c)/(w/2))`: corners of max and abs (#1285, #1456, #1777) |
+| bend | `min_state`, `abs_state` | `min(vmax, k*Xobs)` and `kx*abs(Xobs-th)` on a decaying X |
+
+**The judges.** The narrow pulses take the window peak, and k = 5e3 with their
+convergence rows off. At rtol 1e-12 their passing points reach 2.15e3 times their
+tolerance over 263 runs (below), and 2.33e3 on another set of draws, and the
+corner-free Gaussian on the clock, which has no switch, 2.13e3; k is 2.1 times
+the worst, and the marks judged by it lie 1.5 times above it at their lowest
+(once in 263 runs) and 2.2 times otherwise.
+The two clock-carried sawtooths take k = 1e4: #1998 puts their rows on the jump
+at a fixed 3.0e3 to 7.2e3, and the highest passing point, past the jump at
+k_clock = 8, varies from 6.2e3 to 7.8e3. `step_state` takes the window peak, and
+an `Offset` hair of 1e-4 of t*: a state switch's crossing is located only to the
+run's own accuracy. `min_state` and `abs_state` turn their convergence rows off.
+Each says why in its `Judge.why`.
+
+**What the sweep found.** Every point that fails on every run is marked. Every
+point of these cases was run 263 times, at the committed atol and at
+`atol_ratio*(1 + d)` for 262 values of d up to 2.5e-11 in size, each of which
+moves the step sequence by an ulp or so (`_cases/_flips.py` lists them). The 64
+points whose outcome changed are left out with their counts, and so are four that
+passed every run but came within 2 times of the allowance on one: most are
+#1799's short row, which shows on some step sequences only. That list is what
+those runs found, not a bound. A point outside it can still change outcome on
+another step sequence, at about 1 run in 250 or rarer for these kinds, so after a
+change that moves the step sequence a single new row of these kinds in the
+nightly's diff is that and not a regression.
+
+* **#1995**: a sensitivity run makes no progress at a time switch's stop once
+  the rate jumps by 30 there at rtol 1e-12 (`step_time`), and sooner on narrow
+  pulses: 0.003 wide from rtol 1e-10 (`pulse_time`, `sawtooth_time`).
+* **#1996**: a plain run of a narrow jump pulse on a counter clock fails at rtol
+  1e-11 and 1e-12 just past its leading edge (`pulse_clock`, `sawtooth_clock`,
+  `sawtooth_coupled`), where the same pulse on `time()` is right.
+* **#1997**: the w column of a narrow rectangle on a counter clock ends 1.1e-3
+  off where it is 0, the same from rtol 1e-8 to 1e-12 (`pulse_clock`).
+* **#1998**: a sensitivity run moves the whole state along the flow at each
+  crossing a counter clock carries, and keeps the time. A row on the crossing
+  holds the moved state (`triangle_clock`'s rows on its crossings at 7.7e3 to
+  2.5e5 times their tolerance, 1.2e4 to 6.2e4 with the counter at 0.05: #1777's
+  lead; `step_clock`'s row on a step to 30), and past a jump the species stay off
+  (`sawtooth_clock`).
+* **#1799**: a sensitivity run records a row on a stop up to 1e-12 from the time
+  asked, short or, at the triangle's foot on `time()`, an ulp late
+  (`triangle_time`, both Gaussians, `step_state`, `sawtooth_coupled`).
+* **#1999 (new)**: on some step sequences `abs_state`'s kd column at its corner
+  comes back about 1e-7 of itself off at rtol 1e-10, up to 2.9e3 times its
+  tolerance. Those points are left out, and its convergence rows are off.
+* **#2000 (new)**: on one run of 263, `pulse_clock`'s w column loses its jump at
+  the trailing edge, -1010.9 for 0 from there to t = 30; it may be #1984's kind.
+  That point is left out.
+
+`min_state` fails nowhere.
