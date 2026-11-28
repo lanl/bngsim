@@ -278,6 +278,8 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
         crossings = ref.crossings(values, window)
         owed_fn = getattr(ref, "owed", None)
         owed = owed_fn(values, p.sens) if owed_fn is not None else None
+        permit_fn = getattr(ref, "permitted", None)
+        permit = permit_fn(values, p.sens) if permit_fn is not None else None
     except Exception as e:
         if strict:
             raise
@@ -288,6 +290,7 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
     try:
         model = prepare(case, values)
         refusal = resolve(owed.refusal) if owed is not None else None
+        allowed = resolve(permit.refusal) if permit is not None else None
     except Exception as e:
         if strict:
             raise
@@ -309,6 +312,9 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
     except Exception as e:
         if refusal is not None and isinstance(e, refusal):
             return _set(row, "PASS", f"refused as owed ({owed.reason}): {_first_line(e)}")
+        if allowed is not None and isinstance(e, allowed):
+            row.subclass = f"refused:{type(e).__name__}"
+            return _set(row, "PASS", f"refused as permitted ({permit.reason}): {_first_line(e)}")
         if strict:
             raise
         outcome, sub = _failure(e)

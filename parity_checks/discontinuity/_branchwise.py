@@ -18,13 +18,18 @@ so the reference shares no code with bngsim's switch handling.
   a sign scan at fixed times across the window, then bisection to the working
   precision;
 * restarting exactly at the crossing, with the state carried over and the
-  columns jumped by the saltation formula (``saltation()``).
+  columns jumped by the saltation formula (``saltation()``);
+* applying each event (``Reset``) at the root of its trigger: the state jumps
+  to the event's assignment, every branch variable is read afresh at the new
+  state, and the columns jump by the reset's own saltation formula
+  (``reset_saltation()``, #1915).
 
 It refuses (``ReferenceUnavailable``), rather than guessing, where it cannot
 follow the model: a start exactly on a surface, a crossing the flow only
 grazes, a slide (the flows on both sides point into the surface), two
-surfaces crossed at one instant, or a different number of crossings than the
-case declares. The declared count is what catches a surface touched and left
+surfaces crossed at one instant (an event's trigger included), a reset that
+lands on a surface or leaves a state trigger true, or a different number of
+crossings than the case declares. The declared count is what catches a surface touched and left
 between two scan times, which a sign scan cannot see.
 
 Parameters and sample times enter as the exact values of their doubles, so
@@ -68,6 +73,20 @@ class Surface:
     g: Callable
 
 
+@dataclass(frozen=True)
+class Reset:
+    """An event: when ``trigger(x, t, p)`` rises through 0, the species
+    ``assign(x, t, p)`` names jump to its values there, read at the trigger's
+    instant; the rest keep theirs. A trigger must be false (below 0) at the
+    start, and a state trigger false again after each reset (a reset that
+    leaves it true would need a re-arm, which this reference does not follow).
+    A trigger on time and parameters alone fires once."""
+
+    switch: str
+    trigger: Callable
+    assign: Callable
+
+
 @dataclass(eq=False)
 class Spec:
     """A model written by hand, with explicit branch variables.
@@ -75,13 +94,17 @@ class Spec:
     ``states`` are the model's species names, every one. ``rhs(x, s, t, p)``
     and ``x0(p)`` return mappings from those names to sympy expressions in
     ``x[name]``, ``p[name]``, ``t`` and ``s[k]``; ``surfaces[k]`` defines
-    ``s[k]``. ``params`` are the parameters they read."""
+    ``s[k]``. ``params`` are the parameters they read. ``resets`` are the
+    model's events, which bngsim's right-hand side does not hold: the spec
+    check compares flows only, and the case's passing points stand in for the
+    resets."""
 
     states: tuple[str, ...]
     params: tuple[str, ...]
     rhs: Callable
     surfaces: tuple[Surface, ...]
     x0: Callable
+    resets: tuple[Reset, ...] = ()
 
     def check_case(self, case) -> None:
         from _case import CaseError
@@ -94,10 +117,13 @@ class Spec:
         if unknown:
             raise CaseError(f"{where}: its spec reads {sorted(unknown)}, not in params")
         names = {s.name for s in case.switches}
-        stray = {s.switch for s in self.surfaces} - names
+        own = [s.switch for s in self.surfaces] + [r.switch for r in self.resets]
+        if len(set(own)) != len(own):
+            raise CaseError(f"{where}: two of its spec's surfaces and resets share a name")
+        stray = set(own) - names
         if stray:
             raise CaseError(f"{where}: spec surfaces name switches {sorted(stray)} it lacks")
-        bare = names - {s.switch for s in self.surfaces}
+        bare = names - set(own)
         if bare:
             raise CaseError(f"{where}: switches {sorted(bare)} have no surface in its spec")
         sym = self.symbolic()
@@ -105,6 +131,8 @@ class Spec:
         for label, expr in [
             *zip(self.states, sym.f, strict=False),
             *(("a surface", g) for g in sym.g),
+            *(("a trigger", g) for g in sym.rg),
+            *(("a reset", e) for r in sym.R for e in r),
         ]:
             free = expr.free_symbols - known
             if free:
@@ -124,6 +152,14 @@ class Spec:
         for what, got in (("rhs", flows), ("x0", start)):
             if set(got) != set(self.states):
                 raise ValueError(f"spec {what} gives {sorted(got)}, not the states {self.states}")
+        resets = []
+        for r in self.resets:
+            sets = r.assign(X, t, P)
+            if not sets or not set(sets) <= set(self.states):
+                raise ValueError(
+                    f"reset {r.switch!r} sets {sorted(sets)}, not states of {self.states}"
+                )
+            resets.append([sympy.sympify(sets.get(s, X[s])) for s in self.states])
         return _Symbolic(
             xs=xs,
             ps=ps,
@@ -132,6 +168,8 @@ class Spec:
             f=[sympy.sympify(flows[s]) for s in self.states],
             x0=[sympy.sympify(start[s]) for s in self.states],
             g=[sympy.sympify(surf.g(X, t, P)) for surf in self.surfaces],
+            rg=[sympy.sympify(r.trigger(X, t, P)) for r in self.resets],
+            R=resets,
         )
 
     # In doubles, for checking the spec against bngsim's own right-hand side.
@@ -174,6 +212,8 @@ class _Symbolic:
     f: list
     x0: list
     g: list
+    rg: list = field(default_factory=list)
+    R: list = field(default_factory=list)
 
 
 def saltation(s_minus, f_minus, f_plus, gx, gt, gp):
@@ -198,6 +238,34 @@ def saltation(s_minus, f_minus, f_plus, gx, gt, gp):
     return s_plus, tau
 
 
+def reset_saltation(s_minus, f_minus, f_plus, Rx, Rt, Rp, gx, gt, gp):
+    """The columns just past an event, and dt*/dp.
+
+    An event fires as its trigger g(t, x, p) rises through 0, and sets
+    x+ = R(t, x-, p). With the flow ``f_minus`` before it, ``f_plus`` after it
+    (at x+, on the branches x+ lies on) and the columns ``s_minus`` before it:
+
+        dt*/dp = -(gx . s_minus + gp) / (gt + gx . f_minus)
+        s_plus = Rx s_minus + Rp + (Rx f_minus + Rt - f_plus) (dt*/dp)
+
+    With R the identity this is ``saltation()``. Plain arithmetic on nested
+    lists. Raises ZeroDivisionError for a trigger the flow grazes."""
+    n, m = len(f_minus), len(gp)
+    rate = gt + sum(gx[i] * f_minus[i] for i in range(n))
+    if rate == 0:
+        raise ZeroDivisionError("the flow grazes the trigger: dg/dt is 0 at the event")
+    tau = [-(sum(gx[i] * s_minus[i][k] for i in range(n)) + gp[k]) / rate for k in range(m)]
+    drift = [sum(Rx[i][j] * f_minus[j] for j in range(n)) + Rt[i] - f_plus[i] for i in range(n)]
+    s_plus = [
+        [
+            sum(Rx[i][j] * s_minus[j][k] for j in range(n)) + Rp[i][k] + drift[i] * tau[k]
+            for k in range(m)
+        ]
+        for i in range(n)
+    ]
+    return s_plus, tau
+
+
 @dataclass
 class _Segment:
     t_lo: object  # mpf
@@ -209,7 +277,7 @@ class _Segment:
 @dataclass
 class Crossing:
     t: object  # mpf
-    surface: int
+    surface: int  # an index into the surfaces, or -1 - r for reset r
     switch: str
     direction: int  # +1: g rose through 0
     tau: list  # dt*/dp over the run's columns
@@ -311,7 +379,7 @@ class Branchwise:
     def _integrate(self, params, t_span, sens) -> _Trajectory:
         fns = _compiled(self.spec, sens)
         n, m = len(self.spec.states), len(sens)
-        surfaces = self.spec.surfaces
+        surfaces, resets = self.spec.surfaces, self.spec.resets
         with mpmath.workdps(self.dps):
             mpf = mpmath.mpf
             tie = mpf(10) ** (TIE_DIGITS - self.dps)
@@ -326,7 +394,13 @@ class Branchwise:
                     "the run starts exactly on a surface: which branch holds there is the "
                     "contract's to say (#1916), not this reference's"
                 )
+            if any(v >= 0 for v in fns.rg(t0, *x0, *pv)):
+                raise ReferenceUnavailable(
+                    "an event's trigger holds at the start: whether it fires there is the "
+                    "contract's to say (#1916)"
+                )
             branches = tuple(int(v > 0) for v in g0)
+            armed = [True] * len(resets)
             scan = [t0 + (t1 - t0) * mpf(i) / self.scan for i in range(1, self.scan + 1)]
             segments: list[_Segment] = []
             crossings: list[Crossing] = []
@@ -334,41 +408,30 @@ class Branchwise:
             while True:
                 fn = mpmath.odefun(_rhs(fns, pv, branches), t_lo, list(z))
                 segments.append(_Segment(t_lo, branches, list(z), fn))
-                hit = self._first_crossing(fns, fn, t_lo, scan, pv, branches, n, tie)
+                hit = self._first_crossing(fns, fn, t_lo, scan, pv, branches, armed, n, tie)
                 if hit is None:
                     break
                 k, t_star = hit
+                name = surfaces[k].switch if k >= 0 else resets[-1 - k].switch
                 if crossings and t_star - t_lo <= tie * max(1, abs(t_star)):
                     raise ReferenceUnavailable(
-                        f"{surfaces[k].switch!r} is crossed again at once after t = {float(t_lo)!r}: chattering"
+                        f"{name!r} is crossed again at once after t = {float(t_lo)!r}: chattering"
                     )
                 zs = fn(t_star)
                 x_star = list(zs[:n])
                 s_minus = [[zs[n + i * m + q] for q in range(m)] for i in range(n)]
-                flipped = tuple(1 - b if j == k else b for j, b in enumerate(branches))
-                f_minus = fns.f(t_star, *x_star, *pv, *branches)
-                f_plus = fns.f(t_star, *x_star, *pv, *flipped)
-                gx, gt = fns.gx[k](t_star, *x_star, *pv), fns.gt[k](t_star, *x_star, *pv)
-                gp = fns.gp[k](t_star, *x_star, *pv) if m else []
-                rate_minus = gt + sum(gx[i] * f_minus[i] for i in range(n))
-                rate_plus = gt + sum(gx[i] * f_plus[i] for i in range(n))
-                size = abs(gt) + sum(abs(gx[i] * f_minus[i]) for i in range(n))
-                if size == 0 or abs(rate_minus) <= tie * size:
-                    raise ReferenceUnavailable(
-                        f"the flow grazes {surfaces[k].switch!r} at t = {float(t_star)!r}"
+                if k >= 0:
+                    z, branches, crossing = self._cross(
+                        fns, k, t_star, x_star, s_minus, pv, branches, n, m, tie
                     )
-                if rate_plus == 0 or (rate_plus > 0) != (rate_minus > 0):
-                    raise ReferenceUnavailable(
-                        f"the flows on both sides of {surfaces[k].switch!r} point into it at "
-                        f"t = {float(t_star)!r}: a slide, which needs Filippov's rule (#1915)"
+                else:
+                    z, branches, crossing = self._reset(
+                        fns, -1 - k, t_star, x_star, s_minus, pv, branches, armed, n, m, tie
                     )
-                s_plus, tau = saltation(s_minus, f_minus, f_plus, gx, gt, gp) if m else ([], [])
-                direction = 1 if rate_minus > 0 else -1
-                crossings.append(Crossing(t_star, k, surfaces[k].switch, direction, tau))
+                crossings.append(crossing)
                 if len(crossings) > MAX_CROSSINGS:
                     raise ReferenceUnavailable(f"more than {MAX_CROSSINGS} crossings: chattering")
-                z = x_star + [s_plus[i][q] for i in range(n) for q in range(m)]
-                branches, t_lo = flipped, t_star
+                t_lo = t_star
         expected = self.expect(dict(params)) if callable(self.expect) else self.expect
         if len(crossings) != expected:
             raise ReferenceUnavailable(
@@ -379,11 +442,86 @@ class Branchwise:
             self.certificate.certify(params, [(float(c.t), c.switch) for c in crossings])
         return _Trajectory(segments, crossings, sens, pv, fns)
 
-    def _first_crossing(self, fns, fn, t_lo, scan, pv, branches, n, tie):
-        """The earliest surface crossed after ``t_lo`` on this branch, as
-        ``(surface, t*)``, or None. At ``t_lo`` each g has the sign its branch
-        variable says, which a g evaluated on the surface itself (0 to the
-        last digits) would not reliably give."""
+    def _cross(self, fns, k, t_star, x_star, s_minus, pv, branches, n, m, tie):
+        """A transversal crossing of surface k: the state carries over, branch
+        k flips, and the columns jump by ``saltation()``."""
+        name = self.spec.surfaces[k].switch
+        flipped = tuple(1 - b if j == k else b for j, b in enumerate(branches))
+        f_minus = fns.f(t_star, *x_star, *pv, *branches)
+        f_plus = fns.f(t_star, *x_star, *pv, *flipped)
+        gx, gt = fns.gx[k](t_star, *x_star, *pv), fns.gt[k](t_star, *x_star, *pv)
+        gp = fns.gp[k](t_star, *x_star, *pv) if m else []
+        rate_minus = gt + sum(gx[i] * f_minus[i] for i in range(n))
+        rate_plus = gt + sum(gx[i] * f_plus[i] for i in range(n))
+        size = abs(gt) + sum(abs(gx[i] * f_minus[i]) for i in range(n))
+        if size == 0 or abs(rate_minus) <= tie * size:
+            raise ReferenceUnavailable(f"the flow grazes {name!r} at t = {float(t_star)!r}")
+        if rate_plus == 0 or (rate_plus > 0) != (rate_minus > 0):
+            raise ReferenceUnavailable(
+                f"the flows on both sides of {name!r} point into it at "
+                f"t = {float(t_star)!r}: a slide, which needs Filippov's rule (#1915)"
+            )
+        s_plus, tau = saltation(s_minus, f_minus, f_plus, gx, gt, gp) if m else ([], [])
+        direction = 1 if rate_minus > 0 else -1
+        z = x_star + [s_plus[i][q] for i in range(n) for q in range(m)]
+        return z, flipped, Crossing(t_star, k, name, direction, tau)
+
+    def _reset(self, fns, r, t_star, x_star, s_minus, pv, branches, armed, n, m, tie):
+        """Event r at its trigger's root: the state jumps to its assignment,
+        every branch is read afresh there, and the columns jump by
+        ``reset_saltation()``. Refuses a reset that lands on a surface, fires
+        another event at once, or leaves a state trigger true."""
+        name = self.spec.resets[r].switch
+        f_minus = fns.f(t_star, *x_star, *pv, *branches)
+        gx, gt = fns.rgx[r](t_star, *x_star, *pv), fns.rgt[r](t_star, *x_star, *pv)
+        gp = fns.rgp[r](t_star, *x_star, *pv) if m else []
+        rate = gt + sum(gx[i] * f_minus[i] for i in range(n))
+        size = abs(gt) + sum(abs(gx[i] * f_minus[i]) for i in range(n))
+        if size == 0 or rate <= tie * size:
+            raise ReferenceUnavailable(
+                f"the flow grazes {name!r}'s trigger at t = {float(t_star)!r}"
+            )
+        x_plus = list(fns.R[r](t_star, *x_star, *pv))
+        g_plus = fns.g(t_star, *x_plus, *pv)
+        scale = 1 + sum(abs(v) for v in x_plus)
+        if any(abs(v) <= tie * scale for v in g_plus):
+            raise ReferenceUnavailable(
+                f"{name!r} sets the state on a surface at t = {float(t_star)!r}: which branch "
+                "holds there is the contract's to say (#1916)"
+            )
+        new = tuple(int(v > 0) for v in g_plus)
+        for j, v in enumerate(fns.rg(t_star, *x_plus, *pv)):
+            if j == r:
+                if not fns.rg_reads_state[j]:
+                    # A trigger on time alone stays true: it fires once, though
+                    # its root, bisected, may lie a hair short of its instant.
+                    armed[j] = False
+                    continue
+                if v >= 0:
+                    raise ReferenceUnavailable(
+                        f"{name!r} leaves its own state trigger true at t = {float(t_star)!r}"
+                    )
+            elif armed[j] and v >= 0:
+                raise ReferenceUnavailable(
+                    f"{name!r} fires another event at once, at t = {float(t_star)!r}"
+                )
+        f_plus = fns.f(t_star, *x_plus, *pv, *new)
+        if m:
+            Rx = fns.Rx[r](t_star, *x_star, *pv)
+            Rt = fns.Rt[r](t_star, *x_star, *pv)
+            Rp = fns.Rp[r](t_star, *x_star, *pv)
+            s_plus, tau = reset_saltation(s_minus, f_minus, f_plus, Rx, Rt, Rp, gx, gt, gp)
+        else:
+            s_plus, tau = [], []
+        z = x_plus + [s_plus[i][q] for i in range(n) for q in range(m)]
+        return z, new, Crossing(t_star, -1 - r, name, 1, tau)
+
+    def _first_crossing(self, fns, fn, t_lo, scan, pv, branches, armed, n, tie):
+        """The earliest surface crossed, or armed trigger risen, after ``t_lo``
+        on this branch, as ``(index, t*)`` (``-1 - r`` for reset r), or None.
+        At ``t_lo`` each g has the sign its branch variable says, which a g
+        evaluated on the surface itself (0 to the last digits) would not
+        reliably give."""
         signs = [1 if b else -1 for b in branches]
         a = t_lo
         for b in scan:
@@ -391,31 +529,41 @@ class Branchwise:
             # (below), so that scan time is behind this segment.
             if b <= t_lo:
                 continue
-            gb = fns.g(b, *fn(b)[:n], *pv)
+            xb = fn(b)[:n]
+            gb = fns.g(b, *xb, *pv)
+            rb = fns.rg(b, *xb, *pv)
             changed = [k for k, v in enumerate(gb) if v == 0 or (v > 0) != (signs[k] > 0)]
-            if changed:
+            risen = [r for r, v in enumerate(rb) if armed[r] and v >= 0]
+            if changed or risen:
                 # A g exactly 0 at the scan time has its root there, exactly.
                 roots = sorted(
-                    (b if gb[k] == 0 else self._bisect(fns, fn, k, a, b, signs[k], pv, n), k)
-                    for k in changed
+                    [
+                        (b if gb[k] == 0 else self._bisect(fns.g, fn, k, a, b, signs[k], pv, n), k)
+                        for k in changed
+                    ]
+                    + [
+                        (b if rb[r] == 0 else self._bisect(fns.rg, fn, r, a, b, -1, pv, n), -1 - r)
+                        for r in risen
+                    ]
                 )
                 (t_star, k), rest = roots[0], roots[1:]
                 if rest and rest[0][0] - t_star <= tie * max(1, abs(t_star)):
                     raise ReferenceUnavailable(
                         f"two surfaces cross at one instant, t = {float(t_star)!r}: a coincident "
-                        "case needs a certified record (#1915)"
+                        "case needs a closed form or a certified record (#1915)"
                     )
                 return k, t_star
             a = b
         return None
 
-    def _bisect(self, fns, fn, k, a, b, sign_a, pv, n):
-        """g_k's root in (a, b], where g_k has the sign ``sign_a`` at a and not at b."""
+    def _bisect(self, gfn, fn, k, a, b, sign_a, pv, n):
+        """The root of ``gfn``'s k-th function in (a, b], where it has the sign
+        ``sign_a`` at a and not at b."""
         tol = mpmath.mpf(10) ** (2 - self.dps) * max(1, abs(b))
         lo, hi = a, b
         while hi - lo > tol:
             mid = (lo + hi) / 2
-            v = fns.g(mid, *fn(mid)[:n], *pv)[k]
+            v = gfn(mid, *fn(mid)[:n], *pv)[k]
             if v != 0 and (v > 0) == (sign_a > 0):
                 lo = mid
             else:
@@ -437,9 +585,16 @@ class Branchwise:
 def _sides(cross: Sequence[float], t: float) -> tuple[int, int]:
     """The segments holding a sample's left and right limits: the same one
     away from a crossing, the two either side of it at one."""
-    for j, c in enumerate(cross):
-        if abs(t - c) <= AT_CROSSING_ULPS * np.spacing(abs(c)):
-            return j, j + 1
+    near = [
+        (abs(t - c), j)
+        for j, c in enumerate(cross)
+        if abs(t - c) <= AT_CROSSING_ULPS * np.spacing(abs(c))
+    ]
+    if near:
+        # Two crossings a double apart (#1627) are both within the band of a
+        # sample on either: the one the sample is on is the nearer.
+        j = min(near)[1]
+        return j, j + 1
     k = sum(1 for c in cross if t > c)
     return k, k
 
@@ -469,6 +624,15 @@ class _Fns:
     aug: Callable
     x0: Callable
     x0_dp: Callable
+    rg: Callable = None
+    rgx: list = field(default_factory=list)
+    rgt: list = field(default_factory=list)
+    rgp: list = field(default_factory=list)
+    rg_reads_state: list = field(default_factory=list)
+    R: list = field(default_factory=list)
+    Rx: list = field(default_factory=list)
+    Rt: list = field(default_factory=list)
+    Rp: list = field(default_factory=list)
 
 
 @functools.lru_cache(maxsize=64)
@@ -494,4 +658,16 @@ def _compiled(spec: Spec, sens: tuple[str, ...]) -> _Fns:
         aug=lam((sym.t, *zsyms, *sym.ps, *sym.sb), aug),
         x0=lam(sym.ps, sym.x0),
         x0_dp=lam(sym.ps, x0_dp),
+        rg=lam(base, sym.rg),
+        rgx=[lam(base, [sympy.diff(g, x) for x in sym.xs]) for g in sym.rg],
+        rgt=[lam(base, sympy.diff(g, sym.t)) for g in sym.rg],
+        rgp=[lam(base, [sympy.diff(g, qq) for qq in q]) for g in sym.rg],
+        rg_reads_state=[bool(g.free_symbols & set(sym.xs)) for g in sym.rg],
+        R=[lam(base, r) for r in sym.R],
+        Rx=[lam(base, sympy.Matrix(r).jacobian(sympy.Matrix(sym.xs)).tolist()) for r in sym.R],
+        Rt=[lam(base, [sympy.diff(e, sym.t) for e in r]) for r in sym.R],
+        Rp=[
+            lam(base, sympy.Matrix(r).jacobian(sympy.Matrix(q)).tolist() if m else [])
+            for r in sym.R
+        ],
     )

@@ -38,6 +38,13 @@ as the parameter crosses a value, or has a kink there), no number is right,
 and the run owes a typed refusal. A ``ClosedForm`` says where with ``owes``,
 an ``Owed`` naming the refusal by its class name, since no reference imports
 bngsim; the driver resolves the name and holds the run to it.
+
+**A refusal permitted.** Where a column has a value but the run may decline
+it (``Permitted``, #1915): an instant an ulp from a tie whose columns have none
+there, or, later, a slide, which #1781 lets an engine refuse by name. Such a
+point passes when the run raises that refusal, and its row says so in its
+subclass (``refused:<class>``), so the nightly sees a run that stops refusing,
+or starts. An answer is judged as at any other point.
 """
 
 from __future__ import annotations
@@ -162,11 +169,25 @@ class Owed:
 OwesFn = Callable[[dict, tuple[str, ...]], "Owed | None"]
 
 
+@dataclass(frozen=True)
+class Permitted:
+    """The columns have values here, but the run may refuse them by name:
+    one of bngsim's exception classes, or a class (it or a subclass)."""
+
+    reason: str
+    refusal: str | type = SENSITIVITY_REFUSAL
+
+
+#: ``permits(params, sens) -> Permitted | None``.
+PermitsFn = Callable[[dict, tuple[str, ...]], "Permitted | None"]
+
+
 @dataclass
 class ClosedForm:
     """Formulas written by hand. ``crossings(params)`` lists the crossing
     times, which the grids and the two-sided rows need. ``owes`` says where a
-    point owes a refusal instead of a value (``Owed``). ``peaks(params)`` lists
+    point owes a refusal instead of a value (``Owed``), and ``permits`` where
+    it may refuse one it has (``Permitted``). ``peaks(params)`` lists
     stretches of time where a column may peak away from every crossing (a
     smooth pulse's middle), which ``window_peak`` scans densely."""
 
@@ -175,6 +196,7 @@ class ClosedForm:
     floor: float = CLOSED_FORM_FLOOR
     owes: OwesFn | None = None
     peaks_fn: Callable[[dict], Sequence[tuple[float, float]]] | None = None
+    permits: PermitsFn | None = None
     kind: str = field(default="closed", init=False)
 
     def crossings(self, params: dict, t_span) -> tuple[float, ...]:
@@ -183,6 +205,9 @@ class ClosedForm:
 
     def owed(self, params: dict, sens: Sequence[str]) -> Owed | None:
         return None if self.owes is None else self.owes(dict(params), tuple(sens))
+
+    def permitted(self, params: dict, sens: Sequence[str]) -> Permitted | None:
+        return None if self.permits is None else self.permits(dict(params), tuple(sens))
 
     def peaks(self, params: dict, t_span) -> tuple[tuple[float, float], ...]:
         """The stretches ``peaks_fn`` names, clipped to the window."""

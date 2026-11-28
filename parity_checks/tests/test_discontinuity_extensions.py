@@ -370,6 +370,10 @@ def test_only_the_cases_that_say_so_are_judged_by_their_window_peak():
         *pulses,
         "sawtooth_coupled",
         "step_state",
+        "coincident_state",
+        "event_state_reset",
+        "event_cross_switch",
+        "event_clock_reset",
     }
 
 
