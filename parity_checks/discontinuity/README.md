@@ -85,10 +85,10 @@ opinion.
 
 | kind | module | what it is |
 |---|---|---|
-| closed form | `_closed_forms.py` | formulas written by hand. `clock_exposure` is lifted from `python/tests/test_clock_carried_crossing.py`'s `_exact` and extended to every time and column; a test holds the two together. `pulse_exposure` generalizes it to a condition on `time()`, on a clock started at `T0`, or on #1776's residual, to more shapes (a window, a Gaussian) and to the width's column, and a test holds it to `clock_exposure` on every row they share. An event is written in as a jump of the species it resets, read through `past()`, so both limits at its time are there. Each column is checked against a central difference of its own closed form's species, and each family case's closed form against its spec integrated branch by branch |
+| closed form | `_closed_forms.py` | formulas written by hand. `clock_exposure` is lifted from `python/tests/test_clock_carried_crossing.py`'s `_exact` and extended to every time and column; a test holds the two together. `pulse_exposure` generalizes it to a condition on `time()`, on a clock started at `T0`, or on #1776's residual, to more shapes (a window, a Gaussian) and to the width's column, and a test holds it to `clock_exposure` on every row they share. An event is written in as a jump of the species it resets, read through `past()`, so both limits at its time are there. An indicator on time alone is read exactly (`past(..., ulps=0)`), so instants a double apart are two instants; one on the state reads `past()`'s blur of a few ulps, since a run locates such a crossing only to its own accuracy. Each column is checked against a central difference of its own closed form's species, and each family case's closed form against its spec integrated branch by branch |
 | limit | `_reference.py` | a steady state written by hand (`Limit`), for `SteadyState` grids. The run must also report `converged=True` |
-| branch by branch | `_branchwise.py` | the spec integrated one smooth branch at a time by mpmath's Taylor method at 30 digits, with sensitivity columns. Each crossing is located on its branch's own solution, and the columns jump by the saltation formula. It refuses rather than guesses at a start on a surface, a grazing crossing, a slide, coincident surfaces, or a crossing count other than the case declares |
-| frozen | `_frozen.py` | enclosures recorded offline by validated integrators. Ariadne certifies the crossing structure, CAPD encloses the columns, and both enclose the species, whose bands must overlap. Both are GPL-3.0, so they are never a dependency: their output is committed as data, tied to its case by a fingerprint. The recorders come with the first cases that need them (#1915) |
+| branch by branch | `_branchwise.py` | the spec integrated one smooth branch at a time by mpmath's Taylor method at 30 digits, with sensitivity columns. Each crossing is located on its branch's own solution, and the columns jump by the saltation formula. An event (`Reset`) sets the state at its trigger's root; every branch is then read afresh, and the columns jump by the reset's own formula (`reset_saltation`, #1915). It refuses rather than guesses at a start on a surface or on a true trigger, a grazing crossing, a slide, coincident surfaces, a reset that lands on a surface, fires another event at once or leaves its own state trigger true, or a crossing count other than the case declares |
+| frozen | `_frozen.py` | enclosures recorded offline by validated integrators. Ariadne certifies the crossing structure, CAPD encloses the columns, and both enclose the species, whose bands must overlap. Both are GPL-3.0, so they are never a dependency: their output is committed as data, tied to its case by a fingerprint. No case needs them yet: every one has a closed form or a branch-by-branch reference. The recorders come with the first case that does (#2006) |
 | none | `_reference.py` | no reference exists yet (some slides). The case checks only invariants and an expected refusal, and says why |
 
 **A refusal owed.** Where a column has no derivative (the answer jumps as a
@@ -96,6 +96,14 @@ parameter crosses a value, or has a kink there), no number is right. The
 reference then says the point owes a refusal (`Owed`, naming bngsim's class by
 its name). Such a point passes when the run raises it, and is DIFF when the run
 returns.
+
+**A refusal permitted.** Where a column has a value but the run may decline it,
+the reference says so (`Permitted`, #1915). Today that is an instant an ulp from
+a tie at which the column has none: whether two instants a double apart are kept
+apart is the contract's to say (#1916). Such a point passes when the run raises
+that refusal, and its row's subclass then reads `refused:<class>`, so the
+nightly sees a run that stops refusing, or starts. An answer is judged like any
+other, and a wrong one fails. Neither kind of point is in a convergence group.
 
 At a sample taken exactly at a crossing time the columns jump, so a reference
 gives both limits there. Until the contract fixes which side a run owes (#1916),
@@ -255,3 +263,78 @@ nightly's diff is that and not a regression.
   That point is left out.
 
 `min_state` fails nowhere.
+
+## #1915's coincident surfaces and events
+
+Each case sweeps rtol 1e-6 to 1e-12, the grids `u4`, `u31`, `aligned2`,
+`aligned31` and `offset31` (a hair of 1e-4 of t* for the cases whose crossings
+are on a species: `coincident_state`, `event_state_reset`,
+`event_cross_switch`), and a plain run beside one with the columns of its law's
+parameters (for the ties, the rate columns alone as well). Every model keeps a witness clock.
+The Antimony cases' rows reach the model through `set_param`, which keeps a
+double's last bit: Antimony's text keeps 15 digits, so a literal
+25.000000000000004 reads back as 25.0.
+
+| case | law | rows |
+|---|---|---|
+| `coincident_sum` | `k0 + d1*[t>c1] + d2*[t>c2]`: each switch adds its own term, so every column has its value at the tie | c2 = c1, a double after and before, 1e-9 and 0.5 apart, the tie between grid points, #1627's 0.3 and 0.1*3 |
+| `coincident_and` | `k0 + d1*[t>c1 && t>c2]`: at the tie the c columns owe a refusal; an ulp from it a refusal is permitted | as `coincident_sum` |
+| `coincident_state` | `k0 + d1*[X>th1] + d2*[X>th2]` on a decaying X: at the tie the th columns owe a refusal | th2 = th1, a double either way, 1e-4 and well apart, the tie early |
+| `switch_event` | `piecewise(k1, time > c, k0)`, and an event at te that sets X = a*X + d: at te = c the c and te columns owe a refusal | te = c, a double after and before, 0.5 either way, a = 0 (set) and 0.5, #1627's doubles either way |
+| `event_state_reset` | an event that sets X = a*X + d each time X falls through th | 1, 3, 5, 6 and 16 firings |
+| `event_cross_switch` | `piecewise(k1, X > th, k2)`, and an event at tau that sets X = xr across the switch's surface, with no root | set above, below, before the natural crossing, late |
+| `event_clock_reset` | a counter T, a window on it, and an event that sets T back to 0 | the pulse moved, cut short, before the reset, both, wide, on a faster clock |
+
+Every closed form is checked against central differences of its own species,
+and against its spec integrated branch by branch, resets included, on 16 rows
+whose instants differ (a double apart is two instants at 30 digits).
+
+**The judges.** The state cases take the window peak, as `step_state` does. The
+convergence rows are off in all but `coincident_sum` and `coincident_and`. At
+rtol 1e-12 a healthy run's own global error is tens of times rtol in these
+models (`event_state_reset`'s X(5) is 1.3e-10 off before any event fires), so
+their rows sat on the rule's threshold and changed outcome from run to run.
+`event_clock_reset` takes the window peak too: its pulse is 0.05 wide. k is the
+default everywhere: outside the marks and the flips, no point exceeds 404 times
+its tolerance on any of those 480 runs, and no mark falls under 2.7e3. A
+review's further draws found more points within 2 times of the allowance, which
+are left out too.
+Each case says why in its `Judge.why`.
+
+**What the sweep found.** Every point, exclusions included, was run 480 times:
+at the committed atol and at `atol_ratio*(1 + d)` for 239 values of d on a grid
+and 240 at random, |d| up to 2.5e-11. The 161 marks fail on all 480, and every
+other point passes on all 480, apart from the 74 left out in `_cases/_flips.py`
+with their counts. 45 of those are #1799's short row, 10 #2005's misplaced
+crossing and 8 #1997's residue; 11 passed every run but came within 2 times of
+the allowance on one, 6 of them only on a review's draws. As for #1914, that
+list is what the runs found, not a bound: the random set found 13 points the
+grid had not, and a review's 540 more draws 10 more. Across a whole sweep of
+these cases, between 1 run in 25 and 1 in 440 shows one such point.
+
+* **#2003 (new, silent wrong)**: two rate-law switches on `time()` a double
+  apart. In a sensitivity run, the row on one instant carries the other's
+  column jump (`coincident_sum`: dX/dc2 = 0.2463 for 0 at t = 25). That reads
+  the two instants as two, as #1627 does; if the contract (#1916) makes
+  instants an ulp apart one, the row is right and the marks come out.
+* **#2004 (new)**: an event a double after a row or a stop is refused with
+  #950's refusal, though the columns it refuses have values (`switch_event`).
+* **#2005 (new, silent wrong)**: on some step sequences a run locates a
+  crossing on the state off in time, about 1e-8 at rtol 1e-12 and up to 1.7e-7
+  in a sensitivity run at rtol 1e-10, and the species near it come back off: a counter's pulse loses that much of its exposure, more
+  often after an event resets the counter (`event_clock_reset`), and two
+  thresholds' species come back 6e-9 off (`coincident_state`). Those points are
+  left out as flips, with their counts.
+* **#1646**: with a row on each of two instants a double apart, the sensitivity
+  run fails with `CV_TOO_CLOSE` (`coincident_sum`, `switch_event`).
+* **#1799**: rows an ulp off the time asked, on a stop or on a crossing the
+  clock carries (`coincident_and`, `coincident_sum`, `event_clock_reset`).
+* **#1997**: past the clock pulse, dX/dw keeps a residue of 1.3e-7 to 2.2e-7
+  where it is 0 at rtol 1e-12, in the Antimony spelling as in the `.net` one
+  (`event_clock_reset`).
+
+The ties behave as the contract would want: every tie that owes a refusal gets
+one, by name. The additive pair, the rate columns at every tie, and an event
+that moves the state across a surface come back right on every run.
+`event_state_reset` and `event_cross_switch` fail nowhere, and
+`coincident_state` only on its flips.

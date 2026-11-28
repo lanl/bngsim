@@ -69,6 +69,11 @@ def case_fingerprint(case) -> str:
             "g": [str(e) for e in sym.g],
             "x0": [str(e) for e in sym.x0],
         }
+        if sym.rg:
+            parts["spec"]["resets"] = {
+                "trigger": [str(e) for e in sym.rg],
+                "assign": [[str(e) for e in r] for r in sym.R],
+            }
     blob = json.dumps(parts, sort_keys=True).encode()
     return hashlib.sha256(blob).hexdigest()
 

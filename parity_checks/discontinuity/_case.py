@@ -442,11 +442,15 @@ class Case:
         groups with two tolerances or more can be judged for convergence, and
         a group that holds a known failure has no convergence row: its marks
         already say it is broken, and the fix that clears them moves it too.
-        A point that owes a refusal has no error to fall, so it is in none."""
+        A point that owes a refusal has no error to fall, so it is in none, and
+        nor is one that may refuse: a refusal gives no ratio either."""
         owed = getattr(self.reference, "owed", None)
+        permitted = getattr(self.reference, "permitted", None)
         out: dict[tuple, list[Point]] = {}
         for p in points:
             if owed is not None and owed(self.values(p.row), p.sens) is not None:
+                continue
+            if permitted is not None and permitted(self.values(p.row), p.sens) is not None:
                 continue
             out.setdefault(p.group, []).append(p)
         return {

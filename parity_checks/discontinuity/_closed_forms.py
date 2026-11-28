@@ -28,7 +28,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from _reference import ClosedForm, Owed, past
+from _reference import ClosedForm, Owed, Permitted, past
 
 
 def window_decay(
@@ -791,3 +791,415 @@ def abs_bend(x0: float = 10.0):
         return {"X()": X, "Y()": kx * inner}, cols
 
     return ClosedForm(fn, lambda p: (math.log(x0 / p["th"]) / p["kd"],))
+
+
+# ── #1915: coincident surfaces and events that set or move the state ────────
+#
+# An indicator on time alone is exact (``past(..., ulps=0)``): instants a double
+# apart (#1627) are two instants, so a sample on one is not taken to be on the
+# other. An indicator on the state reads ``past()``'s default blur, since the
+# run locates such a crossing only to its own accuracy.
+# Each model keeps the witness clock T = k_clock*t (kc in the Antimony ones).
+
+#: Two instants this many ulps apart or fewer are an ulp from a tie: where the
+#: tie's columns have no value, a run may decline the columns there too
+#: (``Permitted``); whether such instants are kept apart is #1916's to say.
+NEAR_TIE_ULPS = 4
+#: The refusal a run may give an ulp from such a tie: bngsim's refusal of the
+#: parameters whose columns two switches on one instant leave without a value,
+#: and no other (#2004's refusal, of columns that do have one, is not excused).
+TIE_REFUSAL = "SensitivityRefusedForParametersError"
+
+
+def _exact(t, t_star, side):
+    return past(t, t_star, side, ulps=0)
+
+
+def _near_tie(u: float, v: float) -> bool:
+    return 0 < abs(u - v) <= NEAR_TIE_ULPS * np.spacing(max(abs(u), abs(v)))
+
+
+def _xy_witness(p, t, E, dE, x0, kc="k_clock", x="X()", y="Y()", T="T()"):
+    """X -> Y at exposure E, beside the witness clock T = kc*t."""
+    X = x0 * np.exp(-E)
+    species = {x: X, y: x0 - X, T: p[kc] * t}
+    cols = {}
+    for q, d in dE.items():
+        cols[(x, q)] = -X * d
+        cols[(y, q)] = X * d
+        cols[(T, q)] = np.zeros_like(t)
+    return species, cols
+
+
+def coincident_time(interacting: bool, x0: float = 10.0):
+    """``X -> Y`` at ``k0 + d1*[t>c1] + d2*[t>c2]`` (additive), or at
+    ``k0 + d1*[t>c1 && t>c2]`` (interacting). At c1 = c2 the additive law's
+    columns exist: each switch adds its own term, so the order of the two does
+    not matter. The interacting law's do not: dX/dc1 is 0 from below and
+    X*d1 from above, so a run owes a refusal of the c columns there, and may
+    decline them an ulp from it."""
+
+    def fn(p, t, side):
+        k0, d1, c1, c2 = p["k0"], p["d1"], p["c1"], p["c2"]
+        i1, i2 = _exact(t, c1, side), _exact(t, c2, side)
+        if interacting:
+            m = max(c1, c2)
+            on = i1 & i2
+            E = k0 * t + d1 * np.where(on, t - m, 0.0)
+            dE = {
+                "k0": t,
+                "d1": np.where(on, t - m, 0.0),
+                "c1": np.where(on & (c1 > c2), -d1, 0.0),
+                "c2": np.where(on & (c2 > c1), -d1, 0.0),
+            }
+        else:
+            d2 = p["d2"]
+            E = k0 * t + d1 * np.where(i1, t - c1, 0.0) + d2 * np.where(i2, t - c2, 0.0)
+            dE = {
+                "k0": t,
+                "d1": np.where(i1, t - c1, 0.0),
+                "d2": np.where(i2, t - c2, 0.0),
+                "c1": np.where(i1, -d1, 0.0),
+                "c2": np.where(i2, -d2, 0.0),
+            }
+        return _xy_witness(p, t, E, dE, x0)
+
+    def owes(p, sens):
+        if interacting and p["d1"] != 0 and p["c1"] == p["c2"] and {"c1", "c2"} & set(sens):
+            return Owed(
+                "both switches turn the one term on at the same instant: dX/dc1 is 0 from "
+                "below and X*d1 from above, so it has no value"
+            )
+        return None
+
+    def permits(p, sens):
+        if (
+            interacting
+            and p["d1"] != 0
+            and _near_tie(p["c1"], p["c2"])
+            and {"c1", "c2"} & set(sens)
+        ):
+            return Permitted("an ulp from a tie at which the c columns have no value", TIE_REFUSAL)
+        return None
+
+    return ClosedForm(fn, lambda p: (p["c1"], p["c2"]), owes=owes, permits=permits)
+
+
+def coincident_state(x0: float = 10.0):
+    """``X -> Y`` at ``k0 + d1*[X>th1] + d2*[X>th2]`` from ``X = x0`` above both:
+    X falls through the higher threshold first, at ``t_hi = ln(x0/hi)/kA``,
+    then through the lower at ``t_lo = t_hi + ln(hi/lo)/kB``, where kA is the
+    rate above both, kB between and kC = k0 below. At th1 = th2 the run goes
+    from kA to kC at once, and the th columns have no value there (from either
+    side the crossing time moves with the rate between, which differs), so a
+    run owes their refusal; the rate columns exist.
+
+    Unlike the time switches, a state switch's crossing is located only to the
+    run's own accuracy, about rtol*X/|X'|, far wider than a double: two crossings
+    within ``AT_CROSSING_ULPS`` of a row are one instant on it, so its limits
+    there are before both and after both."""
+
+    def parts(p):
+        k0, d1, d2, th1, th2 = (p[q] for q in ("k0", "d1", "d2", "th1", "th2"))
+        if not x0 > max(th1, th2):
+            raise ValueError(f"x0 = {x0} must lie above both thresholds")
+        first1 = th1 >= th2  # th1 is crossed first (or with th2)
+        hi, lo = (th1, th2) if first1 else (th2, th1)
+        kA, kC = k0 + d1 + d2, k0
+        kB = k0 + (d2 if first1 else d1)  # above the lower threshold only
+        t_hi = math.log(x0 / hi) / kA
+        t_lo = t_hi + math.log(hi / lo) / kB
+        # d/dq of (ln hi, ln lo, kA, kB, kC), by parameter.
+        dhi = {"th1": 1 / hi if first1 else 0.0, "th2": 0.0 if first1 else 1 / hi}
+        dlo = {"th1": 0.0 if first1 else 1 / lo, "th2": 1 / lo if first1 else 0.0}
+        dkA = {"k0": 1.0, "d1": 1.0, "d2": 1.0}
+        dkB = {"k0": 1.0, "d2" if first1 else "d1": 1.0}
+        dkC = {"k0": 1.0}
+        return hi, lo, kA, kB, kC, t_hi, t_lo, dhi, dlo, dkA, dkB, dkC
+
+    def fn(p, t, side):
+        hi, lo, kA, kB, kC, t_hi, t_lo, dhi, dlo, dkA, dkB, dkC = parts(p)
+        a, b = past(t, t_hi, side), past(t, t_lo, side)
+        X = np.where(
+            b,
+            lo * np.exp(-kC * (t - t_lo)),
+            np.where(a, hi * np.exp(-kB * (t - t_hi)), x0 * np.exp(-kA * t)),
+        )
+        dE = {}
+        for q in ("k0", "d1", "d2", "th1", "th2"):
+            g_hi, g_lo = dhi.get(q, 0.0), dlo.get(q, 0.0)
+            a_, b_, c_ = dkA.get(q, 0.0), dkB.get(q, 0.0), dkC.get(q, 0.0)
+            dt_hi = -g_hi / kA - t_hi * a_ / kA
+            dt_lo = dt_hi + ((g_hi - g_lo) * kB - math.log(hi / lo) * b_) / kB**2
+            dlnX = np.where(
+                b,
+                g_lo - c_ * (t - t_lo) + kC * dt_lo,
+                np.where(a, g_hi - b_ * (t - t_hi) + kB * dt_hi, -a_ * t),
+            )
+            dE[q] = -dlnX  # X = x0*exp(-E)
+        return _xy_witness(p, t, -np.log(X / x0), dE, x0)
+
+    def owes(p, sens):
+        if p["d1"] != 0 and p["d2"] != 0 and p["th1"] == p["th2"] and {"th1", "th2"} & set(sens):
+            return Owed(
+                "both thresholds are crossed at one instant: from either side the crossing "
+                "time moves with the rate between them, which differs, so dX/dth has no value"
+            )
+        return None
+
+    def permits(p, sens):
+        if (
+            p["d1"] != 0
+            and p["d2"] != 0
+            and _near_tie(p["th1"], p["th2"])
+            and {"th1", "th2"} & set(sens)
+        ):
+            return Permitted(
+                "an ulp from a tie at which the th columns have no value", TIE_REFUSAL
+            )
+        return None
+
+    def crossings(p):
+        return parts(p)[5:7]
+
+    return ClosedForm(fn, crossings, owes=owes, permits=permits)
+
+
+def switch_event(x0: float = 10.0):
+    """``X' = -piecewise(k1, time > c, k0)*X`` from x0, and an event at
+    ``time >= te`` that sets ``X = a*X + d`` (a = 1 adds d, a = 0 sets X to d).
+    With R(t) = k0*min(t, c) + k1*(t - c)+, X = x0*exp(-R(t)) before te and
+    ``a*x0*exp(-R(t)) + d*exp(-(R(t) - R(te)))`` after it. At te = c, dX/dte
+    is d*e^(..)*k0 from below and *k1 from above, so the c and te columns have
+    no value: a run owes their refusal, and may decline them an ulp from it."""
+
+    def fn(p, t, side):
+        k0, k1, c, te, a, d = (p[q] for q in ("k0", "k1", "c", "te", "a", "d"))
+        ic, ie = _exact(t, c, side), _exact(t, te, side)
+        R = k0 * np.minimum(t, c) + k1 * np.where(ic, t - c, 0.0)
+        dR = {
+            "k0": np.minimum(t, c),
+            "k1": np.where(ic, t - c, 0.0),
+            "c": np.where(ic, k0 - k1, 0.0),
+        }
+        Re = k0 * min(te, c) + k1 * max(te - c, 0.0)
+        dRe = {"k0": min(te, c), "k1": max(te - c, 0.0), "c": (k0 - k1) if te > c else 0.0}
+        dRe["te"] = k1 if te >= c else k0
+        A = a * x0 * np.exp(-R)
+        B = d * np.exp(-(R - Re))
+        X = np.where(ie, A + B, x0 * np.exp(-R))
+        cols = {}
+        for q in ("k0", "k1", "c", "te", "a", "d"):
+            r_t = dR.get(q, 0.0)
+            before = -X * r_t
+            after = -(A + B) * r_t + B * dRe.get(q, 0.0)
+            if q == "a":
+                after = after + x0 * np.exp(-R)
+            if q == "d":
+                after = after + np.exp(-(R - Re))
+            cols[("X", q)] = np.broadcast_to(np.where(ie, after, before), t.shape) * 1.0
+            cols[("T", q)] = np.zeros_like(t)
+        return {"X": X, "T": p["kc"] * t}, cols
+
+    def owes(p, sens):
+        if p["d"] != 0 and p["k0"] != p["k1"] and p["c"] == p["te"] and {"c", "te"} & set(sens):
+            return Owed(
+                "the event and the switch share their instant: dX/dte is d*k0*e^(..) from "
+                "below and d*k1*e^(..) from above, so it has no value"
+            )
+        return None
+
+    def permits(p, sens):
+        if (
+            p["d"] != 0
+            and p["k0"] != p["k1"]
+            and _near_tie(p["c"], p["te"])
+            and {"c", "te"} & set(sens)
+        ):
+            return Permitted(
+                "an ulp from a tie at which the c and te columns have no value", TIE_REFUSAL
+            )
+        return None
+
+    return ClosedForm(fn, lambda p: (p["c"], p["te"]), owes=owes, permits=permits)
+
+
+def state_reset(t_end: float, x0: float = 10.0):
+    """``X' = -k*X`` from x0, and an event that sets ``X = a*X + d`` each time X
+    falls through th: at ``t1 = ln(x0/th)/k`` and every ``D = ln(P/th)/k`` after
+    it, ``P = a*th + d`` being X just past each firing. Between firings j and
+    j + 1, ``X = P*exp(-k(t - t_j))``, so each column is X times
+    d(ln P)/dq - (dk/dq)(t - t_j) + k*dt_j/dq. ``t_end`` bounds the firings
+    listed as crossings."""
+
+    def times(p):
+        k, th, a, d = p["k"], p["th"], p["a"], p["d"]
+        P = a * th + d
+        if not (x0 > th and th < P):
+            raise ValueError(f"needs x0 > th and a*th + d > th, not x0 = {x0}, P = {P}, th = {th}")
+        t1, D = math.log(x0 / th) / k, math.log(P / th) / k
+        out, j = [], 0
+        while t1 + j * D <= t_end:
+            out.append(t1 + j * D)
+            j += 1
+        return P, t1, D, out
+
+    def fn(p, t, side):
+        k, th, a = p["k"], p["th"], p["a"]
+        P, t1, D, fire = times(p)
+        dt1 = {"k": -t1 / k, "th": -1 / (k * th)}
+        dD = {"k": -D / k, "th": (a / P - 1 / th) / k, "a": (th / P) / k, "d": (1 / P) / k}
+        dlnP = {"th": a / P, "a": th / P, "d": 1 / P}
+        n = sum(past(t, tj, side).astype(int) for tj in fire) if fire else np.zeros(t.shape, int)
+        n = np.asarray(n)
+        tj = np.where(n > 0, t1 + (n - 1) * D, 0.0)
+        X = np.where(n > 0, P * np.exp(-k * (t - tj)), x0 * np.exp(-k * t))
+        cols = {}
+        for q in ("k", "th", "a", "d"):
+            dtj = dt1.get(q, 0.0) + (n - 1) * dD.get(q, 0.0)
+            after = X * (dlnP.get(q, 0.0) - (t - tj) * (q == "k") + k * dtj)
+            before = -t * X if q == "k" else np.zeros_like(t)
+            cols[("X", q)] = np.where(n > 0, after, before)
+            cols[("T", q)] = np.zeros_like(t)
+        return {"X": X, "T": p["kc"] * t}, cols
+
+    return ClosedForm(fn, lambda p: tuple(times(p)[3]))
+
+
+def cross_switch(x0: float = 10.0):
+    """``X' = -piecewise(k1, X > th, k2)*X`` from x0 > th, and an event at
+    ``time >= tau`` that sets ``X = xr``. Before tau, X falls through th at
+    ``t1 = ln(x0/th)/k1`` if that comes first. From tau, X starts again at xr:
+    above th it falls through th again at ``t2 = tau + ln(xr/th)/k1``; below it,
+    it stays below. The event moves the state across the surface with no root,
+    so the branch it lands on is read from the state it sets."""
+
+    def parts(p):
+        k1, th, tau, xr = p["k1"], p["th"], p["tau"], p["xr"]
+        if not x0 > th or xr == th:
+            raise ValueError(f"needs x0 > th and xr off th, not x0 = {x0}, xr = {xr}, th = {th}")
+        t1 = math.log(x0 / th) / k1
+        t2 = tau + math.log(xr / th) / k1 if xr > th else None
+        return t1, t2
+
+    def fn(p, t, side):
+        k1, k2, th, tau, xr = (p[q] for q in ("k1", "k2", "th", "tau", "xr"))
+        t1, t2 = parts(p)
+        ie = _exact(t, tau, side)
+        i1 = past(t, t1, side) & (t1 < tau)
+        X_pre = np.where(i1, th * np.exp(-k2 * (t - t1)), x0 * np.exp(-k1 * t))
+        if t2 is not None:
+            i2 = past(t, t2, side)
+            X_post = np.where(i2, th * np.exp(-k2 * (t - t2)), xr * np.exp(-k1 * (t - tau)))
+        else:
+            i2 = np.zeros(t.shape, bool)
+            X_post = xr * np.exp(-k2 * (t - tau))
+        X = np.where(ie, X_post, X_pre)
+        dt1 = {"k1": -t1 / k1, "th": -1 / (k1 * th)}
+        dt2 = (
+            {}
+            if t2 is None
+            else {
+                "k1": -math.log(xr / th) / k1**2,
+                "th": -1 / (k1 * th),
+                "tau": 1.0,
+                "xr": 1 / (k1 * xr),
+            }
+        )
+        cols = {}
+        for q in ("k1", "k2", "th", "tau", "xr"):
+            pre = np.where(
+                i1,
+                X * ((q == "th") / th - (q == "k2") * (t - t1) + k2 * dt1.get(q, 0.0)),
+                -(q == "k1") * t * X,
+            )
+            if t2 is not None:
+                post = np.where(
+                    i2,
+                    X * ((q == "th") / th - (q == "k2") * (t - t2) + k2 * dt2.get(q, 0.0)),
+                    X * ((q == "xr") / xr - (q == "k1") * (t - tau) + k1 * (q == "tau")),
+                )
+            else:
+                post = X * ((q == "xr") / xr - (q == "k2") * (t - tau) + k2 * (q == "tau"))
+            cols[("X", q)] = np.where(ie, post, pre)
+            cols[("T", q)] = np.zeros_like(t)
+        return {"X": X, "T": p["kc"] * t}, cols
+
+    def crossings(p):
+        t1, t2 = parts(p)
+        return tuple(c for c in ((t1 if t1 < p["tau"] else None), p["tau"], t2) if c is not None)
+
+    return ClosedForm(fn, crossings)
+
+
+def clock_reset(x0: float = 10.0):
+    """A counter ``T' = kc`` from 0, ``X -> Y`` at ``kx/w`` while
+    ``c < T < c + w``, and an event at ``time >= tau`` that sets T back to 0.
+    So T = kc*(t - o), o = 0 before tau and tau after, and the window lies at
+    ``(o + c/kc, o + (c + w)/kc)`` on each stretch, cut short by the reset
+    where tau falls inside it. The exposure is kx/w times the time spent
+    inside: the reset moves the crossings the clock carries."""
+
+    def spans(p):
+        kc, c, w, tau = p["kc"], p["c"], p["w"], p["tau"]
+        out = []
+        for s, o in enumerate((0.0, tau)):
+            lo, hi = o + c / kc, o + (c + w) / kc
+            end = tau if s == 0 else math.inf
+            cut = s == 0 and hi > tau
+            up = min(hi, end)
+            if up > lo:
+                dlo = {"c": 1 / kc, "kc": -c / kc**2, "tau": float(s == 1)}
+                dup = (
+                    {"tau": 1.0}
+                    if cut
+                    else {"c": 1 / kc, "w": 1 / kc, "kc": -(c + w) / kc**2, "tau": float(s == 1)}
+                )
+                # The time spent inside once the window has passed: w/kc, taken
+                # as it is, so that past the pulse the w and c columns cancel
+                # to 0 exactly rather than to the rounding of up - lo.
+                width = tau - lo if cut else w / kc
+                out.append((lo, up, dlo, dup, cut, width))
+        return out
+
+    def fn(p, t, side):
+        kx, kc, w, tau = p["kx"], p["kc"], p["w"], p["tau"]
+        E = np.zeros_like(t, dtype=float)
+        dE = {q: np.zeros_like(t, dtype=float) for q in ("kx", "kc", "c", "w", "tau")}
+        for lo, up, dlo, dup, _, width in spans(p):
+            a, b = past(t, lo, side), past(t, up, side)
+            inside = np.where(b, width, np.where(a, t - lo, 0.0))
+            E += kx / w * inside
+            for q in dE:
+                dE[q] += (
+                    kx
+                    / w
+                    * (np.where(b, dup.get(q, 0.0), 0.0) - np.where(a, dlo.get(q, 0.0), 0.0))
+                )
+        dE["kx"] = E / kx
+        dE["w"] = dE["w"] - E / w
+        X = x0 * np.exp(-E)
+        it = _exact(t, tau, side)
+        T = kc * np.where(it, t - tau, t)
+        cols = {}
+        for q, d in dE.items():
+            cols[("X", q)] = -X * d
+            cols[("Y", q)] = X * d
+            cols[("T", q)] = (
+                np.where(it, t - tau, t)
+                if q == "kc"
+                else np.where(it, -kc, 0.0)
+                if q == "tau"
+                else 0 * t
+            )
+        return {"X": X, "Y": x0 - X, "T": T}, cols
+
+    def crossings(p):
+        out = {p["tau"]}
+        for lo, up, _, _, cut, _ in spans(p):
+            out.add(lo)
+            if not cut:
+                out.add(up)
+        return tuple(sorted(out))
+
+    return ClosedForm(fn, crossings)
