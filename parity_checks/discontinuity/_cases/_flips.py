@@ -37,7 +37,7 @@ WHY = {
     "moved": "on the runs that failed, #1998's moved state sat on or beside a crossing",
     "lost": (
         "on the run that failed, the w column's jump at the trailing edge was lost, -1010.9 for 0 "
-        "from there to t = 30, as #1984's jump is"
+        "from there to t = 30 (#2000, which may be #1984's kind)"
     ),
     "short_past": (
         "on the runs that failed, its row on the step came back short of its time (#1799), holding "

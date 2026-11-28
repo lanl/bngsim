@@ -351,9 +351,11 @@ class Case:
       parameter it reads anyway, so a case whose rows stall a plain run (#1779,
       #1802) names a row that runs.
     * ``exclude``: points left out of the sweep, by key, each with its reason.
-      Only for a point whose outcome is a coin flip: one that passes or fails
-      as the step sequence moves by an ulp (an atol 1e-12 apart), which no mark
-      can hold and which would flap from night to night.
+      Only for a point whose outcome rides on the step sequence: one that passes
+      on some runs and fails on others as atol moves in its last digits (1 part
+      in 1e12 to 2.5 in 1e11), or that passed every such run but came within 2
+      times of its allowance on one, from a median well below it. No mark can
+      hold such a point, and it would flap from night to night.
     """
 
     name: str

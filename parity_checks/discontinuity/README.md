@@ -59,8 +59,12 @@ A case is a `Case` in `_cases/<family>.py` (`_case.py` documents each field):
 * **its slice**: at most 8 points, which between them take every tolerance, grid
   and column set the case sweeps;
 * **points left out** (`exclude`), each with its reason: only a point whose
-  outcome is a coin flip, passing or failing as atol moves by 1 part in 1e12.
-  No mark can hold such a point, and it would flap from night to night;
+  outcome rides on the step sequence. That is a point that passes on some runs
+  and fails on others as atol moves in its last digits (by 1 part in 1e12 to 2.5
+  in 1e11), or one that passed every such run but came within 2 times of its
+  allowance on one, from a median well below it. No mark can hold such a point,
+  and it would flap from night to night. #1914's family cases take theirs from
+  `_cases/_flips.py`, which says how they were measured;
 * **its known failures**: a point that fails on main for a filed bug names the
   issue (`Known`), and the narrowest type it fails with, as a class or as the
   name of one of bngsim's (`"SimulationError"`, `"SimulationTimeout"` for a
@@ -203,9 +207,10 @@ their `aligned31` and `offset31` grids ask for the same rows.
 
 **The judges.** The narrow pulses take the window peak, and k = 5e3 with their
 convergence rows off. At rtol 1e-12 their passing points reach 2.15e3 times their
-tolerance over 263 runs (below), and the corner-free Gaussian on the clock, which
-has no switch, 2.13e3; k is 2.3 times the worst, and the marks judged by it lie
-1.5 times above it at their lowest (once in 263 runs) and 2.2 times otherwise.
+tolerance over 263 runs (below), and 2.33e3 on another set of draws, and the
+corner-free Gaussian on the clock, which has no switch, 2.13e3; k is 2.1 times
+the worst, and the marks judged by it lie 1.5 times above it at their lowest
+(once in 263 runs) and 2.2 times otherwise.
 The two clock-carried sawtooths take k = 1e4: #1998 puts their rows on the jump
 at a fixed 3.0e3 to 7.2e3, and the highest passing point, past the jump at
 k_clock = 8, varies from 6.2e3 to 7.8e3. `step_state` takes the window peak, and
@@ -245,8 +250,8 @@ nightly's diff is that and not a regression.
 * **#1999 (new)**: on some step sequences `abs_state`'s kd column at its corner
   comes back about 1e-7 of itself off at rtol 1e-10, up to 2.9e3 times its
   tolerance. Those points are left out, and its convergence rows are off.
-* **#1984**: on one run of 263, `pulse_clock`'s w column loses its jump at the
-  trailing edge, -1010.9 for 0 from there to t = 30, as #1984's step loses its
-  jump. That point is left out.
+* **#2000 (new)**: on one run of 263, `pulse_clock`'s w column loses its jump at
+  the trailing edge, -1010.9 for 0 from there to t = 30; it may be #1984's kind.
+  That point is left out.
 
 `min_state` fails nowhere.
