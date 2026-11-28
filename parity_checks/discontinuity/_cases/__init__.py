@@ -5,9 +5,9 @@ A family's cases live in a module of their own; add it to ``_FAMILIES``."""
 
 from __future__ import annotations
 
-from _cases import bend, pulse, step
+from _cases import bend, clock, event, parked, pulse, step
 
-_FAMILIES = (pulse, step, bend)
+_FAMILIES = (pulse, step, bend, event, clock, parked)
 
 CASES = tuple(c for m in _FAMILIES for c in m.CASES)
 BY_NAME = {c.name: c for c in CASES}

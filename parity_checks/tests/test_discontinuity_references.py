@@ -312,3 +312,120 @@ def test_the_clock_closed_forms_refuse_outside_their_domain(shape, change, messa
     p = {"kx": 1.0, "k_clock": 2.0, "a": 3.0, "b": 1.0, "c": 25.0, "w": 0.003, **change}
     with pytest.raises(ValueError, match=message):
         CF.clock_exposure(shape).solve(p, SPAN, np.array([30.0]), ("Y()",), ())
+
+
+# ── #1913's closed forms ────────────────────────────────────────────────────
+#
+# Each column a closed form gives is checked against a central difference of
+# the same closed form's species, at times away from every crossing, so a sign
+# or a factor written wrongly into a column is caught; and those with a spec
+# and few crossings are checked against the branch-by-branch reference too.
+
+FD_CASES = [
+    # (closed form, values, columns, times, step): the step is absolute.
+    (CF.event_touch_tie(), {"k": 0.1, "tau": 2.4}, ("tau",), [0.0, 2.0, 4.0, 6.0], 1e-6),
+    (CF.event_touch_tie(), {"k": 0.1, "tau": 2.6}, ("tau",), [0.0, 2.0, 4.0, 6.0], 1e-6),
+    (CF.event_row_short(), {"k": 1e11}, ("k",), [0.0, 1e-11, 2e-11, 4e-11, 1e-10], 1e4),
+    (CF.event_trigger_step(), {"T0": 0.5}, ("T0",), [0.0, 2.0, 4.0], 1e-6),
+    (CF.event_trigger_step(), {"T0": 1.3}, ("T0",), [0.0, 2.0, 4.0], 1e-6),
+    (CF.periodic_window(), {"c": 1.0, "kd": 0.1}, ("c", "kd"), [0.0, 2.5, 5.0, 10.0], 1e-7),
+    (
+        CF.table_step_switch_time(),
+        {"a": 2.0, "k": 0.5, "q": 0.7, "tau": 3.3},
+        ("tau",),
+        list(np.linspace(0.0, 7.5, 16)),
+        1e-6,
+    ),
+    (
+        CF.table_kink_switch_time(),
+        {"r": 1.0, "tau": 3.3},
+        ("tau",),
+        [0.0, 1.5, 3.0, 4.5, 6.0],
+        1e-6,
+    ),
+    (
+        CF.table_kink_switch_time(),
+        {"r": 1.0, "tau": 2.7},
+        ("tau",),
+        [0.0, 1.5, 3.0, 4.5, 6.0],
+        1e-6,
+    ),
+    (
+        CF.parked_zero_window(),
+        {"a": 0.5, "q": 2.0, "kb": 1.0, "kp": 1.0},
+        ("a", "q", "kb"),
+        list(np.linspace(0.0, 8.0, 81)),
+        1e-7,
+    ),
+    (
+        CF.late_switch(),
+        {"c0": 0.5, "sigma": 2.0**20 - 2, "k": 2.0, "rc": 1.0},
+        ("sigma",),
+        [0.0, 2.0**20],
+        1e-4,
+    ),
+    (
+        CF.counter_onset(),
+        {"a": 1.2, "D": 4.0, "k1": 2.0, "k0": 0.1, "kdeg": 0.3, "on": 3.0},
+        ("on",),
+        [0.0, 2.0, 4.0, 5.5, 8.0, 10.0],
+        1e-5,
+    ),
+]
+
+
+@pytest.mark.parametrize(("cf", "values", "cols", "times", "h"), FD_CASES)
+def test_each_column_is_the_derivative_of_its_closed_forms_species(cf, values, cols, times, h):
+    t = np.asarray(times, dtype=float)
+    x, got = cf.fn(dict(values), t, "right")
+    for q in cols:
+        up, down = dict(values, **{q: values[q] + h}), dict(values, **{q: values[q] - h})
+        xu, xd = cf.fn(up, t, "right")[0], cf.fn(down, t, "right")[0]
+        for s in x:
+            if (s, q) not in got:
+                continue
+            fd = (np.asarray(xu[s]) - np.asarray(xd[s])) / (2 * h)
+            col = np.broadcast_to(np.asarray(got[(s, q)], dtype=float), t.shape)
+            # Against the column's own size, however small (#1799's is 3.7e-12).
+            scale = float(np.abs(fd).max())
+            assert scale > 0 or np.all(col == 0), f"d{s}/d{q}"
+            np.testing.assert_allclose(col, fd, rtol=0, atol=1e-5 * scale, err_msg=f"d{s}/d{q}")
+
+
+@pytest.mark.parametrize(
+    ("name", "row", "cols"),
+    [
+        ("table_index_function", (), ()),
+        ("table_step_switch_time", (("tau", 3.3),), ("tau",)),
+        ("table_kink_switch_time", (("tau", 3.3),), ("tau",)),
+        ("cube_switch", (("c", 1.0612079999999993), ("eps", 0.01)), ()),
+    ],
+)
+def test_the_new_closed_forms_agree_with_the_branchwise_reference(name, row, cols):
+    case = BY_NAME[name]
+    values = case.values(row)
+    span = case.window(values)
+    cf = case.reference
+    cross = cf.crossings(values, span)
+    bw = Branchwise(case.spec, expect=len(cross))
+    np.testing.assert_allclose(bw.crossings(values, span), cross, rtol=1e-14)
+    t = np.array(sorted(set(np.linspace(*span, 31)) | {float(c) for c in cross}))
+    a = bw.solve(values, span, t, case.observe, cols)
+    b = cf.solve(values, span, t, case.observe, cols)
+    sides = ("species", "species_left") + (("sens", "sens_left") if cols else ())
+    for side in sides:
+        _close(getattr(a, side), getattr(b, side), 2e-13)
+
+
+def test_the_double_apart_events_fire_on_their_own_doubles_in_time_order():
+    cf = CF.event_double_apart()
+    x, _ = cf.fn({"k": 3.0, "j": 3.0}, np.array([0.3, 0.30000000000000004, 1.0]), "right")
+    assert 0.1 * 3.0 == 0.30000000000000004
+    assert x["g"].tolist() == [1.0, 1.0, 1.0] and x["D"].tolist()[-1] == 2.0
+    x, _ = cf.fn({"k": 3.0, "j": 3.0}, np.array([0.3, 1.0]), "left")
+    assert x["h"].tolist() == [0.0, 1.0]
+
+
+def test_the_unlisted_value_gains_one_window_every_three_from_three_on():
+    x, _ = CF.event_unlisted_value().fn({}, np.array([0.05, 2.9, 3.05, 20.0]), "right")
+    np.testing.assert_allclose(x["Y"], [0.05, 0.05, 0.10, 0.35], rtol=1e-13)

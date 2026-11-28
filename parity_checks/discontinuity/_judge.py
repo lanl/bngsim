@@ -88,9 +88,13 @@ def judge(
     params: Mapping[str, float],
     k_state: float,
     k_sens: float,
+    window_peak: tuple[np.ndarray, np.ndarray | None] | None = None,
 ) -> Verdict:
     """One point: the run's species ``x`` (n_t, n_obs) and columns ``S``
-    (n_t, n_obs, n_cols) against ``sol``."""
+    (n_t, n_obs, n_cols) against ``sol``. ``window_peak`` (a case whose
+    ``Judge.peak`` is ``"window"``) is each column's peak over the whole window,
+    from ``_reference.window_peak``; a column is then scaled by the larger of it
+    and its peak over the samples."""
     x = np.asarray(x, dtype=float)
     n_t, n_obs = x.shape
     have_s = bool(sens)
@@ -99,11 +103,17 @@ def judge(
     # Per-column scales: atol and peak over both sides.
     sp_atol = np.full(n_obs, float(atol))
     sp_peak = np.maximum(sol.species.magnitude(), sol.species_left.magnitude()).max(axis=0)
+    if window_peak is not None:
+        sp_peak = np.maximum(sp_peak, np.asarray(window_peak[0], dtype=float))
     sp_tol = sp_atol + rtol * sp_peak
     if have_s:
         S = np.asarray(S, dtype=float)
         se_atol = np.broadcast_to(_col_atol(atol, sens, params), (n_obs, len(sens)))
         se_peak = np.maximum(sol.sens.magnitude(), sol.sens_left.magnitude()).max(axis=0)
+        if window_peak is not None:
+            if window_peak[1] is None:
+                return Verdict("DIFF", "the window peak has no sensitivity columns")
+            se_peak = np.maximum(se_peak, np.asarray(window_peak[1], dtype=float))
         se_tol = se_atol + rtol * se_peak
 
     def scaled(side: str) -> tuple[np.ndarray, np.ndarray | None]:

@@ -22,6 +22,8 @@ loudly) and REFERENCE_FAILED (the reference could not answer: not a finding).
 
 from __future__ import annotations
 
+import builtins
+import importlib.util
 import tempfile
 import time
 import warnings
@@ -32,12 +34,36 @@ from pathlib import Path
 import _judge as J
 import bngsim
 import numpy as np
-from _case import Case, Offset, Point
-from _reference import NoReference, ReferenceUnavailable
+from _case import Case, Offset, Point, SteadyState
+from _reference import NoReference, ReferenceUnavailable, window_peak
 
 #: The refusals bngsim declares: a run that declines loudly is not a wrong
 #: answer.
 REFUSALS = (bngsim.SensitivityUnsupportedError, bngsim.CodegenDeclinedError)
+#: What each ODE engine passes as ``Simulator(codegen=...)``: ``None`` leaves the
+#: choice to bngsim, as every seed case runs.
+CODEGEN = {"ode": None, "ode-compiled": True, "ode-interpreted": False}
+#: The reason a diffrax point skips where JAX is absent: one ``python/tests``'
+#: conftest already declares.
+NO_JAX = "JAX not installed"
+
+
+class EngineUnavailable(RuntimeError):
+    """The engine a point asks for is not installed here (JAX, for diffrax).
+    The PR slice skips the point; the nightly provisions every engine."""
+
+
+def resolve(raises) -> type[BaseException]:
+    """An exception class from a ``Known.raises`` or an ``Owed.refusal``: a
+    class as it is, or a name, looked up in bngsim and then in the builtins."""
+    if isinstance(raises, type) and issubclass(raises, BaseException):
+        return raises
+    cls = getattr(bngsim, str(raises), None) or getattr(builtins, str(raises), None)
+    if not (isinstance(cls, type) and issubclass(cls, BaseException)):
+        raise ValueError(f"{raises!r} names no exception class in bngsim or the builtins")
+    return cls
+
+
 #: The plain run the spec check reads its states from: an ``Offset`` grid, so
 #: it holds a state either side of every crossing, ``SPEC_SHIFT`` of
 #: ``max(1, |t*|)`` away.
@@ -116,6 +142,8 @@ def load(case: Case) -> bngsim.Model:
                 path = Path(d) / f"{case.name}.net"
                 path.write_text(case.model)
                 _MODELS[key] = bngsim.Model.from_net(str(path))
+        elif case.fmt == "antimony":
+            _MODELS[key] = bngsim.Model.from_antimony_string(case.model)
         else:
             _MODELS[key] = bngsim.Model.from_sbml_string(case.model)
     return _MODELS[key]
@@ -149,6 +177,83 @@ def _first_line(e: BaseException) -> str:
     return f"{type(e).__name__}: {text[0] if text else ''}"
 
 
+@dataclass
+class Ran:
+    """What one run reported, whichever engine ran it."""
+
+    times: np.ndarray
+    species: np.ndarray  # (n_t, n_species)
+    names: list[str]
+    sens: np.ndarray | None  # (n_t, n_species, n_params)
+    sens_params: list[str]
+    converged: bool
+    work: dict
+    backend: str | None
+
+
+def execute(case: Case, model: bngsim.Model, p: Point, request: dict, atol: float) -> Ran:
+    """Run one point on its engine: a time course or a steady state with
+    ``Simulator(method="ode")``, or a time course with ``run_diffrax``. Only
+    the time course takes the case's ``timeout``: ``steady_state`` and
+    ``run_diffrax`` take none, and are bounded by their own step limits and by
+    the nightly's cap on a job."""
+    window = case.window(case.values(p.row))
+    if isinstance(p.grid, SteadyState):
+        sim = bngsim.Simulator(model, method="ode", codegen=CODEGEN[p.engine])
+        ss = sim.steady_state(
+            method=p.grid.method, rtol=p.rtol, atol=atol, mask=list(case.steady_mask) or None
+        )
+        return Ran(
+            times=np.array([np.inf]),
+            species=np.asarray(ss.concentrations, dtype=float)[None, :],
+            names=list(ss.species_names),
+            sens=None,
+            sens_params=[],
+            converged=bool(ss.converged),
+            work={"n_steps": int(ss.n_steps), "n_rhs_evals": int(ss.n_rhs_evals)},
+            backend=sim.codegen_backend,
+        )
+    if p.engine == "diffrax":
+        from bngsim._jax_rhs import jax_available
+
+        if not jax_available() or importlib.util.find_spec("diffrax") is None:
+            raise EngineUnavailable(NO_JAX)
+        from bngsim._diffrax_solver import run_diffrax
+
+        out = run_diffrax(
+            model,
+            t_start=window[0],
+            t_end=window[1],
+            n_points=int(request["n_points"]),
+            rtol=p.rtol,
+            atol=atol,
+        )
+        return Ran(
+            times=np.asarray(out["time"], dtype=float),
+            species=np.asarray(out["species"], dtype=float),
+            names=list(out["species_names"]),
+            sens=None,
+            sens_params=[],
+            converged=True,
+            work={"n_steps": int(out["n_steps"])},
+            backend="diffrax",
+        )
+    sim = bngsim.Simulator(
+        model, method="ode", sensitivity_params=list(p.sens) or None, codegen=CODEGEN[p.engine]
+    )
+    res = sim.run(t_span=window, rtol=p.rtol, atol=atol, timeout=case.timeout, **request)
+    return Ran(
+        times=np.asarray(res.time, dtype=float),
+        species=np.asarray(res.species, dtype=float),
+        names=list(res.species_names),
+        sens=np.asarray(res.sensitivities, dtype=float) if p.sens else None,
+        sens_params=list(res.sensitivity_params) if p.sens else [],
+        converged=True,
+        work=dict(res.solver_stats),
+        backend=sim.codegen_backend,
+    )
+
+
 def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
     """Run one point and judge it. With ``strict`` (the PR slice) bngsim's
     exceptions and the reference's refusals propagate, so a test sees their
@@ -157,24 +262,32 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
     Each stage fails as itself: preparing the model is the harness's (a
     ``set_param`` that raises is never an expected refusal), the run is
     bngsim's, and a reference that raises anything but
-    ``ReferenceUnavailable`` costs this row, not its whole job."""
+    ``ReferenceUnavailable`` costs this row, not its whole job.
+
+    A point the reference says owes a refusal (``Owed``) passes when the run
+    raises it, and is DIFF when the run returns: there is no number to judge.
+    A steady state must also report ``converged=True``."""
     ref = case.reference
     values = case.values(p.row)
+    window = case.window(values)
     row = Row(case.row_id(p.row), p.method, "PASS", extra={"reference": ref.kind})
     known = case.known.get(case.key(p))
     if known is not None:
         row.extra["known"] = known.issue
     try:
-        crossings = ref.crossings(values, case.t_span)
+        crossings = ref.crossings(values, window)
+        owed_fn = getattr(ref, "owed", None)
+        owed = owed_fn(values, p.sens) if owed_fn is not None else None
     except Exception as e:
         if strict:
             raise
         return _reference_failed(row, "crossings", e)
     row.extra["crossings"] = [float(c) for c in crossings]
-    request = p.grid.request(case.t_span, crossings)
+    request = p.grid.request(window, crossings)
     atol = p.rtol * case.atol_ratio
     try:
         model = prepare(case, values)
+        refusal = resolve(owed.refusal) if owed is not None else None
     except Exception as e:
         if strict:
             raise
@@ -182,40 +295,41 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
         return _set(row, "EXCEPTION", f"preparing the model: {_first_line(e)}")
     seen: list[str] = []
     try:
-        sim = bngsim.Simulator(model, method="ode", sensitivity_params=list(p.sens) or None)
         t0 = time.perf_counter()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            res = sim.run(
-                t_span=case.t_span, rtol=p.rtol, atol=atol, timeout=case.timeout, **request
-            )
+            res = execute(case, model, p, request, atol)
         row.seconds = time.perf_counter() - t0
         seen = sorted({type(w.message).__name__ for w in caught if isinstance(w.message, Warning)})
+    except EngineUnavailable as e:
+        if strict:
+            raise
+        row.subclass = "harness:EngineUnavailable"
+        return _set(row, "EXCEPTION", str(e))
     except Exception as e:
-        expected = isinstance(ref, NoReference) and ref.expect_refusal is not None
-        if expected and isinstance(e, ref.expect_refusal):
-            return _set(row, "PASS", f"refused as expected: {_first_line(e)}")
+        if refusal is not None and isinstance(e, refusal):
+            return _set(row, "PASS", f"refused as owed ({owed.reason}): {_first_line(e)}")
         if strict:
             raise
         outcome, sub = _failure(e)
         row.subclass = sub
         return _set(row, outcome, _first_line(e))
-    row.work = dict(res.solver_stats)
-    row.backend = sim.codegen_backend
+    row.work = res.work
+    row.backend = res.backend
     if seen:
         row.extra["warnings"] = seen
-    moved = grid_mismatch(request, res.time, case.t_span)
-    if moved:
-        return _set(row, "DIFF", f"the {p.grid.label} grid: {moved}")
-    names = list(res.species_names)
-    all_species = np.asarray(res.species, dtype=float)
+    if owed is not None:
+        return _set(row, "DIFF", f"returned where {refusal.__name__} was expected: {owed.reason}")
+    if not isinstance(p.grid, SteadyState):
+        moved = grid_mismatch(request, res.times, window)
+        if moved:
+            return _set(row, "DIFF", f"the {p.grid.label} grid: {moved}")
+    names = res.names
     if isinstance(ref, NoReference):
-        if ref.expect_refusal is not None:
-            return _set(row, "DIFF", f"returned where {ref.expect_refusal.__name__} was expected")
-        sp = {n: all_species[:, i] for i, n in enumerate(names)}
+        sp = {n: res.species[:, i] for i, n in enumerate(names)}
         outcome, note = J.judge_invariants(
             ref.invariants,
-            res.time,
+            res.times,
             sp,
             values,
             rtol=p.rtol,
@@ -224,13 +338,18 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
         )
         return _set(row, outcome, note)
     idx = [names.index(s) for s in case.observe]
-    x = all_species[:, idx]
+    x = res.species[:, idx]
     S = None
     if p.sens:
-        cols = [list(res.sensitivity_params).index(q) for q in p.sens]
-        S = np.asarray(res.sensitivities, dtype=float)[:, idx, :][:, :, cols]
+        cols = [res.sens_params.index(q) for q in p.sens]
+        S = res.sens[:, idx, :][:, :, cols]
     try:
-        sol = ref.solve(values, case.t_span, np.asarray(res.time, float), case.observe, p.sens)
+        sol = ref.solve(values, window, res.times, case.observe, p.sens)
+        peak = (
+            window_peak(ref, values, window, case.observe, p.sens)
+            if case.judge.peak == "window" and not isinstance(p.grid, SteadyState)
+            else None
+        )
     except Exception as e:
         if strict:
             raise
@@ -246,6 +365,7 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
         params=values,
         k_state=case.judge.k_state,
         k_sens=case.judge.k_sens,
+        window_peak=peak,
     )
     row.extra.update(
         {
@@ -257,6 +377,8 @@ def run_point(case: Case, p: Point, *, strict: bool = False) -> Row:
         row.extra["sides"] = v.sides
     if v.unresolved:
         row.extra["unresolved"] = v.unresolved
+    if not res.converged:
+        return _set(row, "DIFF", f"steady_state reports converged=False; {v.note}")
     return _set(row, v.outcome, v.note)
 
 
@@ -350,20 +472,31 @@ def run_row(case: Case, row: tuple, *, on_point=None) -> list[Row]:
 
 
 def warm(case: Case, row: tuple = ()) -> None:
-    """Compile the case's code for every column set it sweeps, by a short run
-    of each. What fails here is left for the points themselves to report."""
-    t0, t1 = map(float, case.t_span)
+    """Compile the case's code for every column set and engine it sweeps, by a
+    short run of each. What fails here is left for the points themselves to
+    report."""
+    t0, t1 = case.window(case.values(row))
+    short = (t0, t0 + 1e-3 * (t1 - t0))
     for sens in case.axes.sens:
-        try:
-            model = prepare(case, case.values(row))
-            sim = bngsim.Simulator(model, method="ode", sensitivity_params=list(sens) or None)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                sim.run(
-                    t_span=(t0, t0 + 1e-3 * (t1 - t0)), n_points=2, rtol=1e-6, timeout=case.timeout
-                )
-        except Exception:  # noqa: BLE001, S112 - the points report it
-            continue
+        for engine in case.axes.engines:
+            try:
+                model = prepare(case, case.values(row))
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    if engine == "diffrax":
+                        from bngsim._diffrax_solver import run_diffrax
+
+                        run_diffrax(model, t_start=short[0], t_end=short[1], n_points=2)
+                        continue
+                    sim = bngsim.Simulator(
+                        model,
+                        method="ode",
+                        sensitivity_params=list(sens) or None,
+                        codegen=CODEGEN[engine],
+                    )
+                    sim.run(t_span=short, n_points=2, rtol=1e-6, timeout=case.timeout)
+            except Exception:  # noqa: BLE001, S112 - the points report it
+                continue
 
 
 # ── The spec against the text ───────────────────────────────────────────────
@@ -389,7 +522,7 @@ def check_spec(case: Case) -> list[str]:
     order = [names.index(s) for s in spec.states]
     problems: list[str] = []
     sides: list[set[int]] = [set() for _ in spec.surfaces]
-    for row in case.rows():
+    for row in case.spec_check_rows():
         values = case.values(row)
         where = case.row_id(row)
         model = prepare(case, values)
@@ -399,15 +532,33 @@ def check_spec(case: Case) -> list[str]:
             problems.append(
                 f"{where}: the model starts at {start.tolist()}, the spec at {want.tolist()}"
             )
+        window = case.window(values)
         try:
-            crossings = case.reference.crossings(values, case.t_span)
+            crossings = case.reference.crossings(values, window)
         except Exception as e:  # noqa: BLE001 - a reference that cannot say is a problem too
             problems.append(f"{where}: the reference gives no crossings: {_first_line(e)}")
             crossings = ()
-        request = Offset(SPEC_POINTS, shift=SPEC_SHIFT).request(case.t_span, crossings)
-        res = bngsim.Simulator(model, method="ode").run(
-            t_span=case.t_span, rtol=SPEC_RTOL, atol=SPEC_RTOL * 1e-2, **request
-        )
+        request = Offset(SPEC_POINTS, shift=SPEC_SHIFT).request(window, crossings)
+        # A state between each pair of crossings too, so a pulse narrower than
+        # the offsets (#1779's sawtooth, 1e-3 wide) is seen inside.
+        inner = sorted(float(c) for c in crossings)
+        mids = {(a + b) / 2 for a, b in zip(inner, inner[1:], strict=False) if b > a}
+        request["sample_times"] = sorted(set(request["sample_times"]) | mids)
+        # Only the states are read, so what the run warns of (a late switch's
+        # round-off steps, #1836) is not the check's to report.
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                res = bngsim.Simulator(model, method="ode").run(
+                    t_span=window,
+                    rtol=SPEC_RTOL,
+                    atol=SPEC_RTOL * 1e-2,
+                    timeout=case.timeout,
+                    **request,
+                )
+        except bngsim.BngsimError as e:
+            problems.append(f"{where}: the plain run the check reads failed: {_first_line(e)}")
+            continue
         states = list(
             zip(np.asarray(res.time, float), np.asarray(res.species, float), strict=True)
         )
@@ -497,5 +648,7 @@ def _xfail(known):
     import pytest
 
     return pytest.mark.xfail(
-        strict=True, raises=known.raises, reason=f"#{known.issue}: {known.reason}".rstrip(": ")
+        strict=True,
+        raises=resolve(known.raises),
+        reason=f"#{known.issue}: {known.reason}".rstrip(": "),
     )

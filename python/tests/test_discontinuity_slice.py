@@ -38,7 +38,10 @@ _RUNS: dict = {}
 def _run(case, point):
     key = (case.name, point)
     if key not in _RUNS:
-        _RUNS[key] = S.run_point(case, point, strict=True)
+        try:
+            _RUNS[key] = S.run_point(case, point, strict=True)
+        except S.EngineUnavailable as e:  # diffrax without JAX
+            pytest.skip(str(e))
     return _RUNS[key]
 
 
