@@ -58,6 +58,9 @@ A case is a `Case` in `_cases/<family>.py` (`_case.py` documents each field):
   resets; its passing points stand in;
 * **its slice**: at most 8 points, which between them take every tolerance, grid
   and column set the case sweeps;
+* **points left out** (`exclude`), each with its reason: only a point whose
+  outcome is a coin flip, passing or failing as atol moves by 1 part in 1e12.
+  No mark can hold such a point, and it would flap from night to night;
 * **its known failures**: a point that fails on main for a filed bug names the
   issue (`Known`), and the narrowest type it fails with, as a class or as the
   name of one of bngsim's (`"SimulationError"`, `"SimulationTimeout"` for a
@@ -110,6 +113,10 @@ rule is `_check.resolved`. The convergence row fails when, for any two
 tolerances, the tighter run's ratio is past 30 and past the looser one's ratio
 times the square root of their ratio: an error that stops falling, as #1227's
 did. In the seed cases every healthy row sits at under half of that allowance.
+A group holding a marked point has no convergence row, since its marks already
+say it is broken, and the fix that clears them moves the row too. A case whose
+judge is not the default (another `k`, the window peak, the convergence rows
+off) says why in `Judge.why`.
 
 ## What the seed found
 

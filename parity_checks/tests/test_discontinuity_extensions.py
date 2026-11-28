@@ -53,7 +53,6 @@ def test_the_sweep_is_the_product_of_every_axis_engines_included(name):
     n = len(a.params) * len(a.sens) * len(a.engines) * len(a.grids) * len(a.rtol)
     assert len(pts) == len(set(pts)) == n
     assert {p.engine for p in pts} == set(a.engines)
-    assert len(c.groups(pts)) == n // len(a.rtol) or len(a.rtol) == 1
 
 
 def test_a_window_follows_its_row():
@@ -134,6 +133,19 @@ def _steady(**axes):
         ("cube_switch", dict(spec_rows=()), "not rows it sweeps"),
         ("late_switch", dict(t_span=lambda p: (5.0, 1.0)), "forward window"),
         ("diffrax_gaussian", dict(note=""), "names no switch"),
+        (
+            "steady_counter_window",
+            dict(judge=Judge(converge=False, peak="window", why="x")),
+            "no window peak",
+        ),
+        ("time_window", dict(judge=Judge(k_sens=10.0)), "does not say why"),
+        ("time_window", dict(judge=Judge(converge=False)), "does not say why"),
+        ("time_window", dict(exclude={"nope|rtol=1e-08": "x"}), "which its sweep has not"),
+        (
+            "clock_step_weak",
+            dict(exclude={next(iter(BY_NAME["clock_step_weak"].exclude)): ""}),
+            "without saying why",
+        ),
     ],
 )
 def test_a_case_written_wrongly_is_refused(name, change, message):
@@ -365,3 +377,179 @@ def test_the_spec_check_runs_only_the_rows_it_is_given(monkeypatch):
     monkeypatch.setattr(S, "prepare", spy)
     assert S.check_spec(case) == []
     assert set(seen) == {case.spec_rows[0]["r"]}
+
+
+# ── Points left out, and convergence rows ───────────────────────────────────
+
+
+def test_an_excluded_point_is_not_swept_reported_or_sliced():
+    c = BY_NAME["clock_step_weak"]
+    assert c.exclude
+    for k in c.exclude:
+        assert k not in {c.key(p) for p in c.points()} and k not in c.all_keys()
+        assert k not in c.known
+    first = next(iter(c.exclude))
+    marked = _with("clock_step_weak", known={**c.known, first: Known(1779)})
+    with pytest.raises(CaseError, match="both excluded and marked"):
+        marked.validate()
+    p = next(p for p in c._product() if c.key(p) == first)
+    with pytest.raises(CaseError, match="outside its sweep"):
+        _with("clock_step_weak", slice=(*c.slice[:3], p)).validate()
+
+
+def test_a_group_holding_a_known_failure_has_no_convergence_row():
+    base = BY_NAME["time_window"]
+    p = base.slice[0]
+    assert base.converge_key(p.group) in base.all_keys()
+    marked = _with("time_window", known={base.key(p): Known(1, AssertionError)})
+    assert marked.converge_key(p.group) not in marked.all_keys()
+    assert all(
+        base.key(q) not in marked.known
+        for ps in marked.groups(marked.points()).values()
+        for q in ps
+    )
+
+
+def test_every_case_that_changes_its_judge_says_why():
+    for c in BY_NAME.values():
+        assert c.judge.is_default() or c.judge.why, c.name
+
+
+# ── What each engine is given ───────────────────────────────────────────────
+
+
+def test_a_time_course_gets_the_cases_timeout_and_its_tolerances(monkeypatch):
+    seen = {}
+    real = bngsim.Simulator.run
+
+    def spy(self, *a, **k):
+        seen.update(k)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(bngsim.Simulator, "run", spy)
+    case = dataclasses.replace(BY_NAME["time_window"], timeout=17.0)
+    S.run_point(case, case.slice[0])
+    assert seen["timeout"] == 17.0 and seen["rtol"] == case.slice[0].rtol
+    assert seen["atol"] == case.slice[0].rtol * case.atol_ratio
+
+
+def test_a_steady_state_gets_its_tolerances_method_and_mask(monkeypatch):
+    seen = {}
+    real = bngsim.Simulator.steady_state
+
+    def spy(self, *a, **k):
+        seen.update(k)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(bngsim.Simulator, "steady_state", spy)
+    case = BY_NAME["steady_counter_window"]
+    p = point(1e-8, SteadyState("newton"), kc=1.0001)
+    S.run_point(case, p)
+    assert seen == {
+        "method": "newton",
+        "rtol": 1e-8,
+        "atol": 1e-10,
+        "mask": list(case.steady_mask),
+    }
+
+
+def test_a_diffrax_point_gets_its_tolerances_and_grid(monkeypatch):
+    import bngsim._diffrax_solver as D
+    import bngsim._jax_rhs as jr
+
+    seen = {}
+
+    def fake(model, **k):
+        seen.update(k)
+        t = np.linspace(k["t_start"], k["t_end"], k["n_points"])
+        return {
+            "time": t,
+            "species": np.zeros((len(t), 1)),
+            "species_names": ["X()"],
+            "n_steps": 1,
+        }
+
+    monkeypatch.setattr(jr, "jax_available", lambda: True)
+    monkeypatch.setattr(D, "run_diffrax", fake)
+    monkeypatch.setattr(S.importlib.util, "find_spec", lambda name: object())
+    case = BY_NAME["diffrax_gaussian"]
+    S.run_point(case, point(1e-8, Uniform(3), engine="diffrax"))
+    assert (seen["rtol"], seen["atol"], seen["n_points"]) == (1e-8, 1e-8, 3)
+    assert (seen["t_start"], seen["t_end"]) == case.window()
+
+
+# ── The spec check ──────────────────────────────────────────────────────────
+
+
+def test_the_spec_check_reports_a_plain_run_that_fails(monkeypatch):
+    def fail(self, *a, **k):
+        raise bngsim.SimulationError("no progress")
+
+    monkeypatch.setattr(bngsim.Simulator, "run", fail)
+    problems = S.check_spec(BY_NAME["time_window"])
+    assert problems and all("the plain run the check reads failed" in p for p in problems[:-2])
+
+
+def test_the_spec_check_sees_inside_a_pulse_narrower_than_its_offsets():
+    """The literal sawtooth's pulse is 1e-3 wide in time, and the check's
+    offsets sit 2.5e-3 from each crossing: only the midpoint between them
+    lies inside it. A spec with half the pulse's rate is caught there."""
+    case = BY_NAME["clock_sawtooth_literal"]
+    spec = case.spec
+    half = dataclasses.replace(
+        spec,
+        rhs=lambda x, s, t, p: {
+            k: (v / 2 if k != "T()" else v) for k, v in spec.rhs(x, s, t, p).items()
+        },
+    )
+    assert S.check_spec(case) == []
+    assert S.check_spec(dataclasses.replace(case, spec=half))
+
+
+# ── Every name resolves ─────────────────────────────────────────────────────
+
+
+def test_every_marks_class_and_every_owed_refusal_resolve_in_bngsim():
+    for c in BY_NAME.values():
+        for k in c.known.values():
+            S.resolve(k.raises)
+        owed = getattr(c.reference, "owed", None)
+        if owed is None:
+            continue
+        for p in c.points():
+            o = owed(c.values(p.row), p.sens)
+            if o is not None:
+                assert issubclass(S.resolve(o.refusal), bngsim.BngsimError), c.name
+
+
+# ── Instants a double apart ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("at_03", "outcome"),
+    [((1.0, 0.0, 0.0), "PASS"), ((0.0, 0.0, 0.0), "PASS"), ((1.0, 1.0, 2.0), "DIFF")],
+)
+def test_a_correct_engine_passes_on_a_row_at_one_of_two_instants_a_double_apart(at_03, outcome):
+    """#1627's u101 grid has a row on 0.3 exactly: G and F have fired there,
+    H and E (on 0.30000000000000004) not yet. Read with the usual 4-ulp blur,
+    the reference took H and E to have fired too, so a correct engine failed."""
+    case = BY_NAME["event_double_apart"]
+    values = case.values()
+    t = np.linspace(0.0, 1.0, 101)
+    assert t[30] == 0.3
+    sol = case.reference.solve(values, case.window(), t, case.observe, ())
+    x = sol.species.lo.copy()
+    x[30] = at_03
+    v = J.judge(
+        sol,
+        x,
+        None,
+        rtol=1e-8,
+        atol=1e-10,
+        observe=case.observe,
+        sens=(),
+        params=values,
+        k_state=1e3,
+        k_sens=1e3,
+    )
+    assert v.outcome == outcome

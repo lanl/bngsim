@@ -62,6 +62,23 @@ CLOCK_PARAMS = ("kx", "k_clock", "a", "b", "c", "w")
 COVERED = {"a": 3.0, "b": 1.0}
 
 
+#: The triangle's and the sawtooth's judge.
+WINDOW_JUDGE = Judge(
+    peak="window",
+    converge=False,
+    why=(
+        "inside the pulse the k_clock column runs about 3e4 times its end value, which no "
+        "u4 sample holds, and CVODES holds it to rtol of that running size, so each column "
+        "is scaled by its peak over the window. That leaves the k_clock column judged loosely "
+        "at rtol 1e-6 (20 to 70 times its end value); the kx column and the tighter "
+        "tolerances carry the check there. The convergence rows are off: a pulse this narrow "
+        "has its k_clock column floor near 1e-5 of itself from the clock's own rounding at "
+        "T = 50 (test_narrow_pulse_clock_column), so its error stops falling at tight rtol "
+        "whatever the engine does (#1776's own row: 5.6x at 1e-9, 72.7x at 1e-11)"
+    ),
+)
+
+
 def _clock_spec(shape: str, literal: tuple[float, float] | None = None) -> Spec:
     """The case's model by hand. ``literal`` is (a, b) written into the law as
     numbers, which the spec then reads as numbers too: moved, the parameters
@@ -97,7 +114,7 @@ def _clock_spec(shape: str, literal: tuple[float, float] | None = None) -> Spec:
     )
 
 
-def _clock_case(shape, rows, known, slice_, note):
+def _clock_case(shape, rows, known, slice_, note, exclude=None):
     spec = _clock_spec(shape)
     return Case(
         name=f"clock_{shape}_weak",
@@ -122,8 +139,9 @@ def _clock_case(shape, rows, known, slice_, note):
             sens=((), CLOCK_COLS),
         ),
         slice=slice_,
-        judge=Judge(converge=False, peak="samples" if shape == "step" else "window"),
+        judge=Judge() if shape == "step" else WINDOW_JUDGE,
         known=known,
+        exclude=exclude or {},
         timeout=10.0,
         note=note,
     )
@@ -138,7 +156,7 @@ TRIANGLE_ROWS = _rows(0.05, 0.03, 0.01)
 STEP_ROWS = _rows(0.08, 0.05, 0.03, 1e-10, -1e-10)
 SAWTOOTH_ROWS = _rows(0.08, 0.05, 0.03, 0.01, 1e-3, 1e-4, 1e-6, 1e-10, 0.0, -1e-10, -1e-6, -1e-4)
 
-STALL = ("SimulationError", "a stall: CVODE makes no progress at the crossing")
+STALL = ("SimulationError", "a stall: CVODE makes no progress, or the run fails")
 CUT = ("SimulationTimeout", "a stall, cut off by the case's time limit")
 WRONG = (AssertionError, "wrong columns, with no error")
 PLAIN_FAILS = ("SimulationError", "the plain run fails too at rtol 1e-11")
@@ -162,8 +180,11 @@ def _marks(shape: str, table, literal: bool = False) -> dict:
 
 # What each fails with on macOS arm64, by (b, rtol, columns). #1779's table
 # was run with a and b written into the rate law; here they are parameters, so
-# that the sweep can move them, and the step at b = +-1e-10 and the sawtooth at
-# b = 0 are right this way (the literal spelling is in the two cases below).
+# that the sweep can move them. With them as parameters the sawtooth at b = 0
+# catches its pulse; the literal spelling, which misses it, is a case below.
+# The step at b = +-1e-10 keeps #1779's 42% in its k_clock column, but that
+# column is 5.6e-11: below its absolute tolerance at rtol 1e-6 and 1e-9, and
+# 473 (222) times it at 1e-11, inside k = 1e3. Its convergence row is what fails.
 TRIANGLE_MARKS = _marks(
     "triangle",
     {
@@ -171,19 +192,25 @@ TRIANGLE_MARKS = _marks(
         **{(b, r, True): STALL for b in (0.05, 0.03, 0.01) for r in ("1e-09", "1e-11")},
     },
 )
-STEP_MARKS = _marks(
-    "step",
-    {
-        (0.08, "1e-09", True): WRONG,
-        (0.05, "1e-09", True): WRONG,
-        (0.03, "1e-06", True): WRONG,
-        **{(b, "1e-11", True): CUT for b in (0.08, 0.05, 0.03)},
+STEP_MARKS = {
+    **_marks(
+        "step",
+        {(b, "1e-11", True): CUT for b in (0.08, 0.05, 0.03)},
+    ),
+    # The k_clock column's 42% at b = +-1e-10 stays as rtol tightens: inside
+    # k = 1e3 at every point, but its error stops falling (3.3x, 3.1x, then
+    # 473x and 222x at 1e-11, against an allowance of 31x).
+    **{
+        f"clock_step_weak[a={a!r},b={b!r}]|converge,grid=u4,sens=kx+k_clock": Known(
+            1779, AssertionError, "the k_clock column's 42% does not fall with rtol"
+        )
+        for a, b in ((3.0, 1e-10), (1.0, -1e-10))
     },
-)
+}
 SAWTOOTH_MARKS = _marks(
     "sawtooth",
     {
-        **{(b, "1e-06", True): WRONG for b in (0.08, 0.05, 0.03, 0.01)},
+        **{(b, "1e-06", True): WRONG for b in (0.08, 0.03, 0.01)},
         **{(b, "1e-09", True): STALL for b in (0.08, 0.05)},
         **{(b, "1e-09", True): CUT for b in (0.03, 0.01, 1e-3, 1e-4, 1e-6, 0.0, -1e-10)},
         **{(b, "1e-09", True): WRONG for b in (1e-10, -1e-6, -1e-4)},
@@ -207,16 +234,39 @@ def _p(rtol, b=None, cols=True):
     return point(rtol, Uniform(4), CLOCK_COLS if cols else (), **row)
 
 
+#: Points whose outcome is a coin flip: each passed on some and failed on
+#: others of 8 to 12 draws of atol, 1e-12 apart, which move the step sequence
+#: by an ulp. No mark can hold them, and they would flap from night to night.
+#: At rtol 1e-6 and 1e-9 every weakly coupled step row is one.
+FLIPS = "a coin flip on the step sequence: it passed and failed over draws of atol 1e-12 apart"
+STEP_EXCLUDE = {
+    _key("step", b, r, True): FLIPS for b in (0.08, 0.05, 0.03) for r in ("1e-06", "1e-09")
+}
+SAWTOOTH_EXCLUDE = {
+    _key("sawtooth", 0.05, "1e-06", True): FLIPS,
+    _key("sawtooth", 1e-3, "1e-09", False): FLIPS,
+}
+
+# The slices hold points whose outcome held on every such draw, and none whose
+# failure type varies (the triangle at b = 0.01 and rtol 1e-11 stalls as "no
+# progress" or as a time-out; the sawtooth at b = 0.08 and 1e-6 is wrong or
+# times out). The step's own failing check in the slice is its convergence row
+# at b = 1e-10, whose three points held.
 TRIANGLE_SLICE = (
     _p(1e-9, 0.03),
-    _p(1e-11, 0.01),
     _p(1e-6),
     _p(1e-11),
     _p(1e-9, 0.03, cols=False),
 )
-STEP_SLICE = (_p(1e-9, 0.05), _p(1e-6, 0.03), _p(1e-11), _p(1e-6, cols=False))
+STEP_SLICE = (
+    _p(1e-6, 1e-10),
+    _p(1e-9, 1e-10),
+    _p(1e-11, 1e-10),
+    _p(1e-11),
+    _p(1e-6, cols=False),
+)
 SAWTOOTH_SLICE = (
-    _p(1e-6, 0.05),
+    _p(1e-6),
     _p(1e-9, 1e-10),
     _p(1e-11, 1e-10),
     _p(1e-11),
@@ -256,6 +306,7 @@ def _literal_case(shape: str) -> Case:
         spec=_clock_spec(shape, literal=(a, b)),
         reference=clock_exposure(shape),
         spec_rows=None,
+        exclude={},
         axes=dataclasses.replace(base.axes, params=({},)),
         slice=(
             point(1e-9, Uniform(4), CLOCK_COLS),
@@ -374,13 +425,16 @@ CASES = (
         + " Judged by each column's window peak: inside the pulse the k_clock column runs "
         "about 3e4 times its end value.",
     ),
-    _clock_case("step", STEP_ROWS, STEP_MARKS, STEP_SLICE, _NOTE.format(shape="step")),
+    _clock_case(
+        "step", STEP_ROWS, STEP_MARKS, STEP_SLICE, _NOTE.format(shape="step"), STEP_EXCLUDE
+    ),
     _clock_case(
         "sawtooth",
         SAWTOOTH_ROWS,
         SAWTOOTH_MARKS,
         SAWTOOTH_SLICE,
         _NOTE.format(shape="sawtooth") + " Judged by each column's window peak, as the triangle.",
+        SAWTOOTH_EXCLUDE,
     ),
     _literal_case("sawtooth"),
     Case(
@@ -405,7 +459,10 @@ CASES = (
             point(1e-8, SteadyState("newton"), kc=1.0001),
             point(1e-6, SteadyState("integration"), kc=1.0001),
         ),
-        judge=Judge(converge=False),
+        judge=Judge(
+            converge=False,
+            why="a steady state's error is set by steady_state's tol, not its rtol",
+        ),
         known={
             f"steady_counter_window|rtol={r},grid=steady-{m},sens=none": Known(
                 1794,
@@ -442,7 +499,7 @@ CASES = (
             point(1e-4, Uniform(11), ("on",)),
             point(1e-8, Uniform(11)),
         ),
-        judge=Judge(converge=False),
+        judge=Judge(),
         known={
             "counter_onset_sbml|rtol=1e-06,grid=u11,sens=on": Known(
                 1807,

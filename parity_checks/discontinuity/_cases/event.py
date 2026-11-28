@@ -104,7 +104,7 @@ CASES = (
             point(1e-10, Sampled(4), ("tau",), tau=2.4),
             point(1e-8, Sampled(4), ("tau",), tau=2.6),
         ),
-        judge=Judge(converge=False),
+        judge=Judge(),
         known=TIE_KEYS,
         note=(
             "#1618: E1 adds 1 to X at tau, E2 doubles it at 2.5, where sin(2πt/10) touches "
@@ -128,7 +128,7 @@ CASES = (
             point(1e-6, Uniform(101)),
             point(1e-10, Uniform(101)),
         ),
-        judge=Judge(converge=False),
+        judge=Judge(),
         known={
             f"event_unlisted_value|rtol={r},grid=u2,sens=none": Known(
                 1626,
@@ -170,7 +170,7 @@ CASES = (
             point(1e-8, Uniform(2), k=4.0, j=4.0),
             point(1e-6, Uniform(101), k=4.0, j=4.0),
         ),
-        judge=Judge(converge=False),
+        judge=Judge(),
         known={
             f"event_double_apart|rtol={r},grid={g},sens=none": Known(
                 1627, AssertionError, "two event stops a double apart are merged into one"
@@ -202,7 +202,7 @@ CASES = (
             point(1e-8, Sampled(11)),
         ),
         atol_ratio=1e-4,
-        judge=Judge(converge=False),
+        judge=Judge(),
         known={
             f"event_row_short|rtol={r},grid=sampled11,sens=k": Known(
                 1799, AssertionError, "a sensitivity run records the row at 3e-11 from 2.95e-11"
@@ -238,7 +238,7 @@ CASES = (
             point(1e-10, Sampled(3)),
             point(1e-8, Sampled(3), T0=1.3),
         ),
-        judge=Judge(converge=False),
+        judge=Judge(),
         known={
             f"{row}|rtol={r},grid=sampled3,sens=T0": Known(
                 1804,

@@ -162,10 +162,11 @@ def decay_bend(x0: float = 10.0):
 # sample at an event's time has both of its limits.
 
 
-def _ind(t, t_star, side):
+def _ind(t, t_star, side, ulps=None):
     """1 from ``t_star`` on (a trigger that holds at ``t_star`` itself), as a
     float array; the left limit at ``t_star`` is 0, the right 1."""
-    return past(t, t_star, side).astype(float)
+    kw = {} if ulps is None else {"ulps": ulps}
+    return past(t, t_star, side, **kw).astype(float)
 
 
 def event_touch_tie():
@@ -229,15 +230,16 @@ def event_double_apart():
     """G adds 1 to g at ``time == 0.3``, H to h at ``time == 0.1*k``, E adds amt
     to D at ``time == 0.1*j``, and F sets amt from 1 to 2 at ``time >= 0.3``.
     Each trigger holds at its own double (0.1*3 is 0.30000000000000004, beside
-    0.3), and they fire in time order, so F precedes E."""
+    0.3), and they fire in time order, so F precedes E. The indicators are
+    exact (``ulps=0``): a sample on 0.3 has G fired and H not yet."""
 
     def fn(p, t, side):
         th, te = 0.1 * p["k"], 0.1 * p["j"]
         amt = 2.0 if te >= 0.3 else 1.0
         return {
-            "g": _ind(t, 0.3, side),
-            "h": _ind(t, th, side),
-            "D": amt * _ind(t, te, side),
+            "g": _ind(t, 0.3, side, ulps=0),
+            "h": _ind(t, th, side, ulps=0),
+            "D": amt * _ind(t, te, side, ulps=0),
         }, {}
 
     return ClosedForm(fn, lambda p: (0.3, 0.1 * p["k"], 0.1 * p["j"]))

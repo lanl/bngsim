@@ -95,7 +95,16 @@ CASES = (
         # The convergence rows are off: #1985 grows by 4x to 46x from rtol
         # 1e-10 to 1e-12 across the groups, a spread no such rule could split
         # without flapping, and the limit carries the check instead.
-        judge=Judge(k_sens=50.0, converge=False),
+        judge=Judge(
+            k_sens=50.0,
+            converge=False,
+            why=(
+                "#1985: every column point at rtol 1e-12 is 93-286x its tolerance, where 1e-6 "
+                "to 1e-10 hold every column within 31x, so k_sens = 50 sits between the two. "
+                "From 1e-10 to 1e-12 the error grows 4x to 46x across the groups, a spread no "
+                "convergence rule could split without flapping, so the limit carries the check."
+            ),
+        ),
         known={
             **{
                 # Asked for a row at t = 25, the crossing, the sensitivity run
@@ -352,7 +361,7 @@ CASES = (
             point(1e-10, Sampled(16), ("tau",), tau=3.3),
             point(1e-8, Sampled(16)),
         ),
-        judge=Judge(converge=False),
+        judge=Judge(),
         known={
             f"table_step_switch_time|rtol={r},grid=sampled16,sens=tau": Known(
                 1797,
@@ -390,7 +399,7 @@ CASES = (
             point(1e-10, Sampled(5), ("tau",), tau=3.3),
             point(1e-8, Sampled(5)),
         ),
-        judge=Judge(converge=False),
+        judge=Judge(),
         known={
             f"table_kink_switch_time|rtol={r},grid=sampled5,sens=tau": Known(
                 1797,
@@ -428,7 +437,15 @@ CASES = (
             point(1e-10, Uniform(2), engine="ode-compiled", **CUBE_CONTROL),
             point(1e-10, Uniform(2), engine="ode-interpreted", **CUBE_CONTROL),
         ),
-        judge=Judge(k_state=1e5, converge=False),
+        judge=Judge(
+            k_state=1e5,
+            converge=False,
+            why=(
+                "one ulp of A moves t* by 2.2e-8 at eps = 1e-8, and Y by 6.6e-8, 4e3 times its "
+                "tolerance at rtol 1e-10, so k_state = 1e5 allows about 20 ulp; the case runs at "
+                "one rtol, so it has no convergence row either"
+            ),
+        ),
         known=CUBE_KNOWN,
         timeout=20.0,
         spec_rows=(CUBE_CONTROL,),
@@ -465,7 +482,14 @@ CASES = (
             point(1e-10, Sampled(2), sigma=LATE_SIGMA[50]),
             point(1e-8, Sampled(2), ("sigma",), sigma=LATE_SIGMA[50]),
         ),
-        judge=Judge(converge=False),
+        judge=Judge(
+            converge=False,
+            why=(
+                "past 2^20 #1836's error grows as rtol tightens, which its marks hold; over 2^30 "
+                "the plain group passes both points but sits at 1.3 times the convergence "
+                "allowance (0.9x at 1e-8, 39.6x at 1e-10), a knife edge"
+            ),
+        ),
         known={
             **{
                 f"late_switch[sigma={LATE_SIGMA[e]!r}]|rtol={r},grid=sampled2,sens={q}": Known(

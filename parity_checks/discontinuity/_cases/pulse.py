@@ -183,7 +183,7 @@ CASES = (
             point(1e-8, Aligned(6)),
             point(1e-12, Aligned(6)),
         ),
-        judge=Judge(converge=False),
+        judge=Judge(),
         known={
             f"table_index_function|rtol={r},grid={g},sens=none": Known(
                 1657,
@@ -218,7 +218,14 @@ CASES = (
             point(1e-10, Uniform(2)),
             point(1e-8, Uniform(2)),
         ),
-        judge=Judge(converge=False),
+        judge=Judge(
+            converge=False,
+            why=(
+                "the plain run's error is not monotone in rtol on any grid (0.3x its tolerance "
+                "at 1e-8, 82x at 1e-10, 13x at 1e-12), which the convergence rule reads as an "
+                "error that stops falling; each point stays well inside k = 1e3"
+            ),
+        ),
         known={
             f"periodic_window|rtol={r},grid=u2,sens={q}": Known(
                 1805,
@@ -257,7 +264,7 @@ CASES = (
             point(1e-6, Uniform(3), engine="ode", s=0.5),
         ),
         atol_ratio=1.0,
-        judge=Judge(converge=False),
+        judge=Judge(),
         known={
             f"{row}|rtol={r},grid=u3,sens=none,engine=diffrax": Known(
                 1795,

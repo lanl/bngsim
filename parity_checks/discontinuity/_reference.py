@@ -124,15 +124,17 @@ def at_crossing(times, crossings) -> np.ndarray:
     return out
 
 
-def past(t, t_star: float, side: str) -> np.ndarray:
+def past(t, t_star: float, side: str, ulps: int = AT_CROSSING_ULPS) -> np.ndarray:
     """``t > t*``, with a time at ``t*`` itself on the side asked for:
     ``"right"`` counts it as past, ``"left"`` does not. A closed form reads
     every indicator through this, so its two limits at a crossing are the two
-    sides of that indicator."""
+    sides of that indicator. A time within ``ulps`` of ``t*`` is at it. A model
+    whose instants lie a double apart (#1627: 0.3 and 0.1*3) passes 0, so that
+    a sample on one of them is not taken to be on the other too."""
     if side not in ("left", "right"):
         raise ValueError(f"side must be 'left' or 'right', not {side!r}")
     t = np.asarray(t, dtype=float)
-    near = np.abs(t - t_star) <= AT_CROSSING_ULPS * np.spacing(abs(float(t_star)))
+    near = np.abs(t - t_star) <= ulps * np.spacing(abs(float(t_star)))
     return np.where(near, side == "right", t > t_star)
 
 

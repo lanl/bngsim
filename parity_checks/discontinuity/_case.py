@@ -23,6 +23,7 @@ reports as rows dropped and rows added; that is deliberate.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import math
 from collections.abc import Callable, Mapping
@@ -295,6 +296,12 @@ class Judge:
     k_sens: float = 1e3
     converge: bool = True
     peak: str = "samples"
+    #: Why, for any judge that is not the default: a case may not loosen,
+    #: tighten or switch off a rule without saying so.
+    why: str = ""
+
+    def is_default(self) -> bool:
+        return dataclasses.replace(self, why="") == Judge()
 
 
 @dataclass(frozen=True)
@@ -343,6 +350,10 @@ class Case:
       None. The spec is one model whatever the row, and the check moves every
       parameter it reads anyway, so a case whose rows stall a plain run (#1779,
       #1802) names a row that runs.
+    * ``exclude``: points left out of the sweep, by key, each with its reason.
+      Only for a point whose outcome is a coin flip: one that passes or fails
+      as the step sequence moves by an ulp (an atol 1e-12 apart), which no mark
+      can hold and which would flap from night to night.
     """
 
     name: str
@@ -364,6 +375,7 @@ class Case:
     timeout: float = 60.0
     steady_mask: tuple[str, ...] = ()
     spec_rows: tuple[Mapping[str, float], ...] | None = None
+    exclude: Mapping[str, str] = field(default_factory=dict)
     note: str = ""
 
     # Values and keys
@@ -408,6 +420,9 @@ class Case:
     def points(self, row: tuple[tuple[str, float], ...] | None = None) -> list[Point]:
         """The sweep, in a fixed order: rows, then sens, engines, grids, rtol
         (loosest first)."""
+        return [p for p in self._product(row) if self.key(p) not in self.exclude]
+
+    def _product(self, row=None) -> list[Point]:
         rows = self.rows() if row is None else [row]
         return [
             Point(r, float(rtol), grid, tuple(sens), engine)
@@ -421,15 +436,17 @@ class Case:
         ]
 
     def groups(self, points: list[Point]) -> dict[tuple, list[Point]]:
-        """``points`` by convergence group, each loosest rtol first; only the
-        groups with two tolerances or more can be judged for convergence."""
+        """``points`` by convergence group, each loosest rtol first. Only the
+        groups with two tolerances or more can be judged for convergence, and
+        a group that holds a known failure has no convergence row: its marks
+        already say it is broken, and the fix that clears them moves it too."""
         out: dict[tuple, list[Point]] = {}
         for p in points:
             out.setdefault(p.group, []).append(p)
         return {
             g: sorted(ps, key=lambda p: -p.rtol)
             for g, ps in out.items()
-            if len({p.rtol for p in ps}) >= 2
+            if len({p.rtol for p in ps}) >= 2 and not any(self.key(p) in self.known for p in ps)
         }
 
     def all_keys(self) -> set[str]:
@@ -543,6 +560,8 @@ class Case:
             raise CaseError(f"{where}: engines {bad} are not among {ENGINES}")
         if self.judge.peak not in PEAKS:
             raise CaseError(f"{where}: judge peak {self.judge.peak!r} is not one of {PEAKS}")
+        if not self.judge.is_default() and not self.judge.why:
+            raise CaseError(f"{where}: its judge is not the default, and does not say why")
         grids = self.axes.grids
         plain_uniform = not any(self.axes.sens) and all(isinstance(g, Uniform) for g in grids)
         if "diffrax" in engines and not plain_uniform:
@@ -577,3 +596,13 @@ class Case:
             stray = [dict(r) for r in self.spec_check_rows() if r not in self.rows()]
             if not self.spec_rows or stray:
                 raise CaseError(f"{where}: spec_rows {stray or '()'} are not rows it sweeps")
+        if steady and self.judge.peak != "samples":
+            raise CaseError(f"{where}: a steady state has one sample, so no window peak")
+        product = {self.key(p) for p in self._product()}
+        for k, why in self.exclude.items():
+            if k not in product:
+                raise CaseError(f"{where}: excludes {k!r}, which its sweep has not")
+            if not why:
+                raise CaseError(f"{where}: excludes {k!r} without saying why")
+            if k in self.known:
+                raise CaseError(f"{where}: {k!r} is both excluded and marked")

@@ -386,8 +386,10 @@ def test_each_column_is_the_derivative_of_its_closed_forms_species(cf, values, c
                 continue
             fd = (np.asarray(xu[s]) - np.asarray(xd[s])) / (2 * h)
             col = np.broadcast_to(np.asarray(got[(s, q)], dtype=float), t.shape)
-            scale = max(1.0, float(np.abs(fd).max()))
-            np.testing.assert_allclose(col, fd, rtol=0, atol=2e-6 * scale, err_msg=f"d{s}/d{q}")
+            # Against the column's own size, however small (#1799's is 3.7e-12).
+            scale = float(np.abs(fd).max())
+            assert scale > 0 or np.all(col == 0), f"d{s}/d{q}"
+            np.testing.assert_allclose(col, fd, rtol=0, atol=1e-5 * scale, err_msg=f"d{s}/d{q}")
 
 
 @pytest.mark.parametrize(

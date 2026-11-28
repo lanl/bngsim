@@ -193,7 +193,10 @@ class Ran:
 
 def execute(case: Case, model: bngsim.Model, p: Point, request: dict, atol: float) -> Ran:
     """Run one point on its engine: a time course or a steady state with
-    ``Simulator(method="ode")``, or a time course with ``run_diffrax``."""
+    ``Simulator(method="ode")``, or a time course with ``run_diffrax``. Only
+    the time course takes the case's ``timeout``: ``steady_state`` and
+    ``run_diffrax`` take none, and are bounded by their own step limits and by
+    the nightly's cap on a job."""
     window = case.window(case.values(p.row))
     if isinstance(p.grid, SteadyState):
         sim = bngsim.Simulator(model, method="ode", codegen=CODEGEN[p.engine])
@@ -536,13 +539,26 @@ def check_spec(case: Case) -> list[str]:
             problems.append(f"{where}: the reference gives no crossings: {_first_line(e)}")
             crossings = ()
         request = Offset(SPEC_POINTS, shift=SPEC_SHIFT).request(window, crossings)
+        # A state between each pair of crossings too, so a pulse narrower than
+        # the offsets (#1779's sawtooth, 1e-3 wide) is seen inside.
+        inner = sorted(float(c) for c in crossings)
+        mids = {(a + b) / 2 for a, b in zip(inner, inner[1:], strict=False) if b > a}
+        request["sample_times"] = sorted(set(request["sample_times"]) | mids)
         # Only the states are read, so what the run warns of (a late switch's
         # round-off steps, #1836) is not the check's to report.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            res = bngsim.Simulator(model, method="ode").run(
-                t_span=window, rtol=SPEC_RTOL, atol=SPEC_RTOL * 1e-2, **request
-            )
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                res = bngsim.Simulator(model, method="ode").run(
+                    t_span=window,
+                    rtol=SPEC_RTOL,
+                    atol=SPEC_RTOL * 1e-2,
+                    timeout=case.timeout,
+                    **request,
+                )
+        except bngsim.BngsimError as e:
+            problems.append(f"{where}: the plain run the check reads failed: {_first_line(e)}")
+            continue
         states = list(
             zip(np.asarray(res.time, float), np.asarray(res.species, float), strict=True)
         )
