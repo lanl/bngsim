@@ -73,8 +73,9 @@ WINDOW_JUDGE = Judge(
         "at rtol 1e-6 (20 to 70 times its end value); the kx column and the tighter "
         "tolerances carry the check there. The convergence rows are off: a pulse this narrow "
         "has its k_clock column floor near 1e-5 of itself from the clock's own rounding at "
-        "T = 50 (test_narrow_pulse_clock_column), so its error stops falling at tight rtol "
-        "whatever the engine does (#1776's own row: 5.6x at 1e-9, 72.7x at 1e-11)"
+        "T = 50 (python/tests/test_narrow_pulse_clock_column.py, test_the_issues_own_pulse: an "
+        "ulp of T, 7e-15, against a column moving at 5.5e7), so its error stops falling at "
+        "tight rtol whatever the engine does (#1776's own row: 5.6x at 1e-9, 72.7x at 1e-11)"
     ),
 )
 
@@ -188,7 +189,6 @@ def _marks(shape: str, table, literal: bool = False) -> dict:
 TRIANGLE_MARKS = _marks(
     "triangle",
     {
-        (0.05, "1e-06", True): CUT,
         **{(b, r, True): STALL for b in (0.05, 0.03, 0.01) for r in ("1e-09", "1e-11")},
     },
 )
@@ -235,16 +235,37 @@ def _p(rtol, b=None, cols=True):
 
 
 #: Points whose outcome is a coin flip: each passed on some and failed on
-#: others of 8 to 12 draws of atol, 1e-12 apart, which move the step sequence
-#: by an ulp. No mark can hold them, and they would flap from night to night.
-#: At rtol 1e-6 and 1e-9 every weakly coupled step row is one.
-FLIPS = "a coin flip on the step sequence: it passed and failed over draws of atol 1e-12 apart"
+#: others of 12 runs whose atol differed by 1 part in 1e12, which moves the step
+#: sequence by an ulp (macOS arm64). No mark can hold them, and they would flap
+#: from night to night. Left out, a regression that made them fail every time
+#: would not be seen here; #1779 stays in view at rtol 1e-11 and through the
+#: convergence rows at b = +-1e-10.
+def _flip(passed: int, of: int = 12, extra: str = "") -> str:
+    return (
+        f"a coin flip on the step sequence: passed {passed} of {of} runs whose atol "
+        f"differed by 1 part in 1e12{extra}"
+    )
+
+
 STEP_EXCLUDE = {
-    _key("step", b, r, True): FLIPS for b in (0.08, 0.05, 0.03) for r in ("1e-06", "1e-09")
+    _key("step", b, r, True): _flip(n)
+    for (b, r), n in {
+        (0.08, "1e-06"): 3,
+        (0.08, "1e-09"): 3,
+        (0.05, "1e-06"): 1,
+        (0.05, "1e-09"): 4,
+        (0.03, "1e-06"): 3,
+        (0.03, "1e-09"): 7,
+    }.items()
 }
 SAWTOOTH_EXCLUDE = {
-    _key("sawtooth", 0.05, "1e-06", True): FLIPS,
-    _key("sawtooth", 1e-3, "1e-09", False): FLIPS,
+    _key("sawtooth", 0.05, "1e-06", True): _flip(1),
+    _key("sawtooth", 1e-3, "1e-09", False): _flip(
+        12, extra=", after failing 2 of 8 such runs before"
+    ),
+}
+TRIANGLE_EXCLUDE = {
+    _key("triangle", 0.05, "1e-06", True): _flip(5, extra=", the others cut off at 10 s"),
 }
 
 # The slices hold points whose outcome held on every such draw, and none whose
@@ -424,6 +445,7 @@ CASES = (
         _NOTE.format(shape="triangle")
         + " Judged by each column's window peak: inside the pulse the k_clock column runs "
         "about 3e4 times its end value.",
+        TRIANGLE_EXCLUDE,
     ),
     _clock_case(
         "step", STEP_ROWS, STEP_MARKS, STEP_SLICE, _NOTE.format(shape="step"), STEP_EXCLUDE

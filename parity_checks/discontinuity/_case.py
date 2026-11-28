@@ -439,9 +439,13 @@ class Case:
         """``points`` by convergence group, each loosest rtol first. Only the
         groups with two tolerances or more can be judged for convergence, and
         a group that holds a known failure has no convergence row: its marks
-        already say it is broken, and the fix that clears them moves it too."""
+        already say it is broken, and the fix that clears them moves it too.
+        A point that owes a refusal has no error to fall, so it is in none."""
+        owed = getattr(self.reference, "owed", None)
         out: dict[tuple, list[Point]] = {}
         for p in points:
+            if owed is not None and owed(self.values(p.row), p.sens) is not None:
+                continue
             out.setdefault(p.group, []).append(p)
         return {
             g: sorted(ps, key=lambda p: -p.rtol)

@@ -553,3 +553,19 @@ def test_a_correct_engine_passes_on_a_row_at_one_of_two_instants_a_double_apart(
         k_sens=1e3,
     )
     assert v.outcome == outcome
+
+
+def test_a_group_whose_points_owe_a_refusal_has_no_convergence_row():
+    """Once a bug like #1618 is fixed and its marks come out, its owed points
+    pass as refused, with no ratio. A row over them could only SKIP, and the
+    slice would fail it with nothing wrong in the engine."""
+    base = BY_NAME["periodic_window"].reference
+    columns_owe = ClosedForm(
+        base.fn, base.crossings_fn, owes=lambda p, sens: Owed("no derivative") if sens else None
+    )
+    case = _with("periodic_window", reference=columns_owe, known={}, judge=Judge())
+    pts = case.points()
+    owed_groups = {p.group for p in pts if p.sens}
+    assert owed_groups and not owed_groups & set(case.groups(pts))
+    plain = {p.group for p in pts if not p.sens}
+    assert plain and plain <= set(case.groups(pts))

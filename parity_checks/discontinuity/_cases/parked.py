@@ -168,14 +168,7 @@ CASES = (
             point(1e-6, Uniform(31)),
             point(1e-10, Uniform(31), r=1e-7),
         ),
-        judge=Judge(
-            converge=False,
-            why=(
-                "at r = 1e-7 the 31-row grid goes from 1.7x its tolerance at rtol 1e-8 to 43x at "
-                "1e-10 (#1989's late crossing, smaller there), 1.4 times the convergence "
-                "allowance: a knife edge, where the r = 1e-9 point is marked"
-            ),
-        ),
+        judge=Judge(),
         known={
             "slow_threshold_run|rtol=1e-08,grid=u31,sens=none": Known(
                 1991,

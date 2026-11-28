@@ -332,9 +332,12 @@ LATE_SPEC = Spec(
 )
 
 #: sigma = 2^e - 2, so the crossing is 2.5 before a window that ends at 2^e.
-#: Not 2^40: its plain run at rtol 1e-8 sits at 73% of its allowance (735x its
-#: tolerance), on a knife edge between PASS and DIFF.
-LATE_SIGMA = {e: 2.0**e - 2.0 for e in (20, 30, 46, 50)}
+#: Not 2^30 or 2^40, where the outcome rides on the step sequence: over 2^30 the
+#: columns at rtol 1e-8 failed 3 of 30 runs whose atol differed by 1 part in
+#: 1e12, and its plain run at 1e-10 ranged 6.5x to 854x its tolerance; over 2^40
+#: the plain run at 1e-8 sat at 735x. Over 2^46 and 2^50 every point fails, and
+#: over 2^20 every point passes.
+LATE_SIGMA = {e: 2.0**e - 2.0 for e in (20, 46, 50)}
 
 CASES = (
     *CASES,
@@ -485,9 +488,9 @@ CASES = (
         judge=Judge(
             converge=False,
             why=(
-                "past 2^20 #1836's error grows as rtol tightens, which its marks hold; over 2^30 "
-                "the plain group passes both points but sits at 1.3 times the convergence "
-                "allowance (0.9x at 1e-8, 39.6x at 1e-10), a knife edge"
+                "over 2^46 and 2^50 #1836's error grows as rtol tightens, which its marks hold; "
+                "over 2^20 the column at rtol 1e-10 ranges 18x to 315x its tolerance as atol "
+                "moves by 1 part in 1e12, too near the convergence allowance (about 400x) to hold"
             ),
         ),
         known={
@@ -501,9 +504,6 @@ CASES = (
                 for r in ("1e-08", "1e-10")
                 for q in ("none", "sigma")
             },
-            f"late_switch[sigma={LATE_SIGMA[30]!r}]|rtol=1e-10,grid=sampled2,sens=sigma": Known(
-                1836, AssertionError, "the column is 1.2e-5 off over 2^30"
-            ),
         },
         note=(
             "#1836: a counter from 0.5 switches X on when it reaches sigma = 2^e - 2, 2.5 before "
