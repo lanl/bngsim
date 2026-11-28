@@ -267,9 +267,10 @@ nightly's diff is that and not a regression.
 ## #1915's coincident surfaces and events
 
 Each case sweeps rtol 1e-6 to 1e-12, the grids `u4`, `u31`, `aligned2`,
-`aligned31` and `offset31` (a hair of 1e-4 of t* where a crossing is on the
-state), and a plain run beside one with the columns of its law's parameters (for
-the ties, the rate columns alone as well). Every model keeps a witness clock.
+`aligned31` and `offset31` (a hair of 1e-4 of t* for the cases whose crossings
+are on a species: `coincident_state`, `event_state_reset`,
+`event_cross_switch`), and a plain run beside one with the columns of its law's
+parameters (for the ties, the rate columns alone as well). Every model keeps a witness clock.
 The Antimony cases' rows reach the model through `set_param`, which keeps a
 double's last bit: Antimony's text keeps 15 digits, so a literal
 25.000000000000004 reads back as 25.0.
@@ -280,12 +281,12 @@ double's last bit: Antimony's text keeps 15 digits, so a literal
 | `coincident_and` | `k0 + d1*[t>c1 && t>c2]`: at the tie the c columns owe a refusal; an ulp from it a refusal is permitted | as `coincident_sum` |
 | `coincident_state` | `k0 + d1*[X>th1] + d2*[X>th2]` on a decaying X: at the tie the th columns owe a refusal | th2 = th1, a double either way, 1e-4 and well apart, the tie early |
 | `switch_event` | `piecewise(k1, time > c, k0)`, and an event at te that sets X = a*X + d: at te = c the c and te columns owe a refusal | te = c, a double after and before, 0.5 either way, a = 0 (set) and 0.5, #1627's doubles either way |
-| `event_state_reset` | an event that sets X = a*X + d each time X falls through th | 1, 3, 5, 6 and 15 firings |
+| `event_state_reset` | an event that sets X = a*X + d each time X falls through th | 1, 3, 5, 6 and 16 firings |
 | `event_cross_switch` | `piecewise(k1, X > th, k2)`, and an event at tau that sets X = xr across the switch's surface, with no root | set above, below, before the natural crossing, late |
 | `event_clock_reset` | a counter T, a window on it, and an event that sets T back to 0 | the pulse moved, cut short, before the reset, both, wide, on a faster clock |
 
 Every closed form is checked against central differences of its own species,
-and against its spec integrated branch by branch, resets included, on the rows
+and against its spec integrated branch by branch, resets included, on 16 rows
 whose instants differ (a double apart is two instants at 30 digits).
 
 **The judges.** The state cases take the window peak, as `step_state` does. The
@@ -294,24 +295,34 @@ rtol 1e-12 a healthy run's own global error is tens of times rtol in these
 models (`event_state_reset`'s X(5) is 1.3e-10 off before any event fires), so
 their rows sat on the rule's threshold and changed outcome from run to run.
 `event_clock_reset` takes the window peak too: its pulse is 0.05 wide. k is the
-default everywhere: no passing point exceeds 404 times its tolerance on any run.
+default everywhere: outside the marks and the flips, no point exceeds 404 times
+its tolerance on any run, and no mark falls under 2.7e3.
 Each case says why in its `Judge.why`.
 
-**What the sweep found.** Every point was run 240 times, at the committed atol
-and at `atol_ratio*(1 + d)` for 239 values of d up to 2.5e-11 in size. The 161
-marks fail on all 240 and every other point passes on all 240, apart from the
-51 left out in `_cases/_flips.py`: 48 that changed outcome, nearly all #1799's
-short row, and 3 that passed every run but came within 2 times of the allowance
-on one. As for #1914, that list is what the runs found, not a bound.
+**What the sweep found.** Every point, exclusions included, was run 480 times:
+at the committed atol and at `atol_ratio*(1 + d)` for 239 values of d on a grid
+and 240 at random, |d| up to 2.5e-11. The 161 marks fail on all 480, and every
+other point passes on all 480, apart from the 69 left out in `_cases/_flips.py`
+with their counts. 45 of those are #1799's short row, 9 #2005's misplaced
+crossing and 8 #1997's residue; 7 passed every run but came within 2 times of
+the allowance on one, 2 of them only on a review's draws. As for #1914, that
+list is what the runs found, not a bound: the random set found 13 points the
+grid had not, and a review's 100 more draws 5 more. Across a whole sweep of
+these cases, about 1 run in 25 shows one such point.
 
 * **#2003 (new, silent wrong)**: two rate-law switches on `time()` a double
   apart. In a sensitivity run, the row on one instant carries the other's
-  column jump (`coincident_sum`: dX/dc2 = 0.2463 for 0 at t = 25).
+  column jump (`coincident_sum`: dX/dc2 = 0.2463 for 0 at t = 25). That reads
+  the two instants as two, as #1627 does; if the contract (#1916) makes
+  instants an ulp apart one, the row is right and the marks come out.
 * **#2004 (new)**: an event a double after a row or a stop is refused with
   #950's refusal, though the columns it refuses have values (`switch_event`).
-* **#2005 (new, silent wrong)**: after an event resets a counter clock, a plain
-  run at rtol 1e-12 loses about 1e-8 of a pulse's exposure on some step
-  sequences (`event_clock_reset`; left out as a flip, with its count).
+* **#2005 (new, silent wrong)**: on some step sequences a run at rtol 1e-12
+  locates a crossing on the state about 1e-8 off in time, and the species near
+  it come back off: a counter's pulse loses that much of its exposure, more
+  often after an event resets the counter (`event_clock_reset`), and two
+  thresholds' species come back 6e-9 off (`coincident_state`). Those points are
+  left out as flips, with their counts.
 * **#1646**: with a row on each of two instants a double apart, the sensitivity
   run fails with `CV_TOO_CLOSE` (`coincident_sum`, `switch_event`).
 * **#1799**: rows an ulp off the time asked, on a stop or on a crossing the
@@ -323,4 +334,5 @@ on one. As for #1914, that list is what the runs found, not a bound.
 The ties behave as the contract would want: every tie that owes a refusal gets
 one, by name. The additive pair, the rate columns at every tie, and an event
 that moves the state across a surface come back right on every run.
-`event_state_reset`, `event_cross_switch` and `coincident_state` fail nowhere.
+`event_state_reset` and `event_cross_switch` fail nowhere, and
+`coincident_state` only on its flips.

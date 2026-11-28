@@ -178,6 +178,18 @@ def test_an_event_that_adds_to_a_decaying_state_jumps_its_columns_by_hand():
     assert s_plus[0] == pytest.approx([a * -te * xm, k * d, xm, 1.0])
 
 
+def test_a_reset_that_reads_the_time_jumps_its_columns_by_hand():
+    """X' = -kX, and at t = te the event sets X = X + g*t. Just past te,
+    X = (X- + g*te)*exp(-k(t - te)), so dX/dte = g + k*g*te there, which only the
+    Rt term of the formula gives."""
+    k, te, g, xm = 0.2, 3.0, 0.5, 1.7
+    sm = [[0.0]]  # the te column just before te
+    fm, fp = [-k * xm], [-k * (xm + g * te)]
+    s_plus, tau = reset_saltation(sm, fm, fp, [[1.0]], [g], [[0.0]], [0.0], 1.0, [-1.0])
+    assert tau == pytest.approx([1.0])
+    assert s_plus[0][0] == pytest.approx(g + k * g * te)
+
+
 def _decay_spec(resets, surfaces=()):
     return Spec(
         states=("X",),
@@ -218,8 +230,18 @@ def _decay_spec(resets, surfaces=()):
             ),
             "fires another",
         ),
+        (
+            _decay_spec((Reset("E", lambda x, t, p: -((t - 1) ** 2), lambda x, t, p: {"X": 1}),)),
+            "grazes",
+        ),
     ],
-    ids=["lands-on-a-surface", "true-at-start", "leaves-its-trigger-true", "fires-another"],
+    ids=[
+        "lands-on-a-surface",
+        "true-at-start",
+        "leaves-its-trigger-true",
+        "fires-another",
+        "grazes",
+    ],
 )
 def test_the_branchwise_reference_refuses_a_reset_it_cannot_follow(spec, why):
     with pytest.raises(ReferenceUnavailable, match=why):
@@ -273,43 +295,57 @@ def test_a_record_of_a_case_whose_reset_changed_is_stale():
 
 
 @pytest.mark.parametrize(
-    ("cf", "tie", "near", "apart", "cols", "rates"),
+    ("name", "tie", "near", "far", "cols", "rates", "flat"),
     [
         (
-            CF.coincident_time(True),
-            {"c1": 25.0, "c2": 25.0},
-            {"c1": 25.0, "c2": UP},
-            {"c1": 25.0, "c2": 25.5},
+            "coincident_and",
+            {},
+            {"c2": UP},
+            {"c2": 25.0 + 1e-9},
             C.AND_COLS,
             C.AND_RATES,
+            {"d1": 0.0},
         ),
         (
-            CF.coincident_state(),
-            {"th1": 3.0, "th2": 3.0},
-            {"th1": 3.0, "th2": math.nextafter(3.0, 0)},
-            {"th1": 3.0, "th2": 2.7},
+            "coincident_state",
+            {},
+            {"th2": math.nextafter(3.0, 0)},
+            {"th2": 3.0 * (1 - 1e-9)},
             C.STATE_COLS,
             C.STATE_RATES,
+            {"d2": 0.0},
         ),
         (
-            CF.switch_event(),
-            {"c": 25.0, "te": 25.0},
-            {"c": 25.0, "te": DOWN},
-            {"c": 25.0, "te": 25.5},
+            "switch_event",
+            {},
+            {"te": DOWN},
+            {"te": 25.0 + 1e-9},
             C.SE_COLS,
             C.SE_RATES,
+            {"k1": 0.1},
         ),
     ],
     ids=["and", "state", "switch_event"],
 )
 def test_a_tie_owes_the_refusal_of_its_columns_and_an_ulp_from_it_permits_one(
-    cf, tie, near, apart, cols, rates
+    name, tie, near, far, cols, rates, flat
 ):
-    assert isinstance(cf.owed(tie, cols), Owed) and cf.permitted(tie, cols) is None
-    assert cf.owed(tie, rates) is None and cf.owed(tie, ()) is None
-    assert cf.owed(near, cols) is None and isinstance(cf.permitted(near, cols), Permitted)
-    assert cf.permitted(near, rates) is None
-    assert cf.owed(apart, cols) is None and cf.permitted(apart, cols) is None
+    case = BY_NAME[name]
+    cf = case.reference
+
+    def at(**over):
+        return case.values(tuple(sorted(over.items())))
+
+    t, n, f = at(**tie), at(**near), at(**far)
+    assert isinstance(cf.owed(t, cols), Owed) and cf.permitted(t, cols) is None
+    assert cf.owed(t, rates) is None and cf.owed(t, ()) is None
+    assert cf.owed(n, cols) is None and isinstance(cf.permitted(n, cols), Permitted)
+    assert cf.permitted(n, cols).refusal == CF.TIE_REFUSAL
+    assert cf.permitted(n, rates) is None
+    # 1e-9 apart is far past the few ulps the rule covers.
+    assert cf.owed(f, cols) is None and cf.permitted(f, cols) is None
+    # Where the law has no kink at the tie (a term of 0, equal rates), nothing is owed.
+    assert cf.owed(at(**tie, **flat), cols) is None
 
 
 def test_the_additive_pair_owes_and_permits_nothing_at_its_tie():
@@ -375,6 +411,16 @@ def test_a_refusal_of_another_class_than_permitted_is_not_excused():
     assert S.run_point(other, p).outcome == "UNSUPPORTED"
     with pytest.raises(Exception, match="Forward sensitivity"):
         S.run_point(other, p, strict=True)
+
+
+def test_a_refusal_permitted_at_a_tie_does_not_excuse_another_kind():
+    """#2004's refusal (an event a double after a row) is not the tie's, so a
+    point permitted the tie's refusal still counts it as a refusal."""
+    case = BY_NAME["switch_event"]
+    tied = _permitting(case, refusal=CF.TIE_REFUSAL)
+    p = point(1e-8, Uniform(31), C.SE_RATES, te=UP)
+    row = S.run_point(tied, p)
+    assert row.outcome == "UNSUPPORTED" and row.subclass == "SensitivityRefusedDuringRunError"
 
 
 def test_a_point_that_may_refuse_is_in_no_convergence_group():

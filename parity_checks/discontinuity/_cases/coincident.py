@@ -130,7 +130,8 @@ STATE_JUDGE = Judge(
         "(to e^-2.8 of itself by t = 30) would be judged against its tail. The convergence rows "
         "are off: on the tie at 6 the plain rows on aligned2 and aligned31 reach 66 times their "
         "tolerance at rtol 1e-12 on one run in 240, from at most 3.6 at the looser tolerances, "
-        "and fail the rule there; every point passes on every run"
+        "and fail the rule there. Over 480 runs whose atol differed in its last digits, every "
+        "point outside _flips passes on every run, under 67 times its tolerance"
     ),
 )
 SWITCH_EVENT_JUDGE = Judge(
@@ -140,7 +141,7 @@ SWITCH_EVENT_JUDGE = Judge(
         "back about 8e-11 of itself off, 93 times its tolerance against 7.8 at 1e-10, where X "
         "itself is within 1.5 times its own: its convergence rows fail the rule on 52 to 185 of "
         "240 runs whose atol differed in its last digits. Every passing point stays under 146 "
-        "times its tolerance on every run, 6.9 times under k"
+        "times its tolerance on every one of 480 runs, 6.9 times under k"
     ),
 )
 
@@ -212,8 +213,10 @@ CASES = (
         ),
         note=(
             "X -> Y at k0 + d1*[t>c1] + d2*[t>c2]: two time switches, each adding its own term. "
-            "At c1 = c2 the order does not matter, so every column has its value there, and a "
-            "double apart the run must keep the instants apart."
+            "At c1 = c2 the order does not matter, so every column has its value there. A double "
+            "apart the case holds the run to keeping the two instants apart, as #1627 reads them "
+            "(#2003's marks); if the contract (#1916) makes instants an ulp apart one, those marks "
+            "come out."
         ),
     ),
     Case(

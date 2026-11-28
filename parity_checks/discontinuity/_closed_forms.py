@@ -805,6 +805,10 @@ def abs_bend(x0: float = 10.0):
 #: tie's columns have no value, a run may decline the columns there too
 #: (``Permitted``); whether such instants are kept apart is #1916's to say.
 NEAR_TIE_ULPS = 4
+#: The refusal a run may give an ulp from such a tie: bngsim's refusal of the
+#: parameters whose columns two switches on one instant leave without a value,
+#: and no other (#2004's refusal, of columns that do have one, is not excused).
+TIE_REFUSAL = "SensitivityRefusedForParametersError"
 
 
 def _exact(t, t_star, side):
@@ -861,7 +865,7 @@ def coincident_time(interacting: bool, x0: float = 10.0):
         return _xy_witness(p, t, E, dE, x0)
 
     def owes(p, sens):
-        if interacting and p["c1"] == p["c2"] and {"c1", "c2"} & set(sens):
+        if interacting and p["d1"] != 0 and p["c1"] == p["c2"] and {"c1", "c2"} & set(sens):
             return Owed(
                 "both switches turn the one term on at the same instant: dX/dc1 is 0 from "
                 "below and X*d1 from above, so it has no value"
@@ -870,7 +874,7 @@ def coincident_time(interacting: bool, x0: float = 10.0):
 
     def permits(p, sens):
         if interacting and _near_tie(p["c1"], p["c2"]) and {"c1", "c2"} & set(sens):
-            return Permitted("an ulp from a tie at which the c columns have no value")
+            return Permitted("an ulp from a tie at which the c columns have no value", TIE_REFUSAL)
         return None
 
     return ClosedForm(fn, lambda p: (p["c1"], p["c2"]), owes=owes, permits=permits)
@@ -931,7 +935,7 @@ def coincident_state(x0: float = 10.0):
         return _xy_witness(p, t, -np.log(X / x0), dE, x0)
 
     def owes(p, sens):
-        if p["th1"] == p["th2"] and {"th1", "th2"} & set(sens):
+        if p["d1"] != 0 and p["d2"] != 0 and p["th1"] == p["th2"] and {"th1", "th2"} & set(sens):
             return Owed(
                 "both thresholds are crossed at one instant: from either side the crossing "
                 "time moves with the rate between them, which differs, so dX/dth has no value"
@@ -940,7 +944,9 @@ def coincident_state(x0: float = 10.0):
 
     def permits(p, sens):
         if _near_tie(p["th1"], p["th2"]) and {"th1", "th2"} & set(sens):
-            return Permitted("an ulp from a tie at which the th columns have no value")
+            return Permitted(
+                "an ulp from a tie at which the th columns have no value", TIE_REFUSAL
+            )
         return None
 
     def crossings(p):
@@ -986,7 +992,7 @@ def switch_event(x0: float = 10.0):
         return {"X": X, "T": p["kc"] * t}, cols
 
     def owes(p, sens):
-        if p["c"] == p["te"] and {"c", "te"} & set(sens):
+        if p["d"] != 0 and p["k0"] != p["k1"] and p["c"] == p["te"] and {"c", "te"} & set(sens):
             return Owed(
                 "the event and the switch share their instant: dX/dte is d*k0*e^(..) from "
                 "below and d*k1*e^(..) from above, so it has no value"
@@ -995,7 +1001,9 @@ def switch_event(x0: float = 10.0):
 
     def permits(p, sens):
         if _near_tie(p["c"], p["te"]) and {"c", "te"} & set(sens):
-            return Permitted("an ulp from a tie at which the c and te columns have no value")
+            return Permitted(
+                "an ulp from a tie at which the c and te columns have no value", TIE_REFUSAL
+            )
         return None
 
     return ClosedForm(fn, lambda p: (p["c"], p["te"]), owes=owes, permits=permits)

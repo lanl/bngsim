@@ -42,7 +42,8 @@ RESET_JUDGE = Judge(
     + ". The convergence rows are off: a plain run's own global error at rtol 1e-12 is 35 times "
     "rtol before any firing (X(5) 1.3e-10 off), so its convergence rows fail the rule on every one "
     "of 240 runs whose atol differed in its last digits on 15 groups, and on 1 to 141 of them on 5 "
-    "more. Every point passes on every run, under 338 times its tolerance, 3 times under k",
+    "more. Every point passes on every one of 480 runs, under 338 times its tolerance, 3 times "
+    "under k",
 )
 CROSS_JUDGE = Judge(
     peak="window",
@@ -50,8 +51,8 @@ CROSS_JUDGE = Judge(
     why=_LOCATED.format(what="X falling through th")
     + ". The convergence rows are off: its plain points reach 148 to 203 times their tolerance at "
     "rtol 1e-10 and 1e-12 on aligned rows, and its convergence rows fail the rule on 1 to 148 of "
-    "240 runs whose atol differed in its last digits. Every point passes on every run, under 362 "
-    "times its tolerance, 2.8 times under k",
+    "240 runs whose atol differed in its last digits. Every point passes on every one of 480 "
+    "runs, under 362 times its tolerance, 2.8 times under k",
 )
 RESIDUE = (
     AssertionError,
@@ -341,8 +342,9 @@ CLOCK_RESET_JUDGE = Judge(
         "the pulse those columns keep a residue that does not fall with rtol (dX/dc 9.2e-10 and "
         "dX/dw 1.8e-7 at rtol 1e-10 and 1e-12, the same in the .net spelling: #1997, marked at "
         "1e-12), so the convergence rows are off. Over 240 runs whose atol differed in its last "
-        "digits, every point outside the marks and _flips stays under 404 times its tolerance, "
-        "2.5 times under k, and the lowest mark is 3.9e3"
+        "digits, and 240 more at random, every point outside the marks and _flips stays under "
+        "404 times its tolerance, 2.5 times under k, and the lowest mark is 2.7e3, 2.7 times "
+        "over it"
     ),
 )
 
@@ -378,7 +380,7 @@ CASES = (
                 {"d": 20.0},  # 3 firings
                 {"a": 0.0, "d": 9.0},  # each firing sets X to 9: 5 firings
                 {"k": 0.05},  # one firing, at t = 24.1
-                {"k": 0.3, "d": 2.0},  # 15 firings, every 1.70
+                {"k": 0.3, "d": 2.0},  # 16 firings, every 1.70
                 {"a": 0.5, "d": 6.0},  # each firing halves X and adds 6
             ),
             grids=STATE_GRIDS,
