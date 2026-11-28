@@ -498,7 +498,8 @@ CASES = (
         ),
         slice=(
             point(1e-12, F.Aligned(31), CLOCK_RESET_COLS),
-            point(1e-10, F.Offset(31), CLOCK_RESET_COLS, kc=8.0, c=120.0),
+            point(1e-8, F.Offset(31), CLOCK_RESET_COLS, kc=8.0, c=120.0),
+            point(1e-10, F.Uniform(31), CLOCK_RESET_COLS, kc=8.0, c=120.0),
             point(1e-8, F.Aligned(2), CLOCK_RESET_COLS, c=18.0, tau=16.0),
             point(1e-6, F.Uniform(31), CLOCK_RESET_COLS, w=4.0),
             point(1e-12, F.Uniform(4), (), kc=8.0, c=120.0),

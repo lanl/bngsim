@@ -224,9 +224,9 @@ FLIPS = {
 # +-2.5e-11, half log-uniform in size from 1e-14 to 2.5e-11. The rule is #1914's,
 # and so is the caveat: the list is what those runs found, not a bound. The
 # random set found 13 points the grid had not; a review's 100 further draws
-# found 5 more, and its next 220 found 4 more, each failing or coming close once
+# found 5 more, and its next 440 found 5 more, each failing or coming close once
 # there (counted below as passing all 480 of these runs). Across a whole sweep
-# of these cases, between 1 run in 25 and 1 in 220 shows one such point.
+# of these cases, between 1 run in 25 and 1 in 440 shows one such point.
 
 #: How many runs each #1915 point was read over.
 RUNS_1915 = 480
@@ -306,6 +306,10 @@ FLIPS_1915 = {
     "event_clock_reset[c=120.0,kc=8.0]|rtol=1e-10,grid=aligned31,sens=kx+kc+c+w+tau": (
         455,
         "short",
+    ),
+    "event_clock_reset[c=120.0,kc=8.0]|rtol=1e-10,grid=offset31,sens=kx+kc+c+w+tau": (
+        480,
+        "passed all 480 runs here, but on one of the review's at 908 times its tolerance, 0.91 of the allowance, against a median of 114 here",
     ),
     "event_clock_reset[c=120.0,kc=8.0]|rtol=1e-12,grid=aligned2,sens=none": (
         480,

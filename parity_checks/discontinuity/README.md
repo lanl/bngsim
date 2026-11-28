@@ -304,13 +304,13 @@ Each case says why in its `Judge.why`.
 **What the sweep found.** Every point, exclusions included, was run 480 times:
 at the committed atol and at `atol_ratio*(1 + d)` for 239 values of d on a grid
 and 240 at random, |d| up to 2.5e-11. The 161 marks fail on all 480, and every
-other point passes on all 480, apart from the 73 left out in `_cases/_flips.py`
+other point passes on all 480, apart from the 74 left out in `_cases/_flips.py`
 with their counts. 45 of those are #1799's short row, 10 #2005's misplaced
-crossing and 8 #1997's residue; 10 passed every run but came within 2 times of
-the allowance on one, 5 of them only on a review's draws. As for #1914, that
+crossing and 8 #1997's residue; 11 passed every run but came within 2 times of
+the allowance on one, 6 of them only on a review's draws. As for #1914, that
 list is what the runs found, not a bound: the random set found 13 points the
-grid had not, and a review's 320 more draws 9 more. Across a whole sweep of
-these cases, between 1 run in 25 and 1 in 220 shows one such point.
+grid had not, and a review's 540 more draws 10 more. Across a whole sweep of
+these cases, between 1 run in 25 and 1 in 440 shows one such point.
 
 * **#2003 (new, silent wrong)**: two rate-law switches on `time()` a double
   apart. In a sensitivity run, the row on one instant carries the other's
