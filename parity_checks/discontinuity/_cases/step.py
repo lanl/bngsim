@@ -253,9 +253,9 @@ CUBE_SPEC = Spec(
     x0=lambda p: {"A()": 1, "Y()": 0},
 )
 
-#: c by ulp offset of thr. On macOS arm64 the compiled run never takes the
-#: switch at -5, -3, 0, +3 and +6 (#1802); at every offset both engines take it
-#: about 7e-13 of A late (#1989).
+#: c by ulp offset of thr. On macOS arm64 and Linux x86_64 alike the compiled
+#: run never takes the switch at -5, -3, 0, +3 and +6 (#1802); at every offset
+#: both engines take it about 7e-13 of A late (#1989).
 CUBE_C = {
     -6: 1.0000000599999967,
     -5: 1.0000000599999974,
