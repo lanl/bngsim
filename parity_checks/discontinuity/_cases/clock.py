@@ -240,10 +240,10 @@ def _p(rtol, b=None, cols=True):
 #: from night to night. Left out, a regression that made them fail every time
 #: would not be seen here; #1779 stays in view at rtol 1e-11 and through the
 #: convergence rows at b = +-1e-10.
-def _flip(passed: int, of: int = 12, extra: str = "") -> str:
+def _flip(passed: int, of: int = 12, extra: str = "", rare: bool = False) -> str:
     return (
-        f"a coin flip on the step sequence: passed {passed} of {of} runs whose atol "
-        f"differed by 1 part in 1e12{extra}"
+        f"a{' rare' if rare else ''} coin flip on the step sequence: passed {passed} of {of} "
+        f"runs whose atol differed by 1 part in 1e12{extra}"
     )
 
 
@@ -261,11 +261,14 @@ STEP_EXCLUDE = {
 SAWTOOTH_EXCLUDE = {
     _key("sawtooth", 0.05, "1e-06", True): _flip(1),
     _key("sawtooth", 1e-3, "1e-09", False): _flip(
-        12, extra=", after failing 2 of 8 such runs before"
+        12, extra=", after failing 2 of 8 such runs before", rare=True
     ),
 }
 TRIANGLE_EXCLUDE = {
     _key("triangle", 0.05, "1e-06", True): _flip(5, extra=", the others cut off at 10 s"),
+    _key("triangle", 0.03, "1e-06", True): _flip(
+        11, extra=", the other cut off at 10 s (and 10 of 10 in another set)", rare=True
+    ),
 }
 
 # The slices hold points whose outcome held on every such draw, and none whose
