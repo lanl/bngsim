@@ -17,6 +17,10 @@ sample at a crossing time has both of its limits. No bngsim here.
 Below those, one closed form per #1913 case, each its case's model written
 out (an event as a jump of the species it resets), and two (``cube_switch``,
 ``counter_onset``) taken at 30 digits by mpmath where a double would not do.
+
+Last, #1914's families: ``pulse_exposure`` (the pulse shapes on a condition
+that reads ``time()``, a counter clock, or #1776's residual), ``level_step``,
+and three on a decaying state (``state_step``, ``min_bend``, ``abs_bend``).
 """
 
 from __future__ import annotations
@@ -489,3 +493,301 @@ def slow_threshold():
         return {"A()": A, "Y()": Y}, {}
 
     return ClosedForm(fn, lambda p: ((5.0 - p["a0"]) / p["r"],))
+
+
+# ── #1914: the families, each swept ─────────────────────────────────────────
+#
+# Every pulse, step and sawtooth case reads one condition variable that is
+# linear in t: u = a*t - b*T, with a clock T = T0 + k_clock*t. So u runs at
+# r = a - b*k_clock from u(0) = -b*T0, and u - c reaches an offset o at
+# t = (c + b*T0 + o)/r, a formula. What the condition reads fixes a and b. A
+# case that reads time() keeps the clock as a witness: T's exact value says
+# which time the state the run reports belongs to.
+#
+# The pulse a shape h makes on X -> Y is an exposure E = kx*(H(v) - H(v0))/r
+# over v = u - c, from v0 = -c - b*T0 at t = 0, with H the integral of h. Every
+# shape with a width w is a scale family in it, h(v) = phi(v/w)/w, so
+# dH/dw = -(v/w)*h(v). Each column is the chain rule through v, v0 and r.
+
+#: What a condition reads: (a, b), or None where the case's parameters a and b
+#: give them (#1776's residual a*time() - b*Tobs).
+LINES = {"time": (1.0, 0.0), "clock": (0.0, -1.0), "coupled": None}
+
+
+class _Line:
+    """u = a*t - b*(T0 + k_clock*t) at a row's values, and the derivatives of
+    v = u - c, v0 = v(0) and r along it, by parameter."""
+
+    def __init__(self, p: dict, reads: str):
+        fixed = LINES[reads]
+        self.reads = reads
+        self.a, self.b = fixed if fixed is not None else (p["a"], p["b"])
+        self.kc, self.T0, self.c = p.get("k_clock", 0.0), p.get("T0", 0.0), p["c"]
+        self.r = self.a - self.b * self.kc
+        # The parameters the line moves with: a and b only where they are
+        # the case's; k_clock and T0 where the model has a clock.
+        self.params = ["c"] + [q for q in ("k_clock", "T0") if q in p]
+        if fixed is None:
+            self.params += ["a", "b"]
+
+    def at(self, o: float) -> float:
+        """The time u - c reaches o."""
+        return (self.c + self.b * self.T0 + o) / self.r
+
+    def v(self, t):
+        return self.r * t - (self.c + self.b * self.T0)
+
+    @property
+    def v0(self) -> float:
+        return -(self.c + self.b * self.T0)
+
+    def dv(self, q: str, t):
+        zero = np.zeros_like(t)
+        return {
+            "c": zero - 1.0,
+            "k_clock": -self.b * t,
+            "T0": zero - self.b,
+            "a": t,
+            "b": -(self.T0 + self.kc * t),
+        }[q]
+
+    def dv0(self, q: str) -> float:
+        return {"c": -1.0, "k_clock": 0.0, "T0": -self.b, "a": 0.0, "b": -self.T0}[q]
+
+    def dr(self, q: str) -> float:
+        return {"c": 0.0, "k_clock": -self.b, "T0": 0.0, "a": 1.0, "b": -self.kc}[q]
+
+
+def _p_window(v, at, w):
+    return np.where(at(0.0) & ~at(w), 1.0 / w, 0.0)
+
+
+def _P_window(v, at, w):
+    return np.clip(v, 0.0, w) / w
+
+
+def _p_gauss(v, at, w):
+    s = w / 4
+    return np.exp(-((v / s) ** 2)) / (2 * s * math.sqrt(math.pi))
+
+
+_erf = np.vectorize(math.erf, otypes=[float])
+
+
+def _P_gauss(v, at, w):
+    return (1.0 + _erf(np.asarray(v, dtype=float) / (w / 4))) / 4
+
+
+#: Each shape over v = u - c: (h, H, the offsets of v where a switch sits, the
+#: offset of its middle, whether it has a width). ``at(o)`` is the indicator
+#: that the crossing at offset o is past, read through ``past()`` so a sample
+#: on it has both limits. The step, triangle and sawtooth are #1776's
+#: (``SHAPES``); the window is a rectangle of area 1 on [0, w), and the
+#: Gaussian has the triangle's area, 1/2, and s = w/4: the corner-free control.
+PULSES = {
+    "step": (
+        lambda v, at, w: np.where(at(0.0), 1.0, 0.0),
+        lambda v, at, w: np.where(at(0.0), np.maximum(v, 0.0), 0.0),
+        lambda w: (0.0,),
+        None,
+        False,
+    ),
+    "window": (_p_window, _P_window, lambda w: (0.0, w), lambda w: w / 2, True),
+    "triangle": (
+        lambda v, at, w: _h_triangle(v, None, w),
+        lambda v, at, w: _H_triangle(v, None, w),
+        lambda w: (-w / 2, 0.0, w / 2),
+        lambda w: 0.0,
+        True,
+    ),
+    "sawtooth": (
+        lambda v, at, w: _h_sawtooth(v, at(0.0), w),
+        lambda v, at, w: _H_sawtooth(v, at(0.0), w),
+        lambda w: (0.0, w),
+        lambda w: w / 2,
+        True,
+    ),
+    "gauss": (_p_gauss, _P_gauss, lambda w: (), lambda w: 0.0, True),
+}
+
+
+def _unit_exposure(p: dict, t, side: str, shape: str, reads: str):
+    """``U = (H(v) - H(v0))/r`` and its derivatives by every parameter it
+    moves with (the line's, and w), so that a pulse of height kx is ``kx*U``."""
+    h, H, offsets, _, has_w = PULSES[shape]
+    L = _Line(p, reads)
+    w = float(p.get("w", 0.0))
+    if has_w and not w > 0:
+        raise ValueError(f"a {shape} needs w > 0, not {w}")
+    if not L.r > 0:
+        raise ValueError(f"the condition must move forward: r = {L.r}")
+    offs = offsets(w)
+    if offs and not L.v0 < min(offs):
+        raise ValueError(
+            f"the {shape} must lie wholly ahead of t = 0: it starts at v = {min(offs)}, "
+            f"and v(0) = {L.v0}"
+        )
+
+    def at(o):
+        return past(t, L.at(o), side)
+
+    def never(o):
+        return np.zeros(np.shape(L.v0), dtype=bool)
+
+    v, v0 = L.v(t), np.asarray(L.v0)
+    hv, h0 = h(v, at, w), h(v0, never, w)
+    U = (H(v, at, w) - H(v0, never, w)) / L.r
+    dU = {q: (hv * L.dv(q, t) - h0 * L.dv0(q)) / L.r - U / L.r * L.dr(q) for q in L.params}
+    if has_w:
+        dU["w"] = (-(v / w) * hv + (v0 / w) * h0) / L.r
+    return L, U, dU
+
+
+def _xy(p, t, L, E, dE, x0):
+    """X -> Y at exposure E, and the witness clock T where the model has one."""
+    X = x0 * np.exp(-E)
+    species = {"X()": X, "Y()": x0 - X}
+    cols = {}
+    for q, d in dE.items():
+        cols[("X()", q)] = -X * d
+        cols[("Y()", q)] = X * d
+    if "k_clock" in p:
+        species["T()"] = L.T0 + L.kc * t
+        for q in dE:
+            cols[("T()", q)] = t if q == "k_clock" else np.ones_like(t) if q == "T0" else 0 * t
+    return species, cols
+
+
+def pulse_exposure(shape: str, reads: str, x0: float = 10.0):
+    """``X -> Y`` at ``kx*h(u - c)`` for one of ``PULSES``, on a condition that
+    reads ``time()``, the clock ``Tobs`` (from ``T0`` at ``k_clock``), or
+    #1776's ``a*time() - b*Tobs``, from ``X = x0``. A shape of compact support
+    must lie wholly ahead of t = 0; the Gaussian's tail before 0 is taken off.
+    Agrees with ``clock_exposure`` where both apply (a frame test holds them
+    together), and names the stretch around each pulse's middle for
+    ``window_peak``, which a Gaussian narrower than its uniform scan needs."""
+    _, _, offsets, centre, has_w = PULSES[shape]
+
+    def fn(p, t, side):
+        L, U, dU = _unit_exposure(p, t, side, shape, reads)
+        kx = p["kx"]
+        dE = {"kx": U, **{q: kx * d for q, d in dU.items()}}
+        return _xy(p, t, L, kx * U, dE, x0)
+
+    def crossings(p):
+        L = _Line(p, reads)
+        return tuple(L.at(o) for o in offsets(p.get("w", 0.0)))
+
+    def peaks(p):
+        L, w = _Line(p, reads), p.get("w", 0.0)
+        return ((L.at(centre(w) - 2 * w), L.at(centre(w) + 2 * w)),)
+
+    return ClosedForm(fn, crossings, peaks_fn=peaks if has_w else None)
+
+
+def level_step(reads: str, x0: float = 10.0):
+    """``X -> Y`` at ``if(u > c, k1, k0)``: a rate that steps from k0 to k1
+    (up or down) as the condition crosses c. E = k0*t + (k1 - k0)*U, with U
+    the unit step's exposure."""
+
+    def fn(p, t, side):
+        L, U, dU = _unit_exposure(p, t, side, "step", reads)
+        k0, k1 = p["k0"], p["k1"]
+        dE = {"k0": t - U, "k1": U, **{q: (k1 - k0) * d for q, d in dU.items()}}
+        return _xy(p, t, L, k0 * t + (k1 - k0) * U, dE, x0)
+
+    return ClosedForm(fn, lambda p: (_Line(p, reads).at(0.0),))
+
+
+def state_step(x0: float = 10.0):
+    """``X -> Y`` at ``if(X > th, k1, k2)``: X switches its own decay rate as
+    it falls through th, at ``t* = ln(x0/th)/k1``. Past t*,
+    ``X = th*exp(-k2(t - t*))``, so its k1 column jumps there by the saltation
+    term, ``-th*t*(k2/k1 - 1)``, unless k1 = k2."""
+
+    def fn(p, t, side):
+        k1, k2, th = p["k1"], p["k2"], p["th"]
+        ts = math.log(x0 / th) / k1
+        on = past(t, ts, side)
+        X = np.where(on, th * np.exp(-k2 * (t - ts)), x0 * np.exp(-k1 * t))
+        dX = {
+            "k1": np.where(on, -X * k2 * ts / k1, -t * X),
+            "k2": np.where(on, -(t - ts) * X, 0.0),
+            "th": np.where(on, X / th * (1 - k2 / k1), 0.0),
+        }
+        cols = {}
+        for q, d in dX.items():
+            cols[("X()", q)] = d
+            cols[("Y()", q)] = -d
+        return {"X()": X, "Y()": x0 - X}, cols
+
+    return ClosedForm(fn, lambda p: (math.log(x0 / p["th"]) / p["k1"],))
+
+
+def min_bend(x0: float = 10.0):
+    """``X -> 0`` at kd, and ``0 -> Y`` at ``min(vmax, k*X)``: Y is made at
+    vmax until k*X falls through it at ``t* = ln(k*x0/vmax)/kd``, then at k*X.
+    Where k*x0 <= vmax there is no crossing, and Y is made at k*X throughout.
+    The rate has a corner at t*, not a jump, so every column is continuous."""
+
+    def t_star(p):
+        k, kd, vmax = p["k"], p["kd"], p["vmax"]
+        return math.log(k * x0 / vmax) / kd if k * x0 > vmax else None
+
+    def fn(p, t, side):
+        k, kd, vmax = p["k"], p["kd"], p["vmax"]
+        X = x0 * np.exp(-kd * t)
+        ts = t_star(p)
+        zero = np.zeros_like(t)
+        if ts is None:  # k*X stays below vmax: Y' = k*X throughout
+            Y = k * (x0 - X) / kd
+            dY = {
+                "vmax": zero,
+                "k": Y / k,
+                "kd": k * (X * (t / kd + 1 / kd**2) - x0 / kd**2),
+            }
+        else:
+            on = past(t, ts, side)
+            Y = np.where(on, vmax * ts + (vmax - k * X) / kd, vmax * t)
+            dY = {
+                "vmax": np.where(on, ts, t),
+                "k": np.where(on, (vmax / k - X) / kd, 0.0),
+                "kd": np.where(
+                    on, k * X * (t / kd + 1 / kd**2) - vmax * (ts / kd + 1 / kd**2), 0.0
+                ),
+            }
+        cols = {("Y()", q): d for q, d in dY.items()}
+        cols.update({("X()", "kd"): -t * X, ("X()", "k"): zero, ("X()", "vmax"): zero})
+        return {"X()": X, "Y()": Y}, cols
+
+    return ClosedForm(fn, lambda p: () if t_star(p) is None else (t_star(p),))
+
+
+def abs_bend(x0: float = 10.0):
+    """``X -> 0`` at kd, and ``0 -> Y`` at ``kx*abs(X - th)``, from ``X = x0 > th``:
+    the rate falls to 0 as X passes th at ``t* = ln(x0/th)/kd`` and rises again,
+    a corner of abs. So ``Y = kx*((x0 - X)/kd - th*t)`` before t* and
+    ``kx*((x0 - 2*th + X)/kd + th*(t - 2*t*))`` after it."""
+
+    def fn(p, t, side):
+        kx, th, kd = p["kx"], p["th"], p["kd"]
+        ts = math.log(x0 / th) / kd
+        on = past(t, ts, side)
+        X = x0 * np.exp(-kd * t)
+        inner = np.where(on, (x0 - 2 * th + X) / kd + th * (t - 2 * ts), (x0 - X) / kd - th * t)
+        dY = {
+            "kx": inner,
+            "th": kx * np.where(on, t - 2 * ts, -t),
+            "kd": kx
+            * np.where(
+                on,
+                -(x0 - 2 * th + X) / kd**2 - t * X / kd + 2 * th * ts / kd,
+                -(x0 - X) / kd**2 + t * X / kd,
+            ),
+        }
+        zero = np.zeros_like(t)
+        cols = {("Y()", q): d for q, d in dY.items()}
+        cols.update({("X()", "kd"): -t * X, ("X()", "kx"): zero, ("X()", "th"): zero})
+        return {"X()": X, "Y()": kx * inner}, cols
+
+    return ClosedForm(fn, lambda p: (math.log(x0 / p["th"]) / p["kd"],))

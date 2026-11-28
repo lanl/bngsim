@@ -40,7 +40,7 @@ from _core.versions import git_rev  # noqa: E402
 #: The cap on one job, a case's row: up to 40 points and their convergence
 #: rows, and the reference solve. Each point is also cut by bngsim's own
 #: ``timeout`` (``Case.timeout``), so a stall costs its point that long and no
-#: more (#1779's stalls are cut at 10 s). The 77 jobs take about 50 s on four
+#: more (#1779's stalls are cut at 10 s). The 151 jobs take about 64 s on four
 #: workers on an M4 Max; the cap is for a job that hangs outside a run, and
 #: three of them on one worker fit the workflow's 60 minutes.
 DEFAULT_TIMEOUT = 900.0
