@@ -23,10 +23,12 @@ from __future__ import annotations
 
 import re
 import warnings
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from bngsim._exceptions import ConversionError, ConversionWarning
+from bngsim.convert import _frozen
 from bngsim.convert._sbml_writer import _LOG_TOKEN
 
 if TYPE_CHECKING:
@@ -122,7 +124,9 @@ def _psvs_needs_per_species_divide(rxn: dict[str, Any], species: list[dict[str, 
     return next(iter(divisors)) != 1.0 and not _flux_expandable(rxn)
 
 
-def capability_report(model: Model) -> dict[str, list[str]]:
+def capability_report(
+    model: Model, *, read_by_actions: Iterable[str] = ()
+) -> dict[str, list[str]]:
     """Inspect a model for constructs the plain ``.net`` text format cannot carry.
 
     Returns ``{"dropped": [...], "lossy": [...], "bngsim_only": [...]}`` of
@@ -251,7 +255,32 @@ def capability_report(model: Model) -> dict[str, list[str]]:
             "species' own columns can be wrong there"
         )
 
+    # Issue #1792: a parameter folded at load is left out where nothing in the
+    # network reads it, and marked for bngsim's reader where something does.
+    left_out, marked = _folded_parameters(model, read_by_actions)
+    gone, kept = _frozen.notes(left_out, marked)
+    dropped += gone
+    bngsim_only += kept
+
     return {"dropped": dropped, "lossy": lossy, "bngsim_only": bngsim_only}
+
+
+def _folded_parameters(
+    model: Model, read_by_actions: Iterable[str] = ()
+) -> tuple[list[str], list[str]]:
+    """The frozen parameters :func:`write_net` leaves out, and the ones it
+    marks, read off the text it writes (:mod:`bngsim.convert._frozen`).
+    *read_by_actions* names what actions run on the network read, which
+    stays."""
+    if not _frozen.has_folded(model):
+        return [], []
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # the writer's own, said when it writes
+            text = "\n".join(_net_lines(model, None, "model"))
+    except Exception:  # whatever stops the writer stops it at the write, in its words
+        return [], []
+    return _frozen.fold(model, text, read_by_actions)[1:]
 
 
 def _apply_capability_policy(
@@ -673,6 +702,7 @@ def write_net(
     strict: bool = True,
     header: str | None = None,
     model_name: str | None = None,
+    read_by_actions: Iterable[str] = (),
 ) -> str:
     """Serialize ``model`` to BioNetGen ``.net`` text.
 
@@ -689,12 +719,39 @@ def write_net(
     header : str | None
         Optional comment text placed at the top of the file (each line is
         prefixed with ``# ``).
+    read_by_actions : iterable of str
+        Names that actions to be run on the network read in a value to
+        evaluate (:func:`bngsim.convert._frozen.names_read` of the protocol);
+        a ``str`` is taken as one name.
+        A parameter folded at load (``Model.frozen_params``) that nothing in
+        the network reads is left out of it, unless it is among these: then it
+        stays, marked, so that the actions find it (issue #1792).
 
     Returns
     -------
     str
         The ``.net`` text.
     """
+    name = model_name or getattr(model, "name", None) or "model"
+    read_by_actions = _frozen.as_names(read_by_actions)  # used twice below
+    _apply_capability_policy(
+        capability_report(model, read_by_actions=read_by_actions),
+        strict=strict,
+        model_name=str(name),
+    )
+    # Issue #1792: the parameters folded at load, left out or marked.
+    lines = _net_lines(model, header, str(name))
+    text = _frozen.fold(model, "\n".join(lines), read_by_actions)[0]
+    if out_path is not None:
+        # UTF-8, which the loader reads, whatever the locale: in the locale's
+        # encoding a Latin-1 or cp1252 locale (Windows) wrote `Aµ()` as a byte
+        # the loader refuses, and could not write `AΩ()` at all (issue #1653).
+        Path(out_path).write_text(text, encoding="utf-8")
+    return text
+
+
+def _net_lines(model: Model, header: str | None, name: str) -> list[str]:
+    """The lines of the ``.net`` for *model*, every parameter written."""
     core = model._core
     data = core.codegen_data()
     params = data["parameters"]
@@ -703,9 +760,6 @@ def write_net(
     observables = data["observables"]
     functions = data["functions"]
     reactions = data["reactions"]
-
-    name = model_name or getattr(model, "name", None) or "model"
-    _apply_capability_policy(capability_report(model), strict=strict, model_name=str(name))
 
     species_names = [s["name"] for s in species]
     func_names = {f["name"] for f in functions}
@@ -849,11 +903,4 @@ def write_net(
     lines.extend(rxn_lines)
     lines.append("end reactions")
     lines.append("")
-
-    text = "\n".join(lines)
-    if out_path is not None:
-        # UTF-8, which the loader reads, whatever the locale: in the locale's
-        # encoding a Latin-1 or cp1252 locale (Windows) wrote `Aµ()` as a byte
-        # the loader refuses, and could not write `AΩ()` at all (issue #1653).
-        Path(out_path).write_text(text, encoding="utf-8")
-    return text
+    return lines

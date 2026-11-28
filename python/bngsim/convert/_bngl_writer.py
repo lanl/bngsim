@@ -43,10 +43,12 @@ from __future__ import annotations
 import math
 import re
 import warnings
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from bngsim._exceptions import ConversionError, ConversionWarning
+from bngsim.convert import _frozen
 from bngsim.convert._net_writer import (
     _expand_functional_reactions,
     _flux_expandable,
@@ -208,7 +210,7 @@ _EVENT_GENERIC = object()  # sentinel: caller did not classify the events
 
 
 def bngl_capability_report(
-    model: Model, *, event_override: Any = _EVENT_GENERIC
+    model: Model, *, event_override: Any = _EVENT_GENERIC, read_by_actions: Iterable[str] = ()
 ) -> dict[str, list[str]]:
     """Inspect a model for constructs the cBNGL writer (deliverable 1) cannot carry.
 
@@ -442,7 +444,32 @@ def bngl_capability_report(
             "semantics from_net reads back; a per-species amount factor would mis-scale"
         )
 
+    # Issue #1792: a parameter folded at load is left out where nothing in the
+    # model block reads it, and marked for bngsim's reader where something does.
+    left_out, marked = _folded_parameters(model, read_by_actions)
+    gone, kept = _frozen.notes(left_out, marked)
+    dropped += gone
+    bngsim_only += kept
+
     return {"dropped": dropped, "lossy": lossy, "bngsim_only": bngsim_only}
+
+
+def _folded_parameters(
+    model: Model, read_by_actions: Iterable[str] = ()
+) -> tuple[list[str], list[str]]:
+    """The frozen parameters :func:`write_bngl` leaves out, and the ones it
+    marks, read off the model block it writes (:mod:`bngsim.convert._frozen`).
+    *read_by_actions* names what the actions after the block read, which
+    stays."""
+    if not _frozen.has_folded(model):
+        return [], []
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # the writer's own, said when it writes
+            block = _bngl_text(model, "model", None)[0]
+    except Exception:  # whatever stops the writer stops it at the write, in its words
+        return [], []
+    return _frozen.fold(model, block, read_by_actions)[1:]
 
 
 def _apply_capability_policy(
@@ -577,6 +604,13 @@ def write_bngl(
         ``setConcentration`` state changes. Its ``StateChange.target`` is a
         *codegen species name*, which this writer translates to the
         compartment-qualified pattern (``@comp:Mol()``) the model declares.
+        A parameter folded at load is left out or marked by what the model
+        block reads and by what the actions read in a value to evaluate
+        (``setConcentration("A()", "f*0.5")`` keeps ``f``, marked; issue
+        #1792). What an action sets is no read: a ``setParameter`` on a
+        parameter that is left out names one the block does not declare, and
+        BNG2.pl aborts on it, as ``set_param`` on the source model refuses a
+        write that changes it.
     event_override : list[str] | sentinel
         Forwarded to :func:`bngl_capability_report` — the orchestrator's event
         classification (empty list = all fixed-time, carried into ``protocol``).
@@ -588,6 +622,24 @@ def write_bngl(
         followed by a ``begin actions`` block when ``protocol`` is given. Without
         actions, append a ``generate_network`` action to run it through ``BNG2.pl``.
     """
+    name = model_name or getattr(model, "name", None) or "model"
+    reads = _frozen.names_read(protocol)
+    _apply_capability_policy(
+        bngl_capability_report(model, event_override=event_override, read_by_actions=reads),
+        strict=strict,
+        model_name=str(name),
+    )
+    block, actions = _bngl_text(model, str(name), protocol)
+    # Issue #1792: the parameters folded at load, left out or marked.
+    text = _frozen.fold(model, block, reads)[0] + actions
+    if out_path is not None:
+        Path(out_path).write_text(text, encoding="utf-8")
+    return text
+
+
+def _bngl_text(model: Model, name: str, protocol: Any) -> tuple[str, str]:
+    """The model block for *model*, every parameter written, and the actions
+    that follow it (empty without a protocol)."""
     core = model._core
     data = core.codegen_data()
     params = data["parameters"]
@@ -598,13 +650,6 @@ def write_bngl(
     # name, so emitting each repeat would "match a previously defined variable".
     functions = _dedup_functions(data["functions"])
     reactions = data["reactions"]
-
-    name = model_name or getattr(model, "name", None) or "model"
-    _apply_capability_policy(
-        bngl_capability_report(model, event_override=event_override),
-        strict=strict,
-        model_name=str(name),
-    )
 
     init_state = list(model.get_state())
     func_names = {f["name"] for f in functions}
@@ -799,18 +844,15 @@ def write_bngl(
     lines.append("end reaction rules")
     lines.append("")
     lines.append("end model")
+    block = "\n".join(lines) + "\n"
 
     # ── actions (SBML events → BNGL protocol, #224 phase 2) ────────────────
+    actions = ""
     if protocol is not None and not protocol.is_empty:
-        lines.append("")
         # The model's derived parameters, so a warning follows a change made
         # through one (kd = A0: a species set to kd*2 follows A0).
-        lines.append(_actions_block(protocol, mol_names, species_comp, species, derived))
-
-    text = "\n".join(lines) + "\n"
-    if out_path is not None:
-        Path(out_path).write_text(text, encoding="utf-8")
-    return text
+        actions = "\n" + _actions_block(protocol, mol_names, species_comp, species, derived) + "\n"
+    return block, actions
 
 
 def _derived_parameters(data: dict[str, Any]) -> dict[str, str]:

@@ -66,6 +66,12 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
                            the parameters the expression reads are refused for
                            writing in the model built from this dictionary
                            (``Model.frozen_params``, issue #711)
+            folded_at_load : list of (parameter, reason), one for each
+                           ``folded_at_load=`` comment on a parameter line,
+                           which ``sbml_to_net`` writes for a parameter that
+                           was folded into a number when the SBML was loaded
+                           and that the network or its actions still read. Each is refused
+                           for writing too (issue #1792)
 
         Values are evaluated: a parameter's is the number ``Model.from_net``
         puts in its slot, and a species whose initial concentration names a
@@ -139,9 +145,10 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
     # left to reshape here. Absolute, so a build after a change of working
     # directory still finds a relative tfun file.
     parsed["net_file_dir"] = os.path.abspath(parsed["net_file_dir"])
-    from bngsim._model import _unit_conversions_in
+    from bngsim._model import _file_text, _folded_at_load_in, _unit_conversions_in
 
     parsed["unit_conversions"] = _unit_conversions_in(path)
+    parsed["folded_at_load"] = _folded_at_load_in(_file_text(path))
     return parsed
 
 
@@ -200,6 +207,7 @@ def build_model_from_parsed(parsed: dict[str, Any]):
     from bngsim._model import (
         Model,
         _ar_report_map_from_net,
+        _folded_at_load,
         _mark_ar_targets_continuous,
         _unit_conversion_folds,
     )
@@ -307,4 +315,5 @@ def build_model_from_parsed(parsed: dict[str, Any]):
     model._ar_report_map = _ar_report_map_from_net(core)
     _mark_ar_targets_continuous(core, model._ar_report_map)
     model._frozen_params = _unit_conversion_folds(parsed.get("unit_conversions"), core)
+    model._frozen_params.update(_folded_at_load(parsed.get("folded_at_load"), core))
     return model
