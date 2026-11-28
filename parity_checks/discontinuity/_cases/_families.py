@@ -220,35 +220,6 @@ def family_case(
     )
 
 
-__all__ = [
-    "GRIDS",
-    "Aligned",
-    "Offset",
-    "Uniform",
-    "at25",
-    "base_params",
-    "columns",
-    "family_case",
-    "net",
-    "spec",
-    "switches",
-]
-
-
-def cover(shape: str, reads: str, **row) -> tuple:
-    """A slice that takes every tolerance, grid and column set once, at one row."""
-    from _case import point
-
-    cols = columns(shape, reads)
-    return (
-        point(1e-6, Uniform(4), cols, **row),
-        point(1e-8, Uniform(31), (), **row),
-        point(1e-10, Aligned(2), cols, **row),
-        point(1e-12, Aligned(31), cols, **row),
-        point(1e-8, Offset(31), cols, **row),
-    )
-
-
 # ── Marks and exclusions ────────────────────────────────────────────────────
 
 #: A grid by its label, for writing marks.

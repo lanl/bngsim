@@ -281,3 +281,38 @@ def test_a_mark_at_a_key_the_sweep_has_not_is_refused():
     stray = {"step_time|rtol=1e-12,grid=u4,sens=k0+k1+c,engine=diffrax": None}
     with pytest.raises(CaseError):
         dataclasses.replace(case, known={**case.known, **stray}).validate()
+
+
+@pytest.mark.parametrize("reads", ["time", "clock"])
+def test_a_gaussian_begun_before_its_tail_has_fallen_takes_the_tail_off(reads):
+    """A Gaussian whose middle is 0.5 from t = 0 and s = 1 has a fifth of its
+    density there: E counts it from t = 0, and the columns of c and w carry
+    the tail's own term (``h0``), which a pulse far from t = 0 never sees."""
+    p = {"kx": 1.0, "c": 0.5, "w": 4.0}
+    if reads == "clock":
+        p.update({"k_clock": 1.0, "T0": 0.0})
+    cf = CF.pulse_exposure("gauss", reads)
+    x, _ = cf.fn(p, np.array([0.0]), "right")
+    assert x["X()"][0] == 10.0  # nothing before t = 0
+    _fd_check(cf, p, [q for q in p if q != "T0"])
+
+
+def test_the_state_steps_offset_lies_outside_its_crossings_uncertainty():
+    """Offset's default hair, 1e-9 of t*, lies inside a state switch's own
+    crossing uncertainty at rtol 1e-6 (about rtol*X/|X'|), so a correct run can
+    read either side there and its th column, which jumps by 4, fails; the
+    case's 1e-4 lies outside it."""
+    import _sweep as S
+    from _case import Offset, point
+
+    case = BY_NAME["step_state"]
+    cols = ("k1", "k2", "th")
+    p_case = point(1e-6, case.axes.grids[-1], cols, k2=1.0)
+    hair = dataclasses.replace(
+        case,
+        axes=dataclasses.replace(case.axes, grids=(*case.axes.grids[:-1], Offset(31))),
+        slice=(),
+        known={},
+    )
+    assert S.run_point(case, p_case).outcome == "PASS"
+    assert S.run_point(hair, point(1e-6, Offset(31), cols, k2=1.0)).outcome == "DIFF"
