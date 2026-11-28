@@ -576,9 +576,10 @@ STATE_STEP_SPEC = Spec(
 )
 STATE_COLS = ("k1", "k2", "th")
 #: A state switch's crossing is located only to the run's own accuracy, about
-#: rtol*X/|X'| (5e-6 at rtol 1e-6 here), and the k1 and th columns jump there by
-#: up to 4. Offset's default hair, 1e-9 of t*, lies inside that, where a correct
-#: run may read either side; 1e-4 of t* lies outside it at every tolerance.
+#: rtol*X/|X'| (5e-6 at rtol 1e-6 here), and the k1 and th columns jump there:
+#: by 72 and 4 on the base row, by 433 and 24 at k2 = 5. Offset's default hair,
+#: 1e-9 of t*, lies inside that, where a correct run may read either side; 1e-4
+#: of t* lies outside it at every tolerance.
 STATE_GRIDS = (*F.GRIDS[:-1], Offset(31, shift=1e-4))
 STATE_JUDGE = Judge(
     peak="window",
@@ -598,11 +599,11 @@ MOVED_STATE = (
 )
 
 
-def _step(reads, rows, slice_, note, marks):
+def _step(reads, rows, slice_, note, marks, exclude=()):
     case = F.family_case(
         f"step_{reads}", "step", "step", reads, rows, level_step(reads), slice_=slice_, note=note
     )
-    return F.with_marks(case, _known(case, marks))
+    return F.with_marks(case, _known(case, marks), F.excluded(case, list(exclude)))
 
 
 _SCOLS = {r: F.columns("step", r) for r in ("time", "clock")}
@@ -637,11 +638,55 @@ CASES = (
         ),
         (
             "X -> Y at a rate that steps from k0 to k1 as a counter clock passes c. On a step to "
-            "30 the step's own row reads dX/dk1 = -1.2e-12 where it is 0, at rtol 1e-12, from the "
-            "state the sensitivity run moved along the flow at the crossing (#1998); u4, with no "
-            "row there, is right."
+            "30 the step's own row reads dX/dk1 = -1.17e-12 where it is 0, at rtol 1e-12: -dt*X(25) "
+            "for the 1.4e-12 the sensitivity run moved its state along the flow at the crossing "
+            "(#1998); u4, with no row there, is right. The default judge holds that row to "
+            "CVODES's own column tolerance, atol/|k1| = 3.3e-16, 3.5e3 times under the error: the "
+            "column is 0 there and has decayed to 1e-13 by the next row, so the samples hold no "
+            "larger peak. By the window peak (1e-2, just past the step) it would be 112 times its "
+            "tolerance, and at rtol 1e-10 the same -1.2e-12 passes. The moved state is an error "
+            "whatever the scale, so the default stands, and the marks are #1998's."
         ),
         {(1998, MOVED_STATE): [({"k1": 30.0}, _SCOLS["clock"], ("1e-12",), F.ON_CROSSING)]},
+        [
+            (
+                (F.at25("clock", k_clock=0.5), _SCOLS["clock"], ("1e-12",), ("offset31",)),
+                47,
+                F.SHORT_ROW,
+            ),
+            (
+                (F.at25("clock", k_clock=8.0), _SCOLS["clock"], ("1e-12",), ("offset31",)),
+                47,
+                F.SHORT_ROW,
+            ),
+            (
+                (F.at25("clock", T0=-49.95), _SCOLS["clock"], ("1e-12",), ("u31",)),
+                46,
+                ": the others' row on the step came back short of its time (#1799), holding the "
+                "column past the step, dX/dk_clock = -9.23 for 0",
+            ),
+            (
+                (F.at25("clock", T0=-49.95), _SCOLS["clock"], ("1e-12",), ("aligned2",)),
+                42,
+                F.SHORT_ROW,
+            ),
+            (
+                (F.at25("clock", T0=-49.95), _SCOLS["clock"], ("1e-12",), ("aligned31",)),
+                44,
+                F.SHORT_ROW,
+            ),
+            (
+                (F.at25("clock", T0=-49.95), _SCOLS["clock"], ("1e-12",), ("offset31",)),
+                43,
+                F.SHORT_ROW,
+            ),
+            (
+                ({"k1": 30.0}, _SCOLS["clock"], ("1e-10",), ("u4",)),
+                47,
+                ": the other failed with CV_ERR_FAILURE just past the step",
+            ),
+            (({"k1": 30.0}, _SCOLS["clock"], ("1e-10",), ("offset31",)), 47, F.SHORT_ROW),
+        ],
     ),
     Case(
         name="step_state",

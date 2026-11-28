@@ -308,12 +308,15 @@ PULSE_JUDGE = Judge(
         "a pulse 0.003 wide drives its columns 1e4 to 1e5 times their end values inside it, "
         "and CVODES holds them to rtol of that running size there, so each column is scaled by "
         "its peak over the window (a grid with no sample inside the pulse would judge it against "
-        "its end value). At rtol 1e-12 a narrow pulse's passing points reach 930 times that "
-        "tolerance (sawtooth_coupled), and the corner-free control gauss_time, which has no "
-        "switch, 629 times, on a column that cancels to 0 past the pulse (its c and w columns); "
-        "at 1e-10 they stay under 60 times. So k = 5e3 keeps five times the worst of them, and "
-        "the convergence rows are off: from 1e-10 to 1e-12 the control's error grows 10 to 40 "
-        "times, which the rule reads as an error that stops falling"
+        "its end value). Over 48 runs whose atol differed by up to 2.3e-11 of itself, these "
+        "cases' passing points reach 2.15e3 times that tolerance at rtol 1e-12 "
+        "(pulse_clock[c=50.74], offset31, a plain run; triangle_clock at k_clock = 8, u4), the "
+        "corner-free control gauss_clock, which has no switch, 1.92e3, and gauss_time 851, on "
+        "columns that cancel to 0 past the pulse (c and w); at 1e-10 they reach 632. So k = 5e3 "
+        "is 2.3 times the worst of them, and the marks of #1997 and #1998 judged by it lie 1.5 to "
+        "2.2 times above it at their lowest. The convergence rows are off: from 1e-10 to 1e-12 "
+        "the control's error grows about 28 times, which the rule reads as an error that stops "
+        "falling"
     ),
 )
 
@@ -347,10 +350,15 @@ CLOCK_PLAIN = (
     "SimulationError",
     "#1996: a plain run fails with CV_ERR_FAILURE just past the clock pulse's leading edge",
 )
-W_COLUMN = (AssertionError, "#1997: dX/dw ends about 1e-3 off where it is 0, at every rtol")
+W_COLUMN = (
+    AssertionError,
+    "#1997: dX/dw ends about 1e-3 off where it is 0, at every rtol; on some step sequences the "
+    "row on the trailing edge also comes back short of its time (#1799), which the judge reports "
+    "first",
+)
 MOVED_ROW = (
     AssertionError,
-    "#1799: a sensitivity run records the row at the pulse's stop up to 1e-12 from the time asked",
+    "#1799: a sensitivity run records the row on a stop up to 1e-12 from the time asked",
 )
 
 
@@ -426,39 +434,53 @@ def _pulse_clock():
             "nearer, and its points pass."
         ),
     )
-    t0 = T0_ROW
+    kc05, kc8, late = (
+        F.at25("clock", k_clock=0.5),
+        F.at25("clock", k_clock=8.0),
+        F.at25("clock", t=25.37),
+    )
     return F.with_marks(
         case,
         _known(
             case,
             {
                 (1996, CLOCK_PLAIN): [
-                    (row, (), ("1e-12",), ("u4", "u31"))
-                    for row in ({}, F.at25("clock", k_clock=0.5), F.at25("clock", k_clock=8.0))
-                ]
-                + [(F.at25("clock", t=25.37), (), ("1e-12",), ("u4",))],
+                    ({}, (), ("1e-12",), ("u4", "u31")),
+                    (kc8, (), ("1e-12",), ("u4", "u31")),
+                    (kc05, (), ("1e-12",), ("u31",)),
+                ],
                 (1997, W_COLUMN): [
                     (row, cols, rtols, F.ALL_GRIDS)
                     for row, rtols in (
                         ({}, ("1e-10", "1e-12")),
-                        (F.at25("clock", k_clock=8.0), ("1e-10", "1e-12")),
-                        (F.at25("clock", t=25.37), ("1e-10", "1e-12")),
-                        (F.at25("clock", k_clock=0.5), ("1e-12",)),
+                        (kc8, ("1e-10", "1e-12")),
+                        (late, ("1e-10", "1e-12")),
+                        (kc05, ("1e-12",)),
                         ({"w": 0.1}, ("1e-12",)),
                     )
                 ],
             },
         ),
-        exclude={
-            **{
-                k: F.flip(11, what=", the other's row on the edge coming back moved (#1799)")
-                for k in F.keys(case, [(t0, cols, ("1e-10",), F.ALIGNED)])
-            },
-            **{
-                k: F.flip(8, what=": the rest had #1998's moved state beside the leading edge")
-                for k in F.keys(case, [(t0, cols, ("1e-12",), ("offset31",))])
-            },
-        },
+        F.excluded(
+            case,
+            [
+                (
+                    (T0_ROW, cols, ("1e-10",), ("aligned2",)),
+                    48,
+                    ", and 11 of 12 in an earlier set of draws, the other's row on the trailing "
+                    "edge coming back short of its time (#1799)",
+                ),
+                ((T0_ROW, cols, ("1e-10",), ("aligned31",)), 47, F.SHORT_ROW),
+                ((T0_ROW, cols, ("1e-08",), ("aligned2",)), 47, F.SHORT_ROW),
+                (
+                    (T0_ROW, cols, ("1e-12",), ("offset31",)),
+                    32,
+                    ": the rest had #1998's moved state beside the leading edge",
+                ),
+                ((kc05, (), ("1e-12",), ("u4",)), 1, F.FAILS_1996),
+                ((late, (), ("1e-12",), ("u4",)), 3, F.FAILS_1996),
+            ],
+        ),
     )
 
 
@@ -476,15 +498,16 @@ def _gauss(reads, rows, slice_, note):
         note=note,
     )
     marks = {(1799, MOVED_ROW): [({}, cols, tuple(F.RTOL_LABELS), ("aligned31", "offset31"))]}
-    exclude = {}
+    table = []
     if reads == "clock":
-        exclude = {
-            k: F.flip(
-                9, what=": the rest had #1998's moved state on the middle row, where bngsim stops"
+        table = [
+            (
+                (T0_ROW, cols, ("1e-12",), ("u31", "aligned31", "offset31")),
+                32,
+                ": the rest had #1998's moved state on the middle row, where bngsim stops",
             )
-            for k in F.keys(case, [(T0_ROW, cols, ("1e-12",), ("u31", "aligned31", "offset31"))])
-        }
-    return F.with_marks(case, _known(case, marks), exclude)
+        ]
+    return F.with_marks(case, _known(case, marks), F.excluded(case, table))
 
 
 CASES = (
@@ -505,7 +528,8 @@ CASES = (
             "The control beside triangle_time: a Gaussian of the triangle's area, 1/2, and "
             "s = w/4, on time(). It has no corner and no switch, so it declares none. bngsim "
             "stops at its middle, t = 25, and a sensitivity run records a row asked for there "
-            "an ulp short (#1799)."
+            "an ulp short (#1799). It has no crossing, so its aligned31 and offset31 grids ask "
+            "for the same rows; its rows are the triangles' narrow, 0.1-wide and off-grid ones."
         ),
     ),
     _gauss(
@@ -521,8 +545,10 @@ CASES = (
         (
             "The control beside triangle_clock: the Gaussian of gauss_time on a counter clock, no "
             "corner and no switch. With the counter at 0.05 its middle row has #1998's moved "
-            "state on 3 of 12 draws of atol (left out), where triangle_clock's apex row has it "
-            "on every draw, at 1.4e4 to 6e4 times its tolerance."
+            "state on 16 of 48 runs whose atol differed by up to 2.3e-11 of itself (left out), "
+            "where triangle_clock's apex rows have it on every run, at 1.2e4 to 6.2e4 times their "
+            "tolerance. It has no crossing, so its aligned31 and offset31 grids ask for the same "
+            "rows; its rows are the triangles' narrow and 0.1-wide ones."
         ),
     ),
 )

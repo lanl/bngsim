@@ -183,10 +183,13 @@ Every model keeps the clock T, read or not: its exact value, `T0 + k_clock*t`,
 says which time the state a run reports belongs to. Each pulse's crossing sits at
 t = 25, a point of `Uniform(31)`, and a row at c for t = 25.37 puts it between
 every uniform point. Each case sweeps rtol 1e-6 to 1e-12, the grids `u4`, `u31`,
-`aligned2`, `aligned31` and `offset31`, a plain run and every column its law
-reads, over rows of width (0.003, 0.1 and 4), clock rate (0.5, 2 and 8), the
-counter at 50 or at 0.05 across the pulse, and the crossing on a grid point or
-off it.
+`aligned2`, `aligned31` and `offset31`, and a plain run beside one with the
+columns of its law's own parameters (for #1776's residual, kx, k_clock, c and w:
+a and b, which its rows move, have none). Its rows move the width (0.003, 0.1 and
+4), the clock rate (0.5, 2 and 8), where the counter stands across the pulse (50,
+or 0.05), and whether the crossing sits on a grid point. The Gaussians, the
+triangles' controls, take three of the triangles' rows each; having no crossing,
+their `aligned31` and `offset31` grids ask for the same rows.
 
 | family | cases | law |
 |---|---|---|
@@ -199,18 +202,22 @@ off it.
 | bend | `min_state`, `abs_state` | `min(vmax, k*Xobs)` and `kx*abs(Xobs-th)` on a decaying X |
 
 **The judges.** The narrow pulses take the window peak, and k = 5e3 with their
-convergence rows off: at rtol 1e-12 their passing points reach 930 times their
-tolerance, and the corner-free Gaussian, which has no switch, 629 times. The two
-clock-carried sawtooths take k = 1e4: #1998 puts their rows on the jump at a
-fixed 3.0e3 to 7.8e3 there, while a plain run's species reach 4.3e3 on some draws.
+convergence rows off. At rtol 1e-12 their passing points reach 2.15e3 times their
+tolerance over 48 runs (below), and the corner-free Gaussian on the clock, which
+has no switch, 1.92e3; k is 2.3 times the worst, and the marks judged by it lie
+1.5 to 2.2 times above it at their lowest. The two clock-carried sawtooths take
+k = 1e4: #1998 puts their rows on the jump at a fixed 3.0e3 to 7.2e3, and the
+highest passing point, past the jump at k_clock = 8, varies from 6.4e3 to 7.8e3.
 `step_state` takes the window peak, and an `Offset` hair of 1e-4 of t*: a state
-switch's crossing is located only to the run's own accuracy. `min_state` turns
-its convergence rows off. Each says why in its `Judge.why`.
+switch's crossing is located only to the run's own accuracy. `min_state` and
+`abs_state` turn their convergence rows off. Each says why in its `Judge.why`.
 
-**What the sweep found.** Every point that fails is marked; every point marked
-and every slice point held its outcome and its failure type over 12 runs whose
-atol differed by 1 part in 1e12. The 12 that did not are left out with their
-counts.
+**What the sweep found.** Every point that fails on every run is marked. Every
+point of these cases was run 48 times, at the committed atol and at
+`atol_ratio*(1 + d)` for 24 values of |d| <= 1e-12 and 23 from 1e-12 to 2.3e-11,
+each of which moves the step sequence by an ulp or so. The 40 points whose outcome
+changed are left out with their counts: most are #1799's short row, which shows
+on some step sequences only.
 
 * **#1995**: a sensitivity run makes no progress at a time switch's stop once
   the rate jumps by 30 there at rtol 1e-12 (`step_time`), and sooner on narrow
@@ -222,12 +229,15 @@ counts.
   off where it is 0, the same from rtol 1e-8 to 1e-12 (`pulse_clock`).
 * **#1998**: a sensitivity run moves the whole state along the flow at each
   crossing a counter clock carries, and keeps the time. A row on the crossing
-  holds the moved state (`triangle_clock`'s apex rows at 1.3e4 to 6e4 times their
-  tolerance: #1777's lead; `step_clock`'s row on a step to 30), and past a jump
-  the species stay off (`sawtooth_clock`).
+  holds the moved state (`triangle_clock`'s rows on its crossings at 7.7e3 to
+  2.5e5 times their tolerance, 1.2e4 to 6.2e4 with the counter at 0.05: #1777's
+  lead; `step_clock`'s row on a step to 30), and past a jump the species stay off
+  (`sawtooth_clock`).
 * **#1799**: a sensitivity run records a row on a stop up to 1e-12 from the time
   asked, short or, at the triangle's foot on `time()`, an ulp late
   (`triangle_time`, both Gaussians, `step_state`, `sawtooth_coupled`).
+* **#1777's kind of error**: on some step sequences `abs_state`'s kd column at
+  its corner comes back 1.4e-7 to 2.4e-7 of itself off at rtol 1e-10. Those points
+  are left out, and its convergence rows are off.
 
-`abs_state` and `min_state` fail nowhere; `step_time` and `step_state` fail only
-where a mark says.
+`min_state` fails nowhere.

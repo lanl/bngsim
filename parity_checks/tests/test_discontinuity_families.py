@@ -183,6 +183,11 @@ def test_the_window_peak_finds_a_gaussian_narrower_than_its_uniform_scan():
     middle = cf.solve(p, SPAN, np.array([25.0]), obs, cols).sens.lo[0]
     assert np.all(named >= np.abs(middle) * (1 - 1e-12))
     assert named[0, 1] > 1e3 * blind[0, 1]
+    # The w column is 0 at the middle and peaks off it, where only a dense scan
+    # of the stretch finds it: a scan of 1e5 points across it agrees.
+    lo, hi = cf.peaks(p, SPAN)[0]
+    fine = cf.solve(p, SPAN, np.linspace(lo, hi, 100_001), obs, cols).sens.lo
+    assert named[0, 3] == pytest.approx(np.abs(fine[:, 0, 3]).max(), rel=1e-5)
 
 
 def test_a_stretch_is_clipped_to_the_window():
@@ -294,7 +299,7 @@ def test_a_gaussian_begun_before_its_tail_has_fallen_takes_the_tail_off(reads):
     cf = CF.pulse_exposure("gauss", reads)
     x, _ = cf.fn(p, np.array([0.0]), "right")
     assert x["X()"][0] == 10.0  # nothing before t = 0
-    _fd_check(cf, p, [q for q in p if q != "T0"])
+    _fd_check(cf, p, list(p))
 
 
 def test_the_state_steps_offset_lies_outside_its_crossings_uncertainty():

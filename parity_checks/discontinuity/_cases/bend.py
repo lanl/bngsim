@@ -207,9 +207,11 @@ def _triangle(reads):
         )
         note = (
             "#1285, #1456 and #1777's triangle on a counter clock, its apex at t = 25. "
-            "gauss_clock is its corner-free control. At rtol 1e-12 every row on the apex carries "
-            "#1998's moved state, at 1.3e4 to 6e4 times its tolerance (#1777's lead, with the "
-            "counter at 0.05 across it); u4, with no row there, is right."
+            "gauss_clock is its corner-free control. At rtol 1e-12 the 0.003-wide pulse's rows on "
+            "and beside its crossings carry #1998's moved state, at 7.7e3 to 2.5e5 times their "
+            "tolerance (1.2e4 to 6.2e4 with the counter at 0.05 across it: #1777's lead); u4, "
+            "with no row there, is right, and so are the wider pulses (w = 0.1 and 4). At "
+            "k_clock = 0.5 the state is moved on 26 of 48 runs, so those rows are left out."
         )
         marks = {
             (1998, MOVED_STATE): [
@@ -223,12 +225,14 @@ def _triangle(reads):
         exclude = [
             (
                 (kc05, cols, ("1e-12",), ("u31", "aligned31", "offset31")),
-                F.flip(9, what=": the rest had #1998's moved state on the apex row"),
+                22,
+                ": the rest had #1998's moved state on the apex row",
             ),
-            (
-                ({"w": 0.1}, cols, ("1e-12",), ("aligned2",)),
-                F.flip(11, what=": the other's row on the foot came back moved (#1799)"),
-            ),
+            (({"w": 0.1}, cols, ("1e-12",), ("aligned2",)), 46, F.SHORT_ROW),
+            (({"w": 0.1}, cols, ("1e-12",), ("offset31",)), 47, F.SHORT_ROW),
+            (({}, cols, ("1e-10",), ("offset31",)), 47, F.SHORT_ROW),
+            ((T0_ROW, cols, ("1e-10",), ("aligned2",)), 47, F.SHORT_ROW),
+            ((late, cols, ("1e-10",), ("aligned2",)), 46, F.SHORT_ROW),
         ]
     case = F.family_case(
         f"triangle_{reads}",
@@ -244,7 +248,7 @@ def _triangle(reads):
     return F.with_marks(
         case,
         _known(case, marks),
-        {k: why for cell, why in exclude for k in F.keys(case, [cell])},
+        F.excluded(case, exclude),
     )
 
 
@@ -319,6 +323,39 @@ CASES = (
             sens=((), ABS_COLS),
         ),
         slice=_state_slice(ABS_COLS),
-        note="Y is made at kx*|X - th| on a decaying X: a corner of abs on the state.",
+        judge=Judge(
+            converge=False,
+            why=(
+                "on some step sequences the kd column at the corner comes back 1.4e-7 to 2.4e-7 "
+                "of itself off at rtol 1e-10, the kind of error #1777 records for a bend's corner: "
+                "on 3 of 48 runs whose atol differed by up to 2.3e-11 of itself at kd = 2 (those "
+                "points are left out), and up to 506 times its tolerance at kd = 0.05. The "
+                "convergence rows read it, and fail on 1 to 5 of those 48 runs"
+            ),
+        ),
+        note=(
+            "Y is made at kx*|X - th| on a decaying X: a corner of abs on the state. On some step "
+            "sequences its kd column at the corner is 1.4e-7 to 2.4e-7 of itself off at rtol "
+            "1e-10 (#1777's kind of error); those points are left out."
+        ),
+    ),
+)
+CASES = (
+    *CASES[:-1],
+    F.with_marks(
+        CASES[-1],
+        {},
+        F.excluded(
+            CASES[-1],
+            [
+                (
+                    ({"kd": 2.0, "kx": 0.7}, ABS_COLS, ("1e-10",), (grid,)),
+                    passed,
+                    ": the rest had the kd column at the corner 1.4e-7 to 2.4e-7 of itself off, "
+                    "the kind of error #1777 records for a bend's corner",
+                )
+                for grid, passed in (("aligned2", 45), ("aligned31", 45), ("offset31", 47))
+            ],
+        ),
     ),
 )
