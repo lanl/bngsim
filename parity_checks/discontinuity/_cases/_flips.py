@@ -223,10 +223,10 @@ FLIPS = {
 # alternating in sign), and for 240 drawn at random (seed 4242): half uniform in
 # +-2.5e-11, half log-uniform in size from 1e-14 to 2.5e-11. The rule is #1914's,
 # and so is the caveat: the list is what those runs found, not a bound. The
-# random set found 13 points the grid had not, and a review's 100 further draws
-# found 5 more, each failing once there (counted below as passing all 480 of
-# these runs). Across a whole sweep of these cases, about 1 run in 25 shows one
-# such point.
+# random set found 13 points the grid had not; a review's 100 further draws
+# found 5 more, and its next 220 found 4 more, each failing or coming close once
+# there (counted below as passing all 480 of these runs). Across a whole sweep
+# of these cases, between 1 run in 25 and 1 in 220 shows one such point.
 
 #: How many runs each #1915 point was read over.
 RUNS_1915 = 480
@@ -239,9 +239,17 @@ WHY.update(
             "every run)"
         ),
         "located": (
-            "on the runs that failed, a crossing on the state was located about 1e-8 off in time "
-            "at rtol 1e-12, and the species near it came back off by more than the allowance "
-            "(#2005)"
+            "on the runs that failed, a crossing on the state was located off in time, about 1e-8 "
+            "at rtol 1e-12 and up to 1.7e-7 in a sensitivity run at rtol 1e-10, and the species "
+            "near it came back off by more than the allowance (#2005)"
+        ),
+        "review_located": (
+            "passed all 480 runs here, but failed on one of the review's: a crossing on the state "
+            "located off in time, and the species near it off by more than the allowance (#2005)"
+        ),
+        "review_short": (
+            "passed all 480 runs here, but failed on one of the review's: its row on the crossing "
+            "came back short of its time (#1799)"
         ),
         "short_edge": (
             "on the runs that failed, its row on the pulse's leading edge came back short of its "
@@ -264,8 +272,11 @@ FLIPS_1915 = {
     "coincident_state[th1=6.0,th2=6.0]|rtol=1e-10,grid=aligned31,sens=k0+d1+d2": (479, "short"),
     "coincident_state[th1=6.0,th2=6.0]|rtol=1e-12,grid=aligned2,sens=k0+d1+d2": (471, "short"),
     "coincident_state[th1=6.0,th2=6.0]|rtol=1e-12,grid=aligned31,sens=k0+d1+d2": (471, "short"),
-    "coincident_state[th2=1.0]|rtol=1e-12,grid=aligned2,sens=k0+d1+d2": (480, "short"),
-    "coincident_state[th2=1.0]|rtol=1e-12,grid=aligned2,sens=k0+d1+d2+th1+th2": (480, "short"),
+    "coincident_state[th2=1.0]|rtol=1e-12,grid=aligned2,sens=k0+d1+d2": (480, "review_short"),
+    "coincident_state[th2=1.0]|rtol=1e-12,grid=aligned2,sens=k0+d1+d2+th1+th2": (
+        480,
+        "review_short",
+    ),
     "coincident_state[th2=1.0]|rtol=1e-12,grid=aligned31,sens=k0+d1+d2": (479, "short"),
     "coincident_state[th2=1.0]|rtol=1e-12,grid=aligned31,sens=k0+d1+d2+th1+th2": (479, "short"),
     "coincident_state[th2=2.7]|rtol=1e-12,grid=aligned2,sens=k0+d1+d2": (476, "short"),
@@ -282,7 +293,7 @@ FLIPS_1915 = {
     "coincident_state[th2=2.9997]|rtol=1e-12,grid=u4,sens=k0+d1+d2+th1+th2": (479, "located"),
     "coincident_state[th2=3.0000000000000004]|rtol=1e-12,grid=aligned2,sens=k0+d1+d2": (
         480,
-        "located",
+        "review_located",
     ),
     "coincident_state[th2=3.0000000000000004]|rtol=1e-12,grid=aligned2,sens=none": (
         480,
@@ -295,6 +306,14 @@ FLIPS_1915 = {
     "event_clock_reset[c=120.0,kc=8.0]|rtol=1e-10,grid=aligned31,sens=kx+kc+c+w+tau": (
         455,
         "short",
+    ),
+    "event_clock_reset[c=120.0,kc=8.0]|rtol=1e-12,grid=aligned2,sens=none": (
+        480,
+        "passed all 480 runs here, but on one of the review's at 589 times its tolerance, 0.59 of the allowance, against a median of 57 here",
+    ),
+    "event_clock_reset[c=120.0,kc=8.0]|rtol=1e-12,grid=aligned31,sens=none": (
+        480,
+        "passed all 480 runs here, but on one of the review's at 589 times its tolerance, 0.59 of the allowance, against a median of 44 here",
     ),
     "event_clock_reset[c=120.0,kc=8.0]|rtol=1e-12,grid=u31,sens=none": (479, "located"),
     "event_clock_reset[c=18.0,tau=16.0]|rtol=1e-08,grid=offset31,sens=kx+kc+c+w+tau": (
@@ -328,6 +347,7 @@ FLIPS_1915 = {
         480,
         "on one run the w column past the pulse came back 1.6e-6 off where it is 0 (#1997's residue), 539 times its tolerance, 0.54 of the allowance, against a median of 55",
     ),
+    "event_clock_reset[tau=20.0]|rtol=1e-10,grid=u31,sens=kx+kc+c+w+tau": (480, "review_located"),
     "event_clock_reset[tau=20.0]|rtol=1e-10,grid=u4,sens=kx+kc+c+w+tau": (479, "located"),
     "event_clock_reset[tau=20.0]|rtol=1e-12,grid=u4,sens=none": (
         480,
@@ -354,6 +374,10 @@ FLIPS_1915 = {
     "event_clock_reset|rtol=1e-08,grid=aligned31,sens=kx+kc+c+w+tau": (449, "short"),
     "event_clock_reset|rtol=1e-10,grid=aligned2,sens=kx+kc+c+w+tau": (467, "short"),
     "event_clock_reset|rtol=1e-10,grid=aligned31,sens=kx+kc+c+w+tau": (462, "short"),
+    "event_clock_reset|rtol=1e-10,grid=offset31,sens=kx+kc+c+w+tau": (
+        480,
+        "passed all 480 runs here, but on one of the review's at 578 times its tolerance, 0.58 of the allowance, against a median of 50 here",
+    ),
     "event_clock_reset|rtol=1e-10,grid=u31,sens=kx+kc+c+w+tau": (475, "residue"),
     "event_clock_reset|rtol=1e-10,grid=u4,sens=kx+kc+c+w+tau": (
         480,

@@ -344,7 +344,8 @@ CLOCK_RESET_JUDGE = Judge(
         "1e-12), so the convergence rows are off. Over 240 runs whose atol differed in its last "
         "digits, and 240 more at random, every point outside the marks and _flips stays under "
         "404 times its tolerance, 2.5 times under k, and the lowest mark is 2.7e3, 2.7 times "
-        "over it"
+        "over it. A review's 320 further draws found three more points between 578 and 589 "
+        "times their tolerance, which _flips leaves out too"
     ),
 )
 

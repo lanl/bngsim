@@ -873,7 +873,12 @@ def coincident_time(interacting: bool, x0: float = 10.0):
         return None
 
     def permits(p, sens):
-        if interacting and _near_tie(p["c1"], p["c2"]) and {"c1", "c2"} & set(sens):
+        if (
+            interacting
+            and p["d1"] != 0
+            and _near_tie(p["c1"], p["c2"])
+            and {"c1", "c2"} & set(sens)
+        ):
             return Permitted("an ulp from a tie at which the c columns have no value", TIE_REFUSAL)
         return None
 
@@ -943,7 +948,12 @@ def coincident_state(x0: float = 10.0):
         return None
 
     def permits(p, sens):
-        if _near_tie(p["th1"], p["th2"]) and {"th1", "th2"} & set(sens):
+        if (
+            p["d1"] != 0
+            and p["d2"] != 0
+            and _near_tie(p["th1"], p["th2"])
+            and {"th1", "th2"} & set(sens)
+        ):
             return Permitted(
                 "an ulp from a tie at which the th columns have no value", TIE_REFUSAL
             )
@@ -1000,7 +1010,12 @@ def switch_event(x0: float = 10.0):
         return None
 
     def permits(p, sens):
-        if _near_tie(p["c"], p["te"]) and {"c", "te"} & set(sens):
+        if (
+            p["d"] != 0
+            and p["k0"] != p["k1"]
+            and _near_tie(p["c"], p["te"])
+            and {"c", "te"} & set(sens)
+        ):
             return Permitted(
                 "an ulp from a tie at which the c and te columns have no value", TIE_REFUSAL
             )

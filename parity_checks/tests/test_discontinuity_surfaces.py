@@ -304,7 +304,7 @@ def test_a_record_of_a_case_whose_reset_changed_is_stale():
             {"c2": 25.0 + 1e-9},
             C.AND_COLS,
             C.AND_RATES,
-            {"d1": 0.0},
+            ({"d1": 0.0},),
         ),
         (
             "coincident_state",
@@ -313,7 +313,7 @@ def test_a_record_of_a_case_whose_reset_changed_is_stale():
             {"th2": 3.0 * (1 - 1e-9)},
             C.STATE_COLS,
             C.STATE_RATES,
-            {"d2": 0.0},
+            ({"d2": 0.0}, {"d1": 0.0}),
         ),
         (
             "switch_event",
@@ -322,7 +322,7 @@ def test_a_record_of_a_case_whose_reset_changed_is_stale():
             {"te": 25.0 + 1e-9},
             C.SE_COLS,
             C.SE_RATES,
-            {"k1": 0.1},
+            ({"k1": 0.1}, {"d": 0.0}),
         ),
     ],
     ids=["and", "state", "switch_event"],
@@ -345,7 +345,9 @@ def test_a_tie_owes_the_refusal_of_its_columns_and_an_ulp_from_it_permits_one(
     # 1e-9 apart is far past the few ulps the rule covers.
     assert cf.owed(f, cols) is None and cf.permitted(f, cols) is None
     # Where the law has no kink at the tie (a term of 0, equal rates), nothing is owed.
-    assert cf.owed(at(**tie, **flat), cols) is None
+    for kink_free in flat:
+        assert cf.owed(at(**tie, **kink_free), cols) is None
+        assert cf.permitted(at(**near, **kink_free), cols) is None
 
 
 def test_the_additive_pair_owes_and_permits_nothing_at_its_tie():

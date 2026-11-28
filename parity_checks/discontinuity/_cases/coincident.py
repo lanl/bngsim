@@ -317,7 +317,7 @@ CASES = (
     ),
 )
 
-#: What fails on main, on every one of 240 runs whose atol differed in its last
+#: What fails on main, on every one of 480 runs whose atol differed in its last
 #: digits (``_flips``): (row, columns, rtols, grids) per mark kind.
 _MARKS = {
     "coincident_sum": {

@@ -296,19 +296,21 @@ models (`event_state_reset`'s X(5) is 1.3e-10 off before any event fires), so
 their rows sat on the rule's threshold and changed outcome from run to run.
 `event_clock_reset` takes the window peak too: its pulse is 0.05 wide. k is the
 default everywhere: outside the marks and the flips, no point exceeds 404 times
-its tolerance on any run, and no mark falls under 2.7e3.
+its tolerance on any of those 480 runs, and no mark falls under 2.7e3. A
+review's further draws found more points within 2 times of the allowance, which
+are left out too.
 Each case says why in its `Judge.why`.
 
 **What the sweep found.** Every point, exclusions included, was run 480 times:
 at the committed atol and at `atol_ratio*(1 + d)` for 239 values of d on a grid
 and 240 at random, |d| up to 2.5e-11. The 161 marks fail on all 480, and every
-other point passes on all 480, apart from the 69 left out in `_cases/_flips.py`
-with their counts. 45 of those are #1799's short row, 9 #2005's misplaced
-crossing and 8 #1997's residue; 7 passed every run but came within 2 times of
-the allowance on one, 2 of them only on a review's draws. As for #1914, that
+other point passes on all 480, apart from the 73 left out in `_cases/_flips.py`
+with their counts. 45 of those are #1799's short row, 10 #2005's misplaced
+crossing and 8 #1997's residue; 10 passed every run but came within 2 times of
+the allowance on one, 5 of them only on a review's draws. As for #1914, that
 list is what the runs found, not a bound: the random set found 13 points the
-grid had not, and a review's 100 more draws 5 more. Across a whole sweep of
-these cases, about 1 run in 25 shows one such point.
+grid had not, and a review's 320 more draws 9 more. Across a whole sweep of
+these cases, between 1 run in 25 and 1 in 220 shows one such point.
 
 * **#2003 (new, silent wrong)**: two rate-law switches on `time()` a double
   apart. In a sensitivity run, the row on one instant carries the other's
@@ -317,9 +319,9 @@ these cases, about 1 run in 25 shows one such point.
   instants an ulp apart one, the row is right and the marks come out.
 * **#2004 (new)**: an event a double after a row or a stop is refused with
   #950's refusal, though the columns it refuses have values (`switch_event`).
-* **#2005 (new, silent wrong)**: on some step sequences a run at rtol 1e-12
-  locates a crossing on the state about 1e-8 off in time, and the species near
-  it come back off: a counter's pulse loses that much of its exposure, more
+* **#2005 (new, silent wrong)**: on some step sequences a run locates a
+  crossing on the state off in time, about 1e-8 at rtol 1e-12 and up to 1.7e-7
+  in a sensitivity run at rtol 1e-10, and the species near it come back off: a counter's pulse loses that much of its exposure, more
   often after an event resets the counter (`event_clock_reset`), and two
   thresholds' species come back 6e-9 off (`coincident_state`). Those points are
   left out as flips, with their counts.
