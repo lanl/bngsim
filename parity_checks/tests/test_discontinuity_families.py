@@ -321,3 +321,15 @@ def test_the_state_steps_offset_lies_outside_its_crossings_uncertainty():
     )
     assert S.run_point(case, p_case).outcome == "PASS"
     assert S.run_point(hair, point(1e-6, Offset(31), cols, k2=1.0)).outcome == "DIFF"
+
+
+def test_every_flip_is_left_out_of_its_case_with_its_count():
+    from _cases import _flips
+
+    assert len(_flips.FLIPS) >= 60
+    for key, (passed, kind) in _flips.FLIPS.items():
+        case = BY_NAME[key.split("|", 1)[0].split("[", 1)[0]]
+        why = case.exclude[key]
+        assert f"{passed} of {_flips.RUNS}" in why or f"all {_flips.RUNS}" in why
+        assert key not in case.known and key not in {case.key(p) for p in case.slice}
+        assert kind in _flips.WHY or len(kind) > 40

@@ -244,35 +244,12 @@ def keys(case: Case, cells) -> list[str]:
     return out
 
 
-def with_marks(case: Case, known: dict, exclude: dict | None = None) -> Case:
-    """``case`` with its known failures and its exclusions."""
+def with_marks(case: Case, known: dict) -> Case:
+    """``case`` with its known failures. Its coin flips come from ``_flips``,
+    which ``_cases`` adds to every case."""
     import dataclasses
 
-    return dataclasses.replace(case, known=dict(known), exclude=dict(exclude or {}))
-
-
-#: The runs a point's stability is read from: the committed atol, 24 draws of
-#: atol_ratio*(1 + d) with |d| <= 1e-12, and 23 more with d from 1e-12 to
-#: 2.3e-11. Each moves the step sequence by an ulp or so.
-STABILITY_RUNS = 48
-
-
-def flip(passed: int, of: int = STABILITY_RUNS, what: str = "") -> str:
-    """The reason a coin flip is left out."""
-    return (
-        f"a coin flip on the step sequence: passed {passed} of {of} runs whose atol differed by "
-        f"up to 2.3 parts in 1e11{what}"
-    )
-
-
-def excluded(case: Case, table) -> dict[str, str]:
-    """``[(cell, passed, what)]`` as ``Case.exclude``: each cell as ``keys`` takes it."""
-    return {k: flip(passed, what=what) for cell, passed, what in table for k in keys(case, [cell])}
-
-
-#: The usual reasons a coin flip fails.
-SHORT_ROW = ": the others' row on a stop came back short of its time (#1799)"
-FAILS_1996 = ": on the others it failed as #1996 does"
+    return dataclasses.replace(case, known=dict(known))
 
 
 ALL_GRIDS = tuple(g.label for g in GRIDS)

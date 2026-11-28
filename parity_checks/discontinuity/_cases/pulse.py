@@ -308,15 +308,15 @@ PULSE_JUDGE = Judge(
         "a pulse 0.003 wide drives its columns 1e4 to 1e5 times their end values inside it, "
         "and CVODES holds them to rtol of that running size there, so each column is scaled by "
         "its peak over the window (a grid with no sample inside the pulse would judge it against "
-        "its end value). Over 48 runs whose atol differed by up to 2.3e-11 of itself, these "
+        "its end value). Over 263 runs whose atol differed by up to 2.5e-11 of itself, these "
         "cases' passing points reach 2.15e3 times that tolerance at rtol 1e-12 "
         "(pulse_clock[c=50.74], offset31, a plain run; triangle_clock at k_clock = 8, u4), the "
-        "corner-free control gauss_clock, which has no switch, 1.92e3, and gauss_time 851, on "
-        "columns that cancel to 0 past the pulse (c and w); at 1e-10 they reach 632. So k = 5e3 "
-        "is 2.3 times the worst of them, and the marks of #1997 and #1998 judged by it lie 1.5 to "
-        "2.2 times above it at their lowest. The convergence rows are off: from 1e-10 to 1e-12 "
-        "the control's error grows about 28 times, which the rule reads as an error that stops "
-        "falling"
+        "corner-free control gauss_clock, which has no switch, 2.13e3, and gauss_time 962, on "
+        "columns that cancel to 0 past the pulse (c and w); at 1e-10 they reach 776. So k = 5e3 "
+        "is 2.3 times the worst of them, and the marks of #1997 and #1998 judged by it lie 1.5 "
+        "times above it at their lowest (triangle_clock on one run of 263) and 2.2 times "
+        "otherwise. The convergence rows are off: from 1e-10 to 1e-12 the control's error grows "
+        "about 25 to 30 times, which the rule reads as an error that stops falling"
     ),
 )
 
@@ -422,7 +422,7 @@ def _pulse_clock():
             point(1e-12, F.Uniform(4), ()),
             point(1e-12, F.Uniform(31), cols),
             point(1e-10, F.Offset(31), cols, k_clock=8.0, c=200.0),
-            point(1e-12, F.Aligned(31), cols, **T0_ROW),
+            point(1e-12, F.Uniform(4), cols, **T0_ROW),
             point(1e-8, F.Aligned(2), cols),
             point(1e-6, F.Aligned(31), cols, w=4.0),
         ),
@@ -461,26 +461,6 @@ def _pulse_clock():
                 ],
             },
         ),
-        F.excluded(
-            case,
-            [
-                (
-                    (T0_ROW, cols, ("1e-10",), ("aligned2",)),
-                    48,
-                    ", and 11 of 12 in an earlier set of draws, the other's row on the trailing "
-                    "edge coming back short of its time (#1799)",
-                ),
-                ((T0_ROW, cols, ("1e-10",), ("aligned31",)), 47, F.SHORT_ROW),
-                ((T0_ROW, cols, ("1e-08",), ("aligned2",)), 47, F.SHORT_ROW),
-                (
-                    (T0_ROW, cols, ("1e-12",), ("offset31",)),
-                    32,
-                    ": the rest had #1998's moved state beside the leading edge",
-                ),
-                ((kc05, (), ("1e-12",), ("u4",)), 1, F.FAILS_1996),
-                ((late, (), ("1e-12",), ("u4",)), 3, F.FAILS_1996),
-            ],
-        ),
     )
 
 
@@ -498,16 +478,7 @@ def _gauss(reads, rows, slice_, note):
         note=note,
     )
     marks = {(1799, MOVED_ROW): [({}, cols, tuple(F.RTOL_LABELS), ("aligned31", "offset31"))]}
-    table = []
-    if reads == "clock":
-        table = [
-            (
-                (T0_ROW, cols, ("1e-12",), ("u31", "aligned31", "offset31")),
-                32,
-                ": the rest had #1998's moved state on the middle row, where bngsim stops",
-            )
-        ]
-    return F.with_marks(case, _known(case, marks), F.excluded(case, table))
+    return F.with_marks(case, _known(case, marks))
 
 
 CASES = (
@@ -545,7 +516,7 @@ CASES = (
         (
             "The control beside triangle_clock: the Gaussian of gauss_time on a counter clock, no "
             "corner and no switch. With the counter at 0.05 its middle row has #1998's moved "
-            "state on 16 of 48 runs whose atol differed by up to 2.3e-11 of itself (left out), "
+            "state on 107 of 263 runs whose atol differed by up to 2.5e-11 of itself (left out), "
             "where triangle_clock's apex rows have it on every run, at 1.2e4 to 6.2e4 times their "
             "tolerance. It has no crossing, so its aligned31 and offset31 grids ask for the same "
             "rows; its rows are the triangles' narrow and 0.1-wide ones."

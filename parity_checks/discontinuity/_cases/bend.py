@@ -190,7 +190,6 @@ def _triangle(reads):
                 )
             ]
         }
-        exclude = []
     else:
         kc05, kc8, late = (
             F.at25("clock", k_clock=0.5),
@@ -211,7 +210,7 @@ def _triangle(reads):
             "and beside its crossings carry #1998's moved state, at 7.7e3 to 2.5e5 times their "
             "tolerance (1.2e4 to 6.2e4 with the counter at 0.05 across it: #1777's lead); u4, "
             "with no row there, is right, and so are the wider pulses (w = 0.1 and 4). At "
-            "k_clock = 0.5 the state is moved on 26 of 48 runs, so those rows are left out."
+            "k_clock = 0.5 the state is moved on 116 of 263 runs, so those rows are left out."
         )
         marks = {
             (1998, MOVED_STATE): [
@@ -222,18 +221,6 @@ def _triangle(reads):
                 (late, cols, ("1e-12",), ("aligned2", "aligned31", "offset31")),
             ]
         }
-        exclude = [
-            (
-                (kc05, cols, ("1e-12",), ("u31", "aligned31", "offset31")),
-                22,
-                ": the rest had #1998's moved state on the apex row",
-            ),
-            (({"w": 0.1}, cols, ("1e-12",), ("aligned2",)), 46, F.SHORT_ROW),
-            (({"w": 0.1}, cols, ("1e-12",), ("offset31",)), 47, F.SHORT_ROW),
-            (({}, cols, ("1e-10",), ("offset31",)), 47, F.SHORT_ROW),
-            ((T0_ROW, cols, ("1e-10",), ("aligned2",)), 47, F.SHORT_ROW),
-            ((late, cols, ("1e-10",), ("aligned2",)), 46, F.SHORT_ROW),
-        ]
     case = F.family_case(
         f"triangle_{reads}",
         "bend",
@@ -248,7 +235,6 @@ def _triangle(reads):
     return F.with_marks(
         case,
         _known(case, marks),
-        F.excluded(case, exclude),
     )
 
 
@@ -326,36 +312,16 @@ CASES = (
         judge=Judge(
             converge=False,
             why=(
-                "on some step sequences the kd column at the corner comes back 1.4e-7 to 2.4e-7 "
-                "of itself off at rtol 1e-10, the kind of error #1777 records for a bend's corner: "
-                "on 3 of 48 runs whose atol differed by up to 2.3e-11 of itself at kd = 2 (those "
-                "points are left out), and up to 506 times its tolerance at kd = 0.05. The "
-                "convergence rows read it, and fail on 1 to 5 of those 48 runs"
+                "on some step sequences the kd column at the corner comes back about 1e-7 of "
+                "itself off at rtol 1e-10 (#1999), on 2 to 5 of 263 runs whose atol differed by up "
+                "to 2.5e-11 of itself; those points are left out (_flips). The convergence rows "
+                "read the same columns, and would ride on whether a run hits it"
             ),
         ),
         note=(
             "Y is made at kx*|X - th| on a decaying X: a corner of abs on the state. On some step "
-            "sequences its kd column at the corner is 1.4e-7 to 2.4e-7 of itself off at rtol "
-            "1e-10 (#1777's kind of error); those points are left out."
-        ),
-    ),
-)
-CASES = (
-    *CASES[:-1],
-    F.with_marks(
-        CASES[-1],
-        {},
-        F.excluded(
-            CASES[-1],
-            [
-                (
-                    ({"kd": 2.0, "kx": 0.7}, ABS_COLS, ("1e-10",), (grid,)),
-                    passed,
-                    ": the rest had the kd column at the corner 1.4e-7 to 2.4e-7 of itself off, "
-                    "the kind of error #1777 records for a bend's corner",
-                )
-                for grid, passed in (("aligned2", 45), ("aligned31", 45), ("offset31", 47))
-            ],
+            "sequences its kd column at the corner is about 1e-7 of itself off at rtol 1e-10 "
+            "(#1999); those points are left out."
         ),
     ),
 )

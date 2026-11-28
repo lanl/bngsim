@@ -599,11 +599,11 @@ MOVED_STATE = (
 )
 
 
-def _step(reads, rows, slice_, note, marks, exclude=()):
+def _step(reads, rows, slice_, note, marks):
     case = F.family_case(
         f"step_{reads}", "step", "step", reads, rows, level_step(reads), slice_=slice_, note=note
     )
-    return F.with_marks(case, _known(case, marks), F.excluded(case, list(exclude)))
+    return F.with_marks(case, _known(case, marks))
 
 
 _SCOLS = {r: F.columns("step", r) for r in ("time", "clock")}
@@ -648,45 +648,6 @@ CASES = (
             "whatever the scale, so the default stands, and the marks are #1998's."
         ),
         {(1998, MOVED_STATE): [({"k1": 30.0}, _SCOLS["clock"], ("1e-12",), F.ON_CROSSING)]},
-        [
-            (
-                (F.at25("clock", k_clock=0.5), _SCOLS["clock"], ("1e-12",), ("offset31",)),
-                47,
-                F.SHORT_ROW,
-            ),
-            (
-                (F.at25("clock", k_clock=8.0), _SCOLS["clock"], ("1e-12",), ("offset31",)),
-                47,
-                F.SHORT_ROW,
-            ),
-            (
-                (F.at25("clock", T0=-49.95), _SCOLS["clock"], ("1e-12",), ("u31",)),
-                46,
-                ": the others' row on the step came back short of its time (#1799), holding the "
-                "column past the step, dX/dk_clock = -9.23 for 0",
-            ),
-            (
-                (F.at25("clock", T0=-49.95), _SCOLS["clock"], ("1e-12",), ("aligned2",)),
-                42,
-                F.SHORT_ROW,
-            ),
-            (
-                (F.at25("clock", T0=-49.95), _SCOLS["clock"], ("1e-12",), ("aligned31",)),
-                44,
-                F.SHORT_ROW,
-            ),
-            (
-                (F.at25("clock", T0=-49.95), _SCOLS["clock"], ("1e-12",), ("offset31",)),
-                43,
-                F.SHORT_ROW,
-            ),
-            (
-                ({"k1": 30.0}, _SCOLS["clock"], ("1e-10",), ("u4",)),
-                47,
-                ": the other failed with CV_ERR_FAILURE just past the step",
-            ),
-            (({"k1": 30.0}, _SCOLS["clock"], ("1e-10",), ("offset31",)), 47, F.SHORT_ROW),
-        ],
     ),
     Case(
         name="step_state",

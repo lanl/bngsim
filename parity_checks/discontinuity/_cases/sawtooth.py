@@ -34,7 +34,7 @@ CLOCK_SAWTOOTH_JUDGE = dataclasses.replace(
     + ". On a clock-carried sawtooth k is 1e4: at rtol 1e-12 #1998's moved state puts its rows "
     "on and beside the jump at 3.0e3 to 7.2e3 times their tolerance, the same value on every "
     "run, and past the jump its columns carry the shift too: sawtooth_clock at k_clock = 8 on "
-    "u4, with no row at the jump, reaches 6.4e3 to 7.8e3 over 48 runs, the highest passing "
+    "u4, with no row at the jump, reaches 6.2e3 to 7.8e3 over 263 runs, the highest passing "
     "point, 1.29 times under k. The lowest mark, its rows on the jump (1.63e4), is 1.63 times "
     "over it. So #1998 is marked on these cases only at k_clock = 8",
 )
@@ -51,7 +51,7 @@ COLS = {r: F.columns("sawtooth", r) for r in ("time", "clock", "coupled")}
 KC8 = F.at25("clock", k_clock=8.0)
 
 
-def _case(reads, rows, slice_, judge, note, marks, exclude=None, derive=None):
+def _case(reads, rows, slice_, judge, note, marks, derive=None):
     case = F.family_case(
         f"sawtooth_{reads}",
         "sawtooth",
@@ -64,7 +64,7 @@ def _case(reads, rows, slice_, judge, note, marks, exclude=None, derive=None):
         note=note,
         derive=derive,
     )
-    return F.with_marks(case, _known(case, marks), F.excluded(case, list(exclude or ())))
+    return F.with_marks(case, _known(case, marks))
 
 
 CASES = (
@@ -118,27 +118,6 @@ CASES = (
             (1996, CLOCK_PLAIN): [(row, (), ("1e-12",), ("u4",)) for row in ({}, KC8)],
             (1998, MOVED_STATE): [(KC8, COLS["clock"], ("1e-12",), F.ON_CROSSING)],
         },
-        [
-            (
-                (T0_ROW, COLS["clock"], ("1e-12",), ("offset31",)),
-                32,
-                ": the rest had #1998's moved state beside the jump, at 4.3e4",
-            ),
-            ((T0_ROW, COLS["clock"], ("1e-12",), ("aligned2",)), 42, F.SHORT_ROW),
-            ((T0_ROW, COLS["clock"], ("1e-12",), ("aligned31",)), 44, F.SHORT_ROW),
-            (
-                (F.at25("clock", t=25.37), COLS["clock"], ("1e-12",), ("offset31",)),
-                22,
-                ": the rest had #1998's moved state beside the jump, at 4.4e4",
-            ),
-            (
-                ({"w": 4.0}, COLS["clock"], ("1e-10",), ("aligned2", "aligned31", "offset31")),
-                47,
-                F.SHORT_ROW,
-            ),
-            ((F.at25("clock", k_clock=0.5), (), ("1e-12",), ("u4",)), 1, F.FAILS_1996),
-            ((F.at25("clock", t=25.37), (), ("1e-12",), ("u4",)), 3, F.FAILS_1996),
-        ],
     ),
     _case(
         "coupled",
@@ -154,7 +133,7 @@ CASES = (
         (
             "#1776's sawtooth: u = a*time() - b*Tobs runs at r = a - b*k_clock, and c is placed "
             "so the pulse starts at t = 25. a = 3, b = 1 is #1776's own model; its plain run at rtol "
-            "1e-12 on n_points 4 fails as #1996 does on 47 of 48 runs (left out), and at "
+            "1e-12 on n_points 4 fails as #1996 does on 251 of 263 runs (left out), and at "
             "a = 1, b = -1 on every run. #1998's moved state puts its rows on the jump at 3.7e3 to "
             "7.2e3 times their tolerance, inside this case's k of 1e4. Its columns are those of "
             "kx, k_clock, c and w; a and b, which the rows move, have none."
@@ -163,10 +142,6 @@ CASES = (
             (1996, CLOCK_PLAIN): [({"a": 1.0, "b": -1.0}, (), ("1e-12",), ("u4",))],
             (1799, MOVED_ROW): [({"a": 1.0, "b": -1.0}, COLS["coupled"], ("1e-06",), F.ALIGNED)],
         },
-        [
-            (({}, (), ("1e-12",), ("u4",)), 1, F.FAILS_1996),
-            (({"a": 1.0, "b": -1.0}, COLS["coupled"], ("1e-08",), F.ALIGNED), 46, F.SHORT_ROW),
-        ],
         derive=lambda p: {"c": 25.0 * (p["a"] - p["b"] * p["k_clock"])},
     ),
 )

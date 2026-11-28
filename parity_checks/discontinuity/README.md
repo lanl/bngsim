@@ -203,21 +203,27 @@ their `aligned31` and `offset31` grids ask for the same rows.
 
 **The judges.** The narrow pulses take the window peak, and k = 5e3 with their
 convergence rows off. At rtol 1e-12 their passing points reach 2.15e3 times their
-tolerance over 48 runs (below), and the corner-free Gaussian on the clock, which
-has no switch, 1.92e3; k is 2.3 times the worst, and the marks judged by it lie
-1.5 to 2.2 times above it at their lowest. The two clock-carried sawtooths take
-k = 1e4: #1998 puts their rows on the jump at a fixed 3.0e3 to 7.2e3, and the
-highest passing point, past the jump at k_clock = 8, varies from 6.4e3 to 7.8e3.
-`step_state` takes the window peak, and an `Offset` hair of 1e-4 of t*: a state
-switch's crossing is located only to the run's own accuracy. `min_state` and
-`abs_state` turn their convergence rows off. Each says why in its `Judge.why`.
+tolerance over 263 runs (below), and the corner-free Gaussian on the clock, which
+has no switch, 2.13e3; k is 2.3 times the worst, and the marks judged by it lie
+1.5 times above it at their lowest (once in 263 runs) and 2.2 times otherwise.
+The two clock-carried sawtooths take k = 1e4: #1998 puts their rows on the jump
+at a fixed 3.0e3 to 7.2e3, and the highest passing point, past the jump at
+k_clock = 8, varies from 6.2e3 to 7.8e3. `step_state` takes the window peak, and
+an `Offset` hair of 1e-4 of t*: a state switch's crossing is located only to the
+run's own accuracy. `min_state` and `abs_state` turn their convergence rows off.
+Each says why in its `Judge.why`.
 
 **What the sweep found.** Every point that fails on every run is marked. Every
-point of these cases was run 48 times, at the committed atol and at
-`atol_ratio*(1 + d)` for 24 values of |d| <= 1e-12 and 23 from 1e-12 to 2.3e-11,
-each of which moves the step sequence by an ulp or so. The 40 points whose outcome
-changed are left out with their counts: most are #1799's short row, which shows
-on some step sequences only.
+point of these cases was run 263 times, at the committed atol and at
+`atol_ratio*(1 + d)` for 262 values of d up to 2.5e-11 in size, each of which
+moves the step sequence by an ulp or so (`_cases/_flips.py` lists them). The 64
+points whose outcome changed are left out with their counts, and so are four that
+passed every run but came within 2 times of the allowance on one: most are
+#1799's short row, which shows on some step sequences only. That list is what
+those runs found, not a bound. A point outside it can still change outcome on
+another step sequence, at about 1 run in 250 or rarer for these kinds, so after a
+change that moves the step sequence a single new row of these kinds in the
+nightly's diff is that and not a regression.
 
 * **#1995**: a sensitivity run makes no progress at a time switch's stop once
   the rate jumps by 30 there at rtol 1e-12 (`step_time`), and sooner on narrow
@@ -236,8 +242,11 @@ on some step sequences only.
 * **#1799**: a sensitivity run records a row on a stop up to 1e-12 from the time
   asked, short or, at the triangle's foot on `time()`, an ulp late
   (`triangle_time`, both Gaussians, `step_state`, `sawtooth_coupled`).
-* **#1777's kind of error**: on some step sequences `abs_state`'s kd column at
-  its corner comes back 1.4e-7 to 2.4e-7 of itself off at rtol 1e-10. Those points
-  are left out, and its convergence rows are off.
+* **#1999 (new)**: on some step sequences `abs_state`'s kd column at its corner
+  comes back about 1e-7 of itself off at rtol 1e-10, up to 2.9e3 times its
+  tolerance. Those points are left out, and its convergence rows are off.
+* **#1984**: on one run of 263, `pulse_clock`'s w column loses its jump at the
+  trailing edge, -1010.9 for 0 from there to t = 30, as #1984's step loses its
+  jump. That point is left out.
 
 `min_state` fails nowhere.
