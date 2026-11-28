@@ -34,6 +34,7 @@ import contextlib
 import re
 import tempfile
 import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -174,6 +175,15 @@ class ConversionReport:
     # standard elements runs something else there; bngsim's own reader reads
     # the protocol from its annotation. ``ok`` and ``lossy`` judge the network.
     sedml_lossy: list[str] = field(default_factory=list)
+    # The parameters folded into a number when the source model loaded
+    # (Model.frozen_params), by what the written file does with each: left
+    # out, since nothing in it reads one, or marked with a folded_at_load
+    # comment (sbml_to_net and sbml_to_bngl, issue #1792). n_parameters is the
+    # source model's count less the ones left out, which is the count the
+    # structural check compares. New fields go after every older one, so a
+    # report built by position keeps its meaning.
+    folded_left_out: list[str] = field(default_factory=list)
+    folded_marked: list[str] = field(default_factory=list)
 
     # Direction-flavored aliases so each call site reads naturally.
     @property
@@ -326,6 +336,7 @@ def sbml_to_net(
     t_span: tuple[float, float] = (0.0, 100.0),
     n_points: int = 101,
     rhs_tol: float = 1e-6,
+    read_by_actions: Iterable[str] = (),
 ) -> ConversionReport:
     """Convert an SBML model to a BioNetGen ``.net`` network.
 
@@ -369,6 +380,12 @@ def sbml_to_net(
         mirror of :func:`net_to_sbml`'s ``bngl=`` (avoids the blanket-grid
         stiff-hang and exercises the trajectory the modeller actually ran). The
         parsed :class:`~bngsim.convert.ProtocolSpec` is attached to the report.
+        A parameter folded at load that one of its actions reads in a value it
+        evaluates stays in the network, marked (issue #1792).
+    read_by_actions : iterable of str
+        Further names that actions to be run on the network read, as for
+        ``write_net``; ``omex_to_net`` passes those of every
+        experiment of the archive.
     t_span, n_points : tuple[float, float], int
         Fallback time grid for the ``"full"`` gate's L3 comparison when no
         ``sedml`` protocol horizon is available (ignored for other ``validate``
@@ -390,9 +407,23 @@ def sbml_to_net(
     if sedml is not None:
         protocol = read_sedml_protocol(sedml)
 
-    caps = capability_report(model)
+    from bngsim.convert import _frozen
+    from bngsim.convert._net_writer import _folded_parameters
+
+    # Issue #1792: what the protocol's actions read has to be in the network.
+    reads = _frozen.as_names(read_by_actions) | _frozen.names_read(protocol)
+    caps = capability_report(model, read_by_actions=reads)
+    left_out, marked = _folded_parameters(model, reads)
+    n_written = model.n_parameters - len(left_out)
     header = f"sbml2net: {sbml_path.name}"
-    net_text = write_net(model, out_path, strict=strict, header=header, model_name=sbml_path.name)
+    net_text = write_net(
+        model,
+        out_path,
+        strict=strict,
+        header=header,
+        model_name=sbml_path.name,
+        read_by_actions=reads,
+    )
 
     structural: StructuralReport | None = None
     rhs_faithful: bool | None = None
@@ -427,11 +458,13 @@ def sbml_to_net(
                 output_text=net_text,
                 n_species=model.n_species,
                 n_reactions=model.n_reactions,
-                n_parameters=model.n_parameters,
+                n_parameters=n_written,
                 n_observables=model.n_observables,
                 dropped=caps["dropped"],
                 lossy=caps["lossy"],
                 bngsim_only=caps["bngsim_only"],
+                folded_left_out=left_out,
+                folded_marked=marked,
                 rhs_faithful=False,
                 protocol=protocol,
             )
@@ -508,11 +541,13 @@ def sbml_to_net(
         output_text=net_text,
         n_species=model.n_species,
         n_reactions=model.n_reactions,
-        n_parameters=model.n_parameters,
+        n_parameters=n_written,
         n_observables=model.n_observables,
         dropped=caps["dropped"],
         lossy=caps["lossy"],
         bngsim_only=caps["bngsim_only"],
+        folded_left_out=left_out,
+        folded_marked=marked,
         structural=structural,
         max_rhs_delta=max_rhs_delta,
         max_ar_report_delta=max_ar_report_delta,
@@ -612,7 +647,13 @@ def sbml_to_bngl(
         # event_override is now [] when all events were carried into actions,
         # else the specific state-triggered / non-constant refusals.
 
-    caps = bngl_capability_report(model, event_override=event_override)
+    from bngsim.convert import _frozen
+    from bngsim.convert._bngl_writer import _folded_parameters
+
+    # Issue #1792: what the protocol's actions read has to be in the model.
+    reads = _frozen.names_read(protocol)
+    caps = bngl_capability_report(model, event_override=event_override, read_by_actions=reads)
+    left_out, marked = _folded_parameters(model, reads)
     bngl_text = write_bngl(
         model,
         out_path,
@@ -667,11 +708,13 @@ def sbml_to_bngl(
         output_text=bngl_text,
         n_species=model.n_species,
         n_reactions=model.n_reactions,
-        n_parameters=model.n_parameters,
+        n_parameters=model.n_parameters - len(left_out),
         n_observables=model.n_observables,
         dropped=caps["dropped"],
         lossy=caps["lossy"],
         bngsim_only=caps.get("bngsim_only", []),
+        folded_left_out=left_out,
+        folded_marked=marked,
         max_rhs_delta=max_rhs_delta,
         max_ar_report_delta=max_ar_report_delta,
         rhs_faithful=rhs_faithful,
@@ -1552,6 +1595,48 @@ def _recording(notes: list[str]):
         warnings.warn_explicit(w.message, w.category, w.filename, w.lineno, source=w.source)
 
 
+def _actions_on_folded(actions: ProtocolSpec, report: ConversionReport) -> list[str]:
+    """A note for each parameter the actions set or scan that was folded into
+    a number when the model loaded (issue #1792): a ``setParameter``, a
+    ``parameter_scan`` or a ``bifurcate`` over it. The loaded model refuses
+    a write that changes it. Left out of the ``.net``, the parameter is one
+    the actions name and the network does not declare, and the action is
+    refused where the block is run, or moves nothing: bngsim and BNG2.pl
+    2.9.3 refuse it, and BNG2.pl 2.5.1 refuses a ``setParameter`` and runs a
+    ``parameter_scan`` or a ``bifurcate`` of such a name without moving
+    anything. Marked in it, bngsim refuses the action where it changes the
+    value, and another reader takes it."""
+    out: list[str] = []
+    told: set[tuple[str, str]] = set()
+    for step in actions.steps:
+        if isinstance(step, StateChange) and step.kind == "set_parameter":
+            action, verb, name = "setParameter", "sets", step.target
+        elif isinstance(step, Experiment) and step.is_scan:
+            action = "bifurcate" if step.is_bifurcation else "parameter_scan"
+            verb, name = "scans", step.scan_parameter
+        else:
+            continue
+        if name is None or (action, name) in told:
+            continue
+        told.add((action, name))
+        if name in report.folded_left_out:
+            out.append(
+                f'{action} of "{name}" {verb} a parameter the network does not declare: '
+                f"{name} was folded into a number when the model was loaded and nothing "
+                "in the network reads it, so the action is refused, or moves nothing, "
+                "where the block is run, as the loaded model refuses a write that changes it"
+            )
+        elif name in report.folded_marked:
+            out.append(
+                f'{action} of "{name}" {verb} a parameter that was folded into a number '
+                "when the model was loaded and that the network or its actions still read: bngsim "
+                "refuses the action where it changes the value, as the loaded model refuses "
+                "a write that changes it, and another reader takes it and moves only what "
+                f"still reads {name}"
+            )
+    return out
+
+
 def _derived_of_the_net(
     actions: ProtocolSpec, out_path: str | Path | None, net_text: str
 ) -> dict[str, str] | None:
@@ -1636,7 +1721,12 @@ def omex_to_net(
         Also refuses an actions block that cannot go back to a state the
         protocol saved before its network was generated (a value as declared,
         which the network no longer holds); ``False`` writes it with the note
-        as a comment and in ``lossy``.
+        as a comment and in ``lossy``. An action that sets a parameter folded
+        into a number when the model loaded (``Model.frozen_params``) is
+        written with such a note whatever ``strict`` is: the loaded model
+        refuses a write that changes it, and what runs the block refuses the
+        action, or moves nothing by it, where the ``.net`` leaves the
+        parameter out.
     t_span, n_points : tuple[float, float], int
         Fallback L3 grid when the archive carries no SED-ML horizon.
     actions_out : str | Path | None
@@ -1685,6 +1775,11 @@ def omex_to_net(
             dest = Path(out_path).with_suffix(".bngl")
         actions = notes = None
         sed_entries = archive.sedml_entries()
+        # Issue #1792: what the archive's experiments read has to be in the
+        # network, whichever of its SED-ML files says it.
+        from bngsim.convert import _frozen
+
+        reads = _frozen.names_read(archive.load_full_protocol()) if sed_entries else frozenset()
         if write_actions and dest is not None and sed_entries:
             from bngsim.convert._protocol import _on_its_network
 
@@ -1707,6 +1802,7 @@ def omex_to_net(
             sedml=sedml_path,
             t_span=t_span,
             n_points=n_points,
+            read_by_actions=reads,
         )
 
         # Compose the WHOLE protocol — every experiment from every SED-ML file —
@@ -1728,6 +1824,9 @@ def omex_to_net(
 
             derived = _derived_of_the_net(actions, out_path, report.output_text)
             text = write_bngl_protocol(actions, derived=derived)
+            # Issue #1792: known only once the model is loaded, so said with
+            # the file written, under strict too.
+            notes = [*(notes or []), *_actions_on_folded(actions, report)]
             if notes:
                 for note in notes:
                     warnings.warn(note, ConversionWarning, stacklevel=2)

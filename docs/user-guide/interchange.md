@@ -63,14 +63,20 @@ What to watch out for:
   `Model.frozen_params` lists them, and `set_param` refuses to change one,
   because the write would not move the number it went into. `sbml_to_net` and
   `sbml_to_bngl` leave such a parameter out of the file when nothing in the
-  written network reads it, with a note under `dropped`; a write to it then
-  fails in BNGsim and in BNG2.pl, as a name the model does not have. Where a
-  rate law or another expression still reads it, the parameter is written with
-  a `folded_at_load=` comment on its line. BNGsim reads that comment from a
-  `.net` or a `.bngl` and refuses the write on the reloaded model too. Other
+  written network reads it, with a note under `dropped`; `set_param` on it
+  then fails in BNGsim, and a `setParameter` in BNGsim and in BNG2.pl, as a
+  name the model does not have. Where a rate law or another expression still
+  reads it, the parameter is written with a `folded_at_load=` comment on its
+  line. BNGsim reads that comment from a `.net` or a `.bngl` and refuses the
+  write on the reloaded model too. Other
   tools do not read it: there a write moves what still reads the parameter and
-  not the folded number. These parameters are listed under `bngsim_only`. To
-  change one, edit the SBML and convert again.
+  not the folded number. A parameter that the actions written with the file
+  read in a value (`setConcentration("A()", "f*0.5")`) stays as well, marked,
+  so that the actions run. These parameters are listed under `bngsim_only`, and
+  the report names both kinds in `folded_left_out` and `folded_marked`. To
+  change one, edit the SBML and convert again. The other direction does not
+  carry the comment: `net_to_sbml` and `net_to_omex` write a marked parameter
+  as an ordinary one.
 
 ## Compartmental BNGL (SBML to cBNGL)
 

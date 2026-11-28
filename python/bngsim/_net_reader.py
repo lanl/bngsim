@@ -70,7 +70,7 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
                            ``folded_at_load=`` comment on a parameter line,
                            which ``sbml_to_net`` writes for a parameter that
                            was folded into a number when the SBML was loaded
-                           and that the network still reads. Each is refused
+                           and that the network or its actions still read. Each is refused
                            for writing too (issue #1792)
 
         Values are evaluated: a parameter's is the number ``Model.from_net``

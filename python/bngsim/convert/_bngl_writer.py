@@ -43,6 +43,7 @@ from __future__ import annotations
 import math
 import re
 import warnings
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -209,7 +210,7 @@ _EVENT_GENERIC = object()  # sentinel: caller did not classify the events
 
 
 def bngl_capability_report(
-    model: Model, *, event_override: Any = _EVENT_GENERIC
+    model: Model, *, event_override: Any = _EVENT_GENERIC, read_by_actions: Iterable[str] = ()
 ) -> dict[str, list[str]]:
     """Inspect a model for constructs the cBNGL writer (deliverable 1) cannot carry.
 
@@ -445,7 +446,7 @@ def bngl_capability_report(
 
     # Issue #1792: a parameter folded at load is left out where nothing in the
     # model block reads it, and marked for bngsim's reader where something does.
-    left_out, marked = _folded_parameters(model)
+    left_out, marked = _folded_parameters(model, read_by_actions)
     gone, kept = _frozen.notes(left_out, marked)
     dropped += gone
     bngsim_only += kept
@@ -453,9 +454,13 @@ def bngl_capability_report(
     return {"dropped": dropped, "lossy": lossy, "bngsim_only": bngsim_only}
 
 
-def _folded_parameters(model: Model) -> tuple[list[str], list[str]]:
+def _folded_parameters(
+    model: Model, read_by_actions: Iterable[str] = ()
+) -> tuple[list[str], list[str]]:
     """The frozen parameters :func:`write_bngl` leaves out, and the ones it
-    marks, read off the model block it writes (:mod:`bngsim.convert._frozen`)."""
+    marks, read off the model block it writes (:mod:`bngsim.convert._frozen`).
+    *read_by_actions* names what the actions after the block read, which
+    stays."""
     if not _frozen.has_folded(model):
         return [], []
     try:
@@ -464,7 +469,7 @@ def _folded_parameters(model: Model) -> tuple[list[str], list[str]]:
             block = _bngl_text(model, "model", None)[0]
     except Exception:  # whatever stops the writer stops it at the write, in its words
         return [], []
-    return _frozen.fold(model, block)[1:]
+    return _frozen.fold(model, block, read_by_actions)[1:]
 
 
 def _apply_capability_policy(
@@ -600,10 +605,12 @@ def write_bngl(
         *codegen species name*, which this writer translates to the
         compartment-qualified pattern (``@comp:Mol()``) the model declares.
         A parameter folded at load is left out or marked by what the model
-        block reads (issue #1792), whatever the actions name: a
-        ``setParameter`` on one that is left out names a parameter the block
-        does not declare, and BNG2.pl aborts on it, as ``set_param`` on the
-        source model refuses the same write.
+        block reads and by what the actions read in a value to evaluate
+        (``setConcentration("A()", "f*0.5")`` keeps ``f``, marked; issue
+        #1792). What an action sets is no read: a ``setParameter`` on a
+        parameter that is left out names one the block does not declare, and
+        BNG2.pl aborts on it, as ``set_param`` on the source model refuses a
+        write that changes it.
     event_override : list[str] | sentinel
         Forwarded to :func:`bngl_capability_report` — the orchestrator's event
         classification (empty list = all fixed-time, carried into ``protocol``).
@@ -616,14 +623,15 @@ def write_bngl(
         actions, append a ``generate_network`` action to run it through ``BNG2.pl``.
     """
     name = model_name or getattr(model, "name", None) or "model"
+    reads = _frozen.names_read(protocol)
     _apply_capability_policy(
-        bngl_capability_report(model, event_override=event_override),
+        bngl_capability_report(model, event_override=event_override, read_by_actions=reads),
         strict=strict,
         model_name=str(name),
     )
     block, actions = _bngl_text(model, str(name), protocol)
     # Issue #1792: the parameters folded at load, left out or marked.
-    text = _frozen.fold(model, block)[0] + actions
+    text = _frozen.fold(model, block, reads)[0] + actions
     if out_path is not None:
         Path(out_path).write_text(text, encoding="utf-8")
     return text

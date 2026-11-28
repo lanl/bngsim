@@ -568,7 +568,7 @@ Two cases are covered less fully. A network written with
 parameters they name are in `frozen_params`, but its derived parameters are
 numbers, so what a derived volume reads (`r` in `vol = 4*r^3`) is not known.
 A model written by BNGsim's converters (`write_net`, `net_to_sbml`) and loaded
-again has no comments at all, so its volume is an ordinary parameter that
+again has none of these comments, so its volume is an ordinary parameter that
 nothing reads.
 
 ## A derived parameter set after the Simulator is built

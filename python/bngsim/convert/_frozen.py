@@ -11,8 +11,9 @@ still did.
 
 The two cases are told apart on the text that is written:
 
-* Nothing else in the file names the parameter. It is left out. A write to it
-  then fails as a name the model has not, in bngsim and in BNG2.pl alike.
+* Nothing else in the file names the parameter. It is left out. ``set_param``
+  on it then fails as a name the model has not, and so does a
+  ``setParameter``, in bngsim and in BNG2.pl alike.
 * Something still reads it (a rate law, a function, another parameter, a
   species' initial value). It stays, with ``folded_at_load=<what it was folded
   into>`` in a comment on its line, which ``Model.from_net`` and
@@ -27,10 +28,11 @@ written as before.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 MARKER = "folded_at_load="
-_NAME = re.compile(r"[A-Za-z_]\w*")
+_IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 _INDEX = re.compile(r"(\s*)\d+(?=\s)")
 
 
@@ -45,22 +47,63 @@ def has_folded(model: Any) -> bool:
     return bool(_reasons(model))
 
 
-def fold(model: Any, text: str) -> tuple[str, list[str], list[str]]:
+def as_names(given: Iterable[str] | str) -> frozenset[str]:
+    """*given*, the names actions read, as a set: read once, so that an
+    iterator serves every use of it, and a ``str`` taken for the one name it
+    is, not for its letters."""
+    return frozenset((given,)) if isinstance(given, str) else frozenset(given)
+
+
+def names_read(protocol: Any) -> frozenset[str]:
+    """The names the actions of *protocol* read when run: every name
+    in a value that a ``setConcentration``, an ``addConcentration`` or a
+    ``setParameter`` is given as an expression, and in any other text an
+    experiment carries (a stop condition). What an action sets or scans is no
+    read. A parameter among these has to be in the network the actions are run
+    on, so :func:`fold` keeps it."""
+    from bngsim._model import _names_in
+
+    def texts(value: Any) -> Iterable[str]:
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, Mapping):
+            for inner in value.values():
+                yield from texts(inner)
+        elif isinstance(value, (list, tuple)):
+            for inner in value:
+                yield from texts(inner)
+
+    found: set[str] = set()
+    for step in getattr(protocol, "steps", None) or ():
+        for text in (
+            *texts(getattr(step, "value_expr", None)),
+            *texts(getattr(step, "extra", None)),
+        ):
+            found.update(_names_in(text))
+    return frozenset(found)
+
+
+def fold(model: Any, text: str, also_read: Iterable[str] = ()) -> tuple[str, list[str], list[str]]:
     """*text*, a ``.net`` or a BNGL model block with every parameter of *model*
     written, as it is to be written: ``(text, left out, marked)``, the two
     lists the names of *model*'s frozen parameters in the order of the file.
 
     A parameter is read when a line other than its own names it, comments
-    aside. One that only parameters left out read is left out with them. Any
-    use of the name counts, a species, an observable or a molecule type of
-    that name among them: the parameter then stays, marked, which errs on the
-    side of refusing a write.
+    aside, or when it is among *also_read*, the names that actions written
+    beside the file read (:func:`names_read`). One that only parameters left
+    out read is left out as well. Any use of the name counts, also where it is
+    a species, an observable or a molecule type of that name: the parameter
+    then stays, marked, which errs on the side of refusing a write. A name
+    counts as the network's own reader finds it: after a number (``2f`` is
+    ``2*f``), not as the exponent of one (``1e-30``). The lines that open and
+    close a block (``begin species``) name nothing.
     """
     reasons = _reasons(model)
     if not reasons:
         return text, [], []
-    from bngsim._model import _FOLDED_READ_BACK
+    from bngsim._model import _FOLDED_READ_BACK, _names_in
 
+    kept_for_actions = as_names(also_read)
     lines = text.split("\n")
     block: list[int] = []  # the lines of the parameters block
     at: dict[str, int] = {}  # a frozen parameter's own line
@@ -76,7 +119,19 @@ def fold(model: Any, text: str) -> tuple[str, list[str], list[str]]:
             block.append(i)
             if words[1] in reasons:
                 at.setdefault(words[1], i)
-    names = [set(_NAME.findall(line.partition("#")[0])) for line in lines]
+    codes = []
+    names = []
+    for line in lines:
+        code = line.partition("#")[0]
+        # A block's first and last line name the block, and nothing it reads.
+        marks_a_block = code.split()[:1] in (["begin"], ["end"])
+        codes.append("" if marks_a_block else code)
+        names.append(set() if marks_a_block else set(_names_in(code)))
+
+    def named(n: str, i: int) -> bool:
+        # A name that is no identifier (a dot in it) is looked for as it stands.
+        return n in names[i] if _IDENTIFIER.fullmatch(n) else n in codes[i]
+
     left_out: set[str] = set()
     while True:
         gone = {at[n] for n in left_out}
@@ -84,7 +139,8 @@ def fold(model: Any, text: str) -> tuple[str, list[str], list[str]]:
             n
             for n, own in at.items()
             if n not in left_out
-            and not any(n in names[i] for i in range(len(lines)) if i != own and i not in gone)
+            and n not in kept_for_actions
+            and not any(named(n, i) for i in range(len(lines)) if i != own and i not in gone)
         }
         if not more:
             break
@@ -118,14 +174,15 @@ def notes(left_out: list[str], marked: list[str]) -> tuple[list[str], list[str]]
             f"{len(left_out)} parameter(s) folded into a number when the model was "
             f"loaded, which nothing in the written network reads ({', '.join(left_out)}): "
             "a write to one moved nothing, and is now refused as a name the model "
-            "has not (Model.frozen_params of the source model)"
+            "has not (Model.frozen_params of the model written)"
         )
     if marked:
         bngsim_only.append(
             f"{len(marked)} parameter(s) folded into a number when the model was "
-            f"loaded, which the written network still reads ({', '.join(marked)}), carry a "
+            "loaded, which the written network or its actions still read "
+            f"({', '.join(marked)}), carry a "
             f"`{MARKER}` comment: bngsim reads it and refuses a write to one, as it does "
-            "on the source model, but any other reader takes the write, which moves "
+            "on the model written, but any other reader takes the write, which moves "
             "what still reads the parameter and not the number it was folded into"
         )
     return dropped, bngsim_only

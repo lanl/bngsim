@@ -1906,11 +1906,12 @@ class Model:
 
         A ``.net`` or ``.bngl`` that ``sbml_to_net`` or ``sbml_to_bngl`` wrote
         keeps them (issue #1792). A parameter folded when the SBML was loaded,
-        which the written network still reads, has ``folded_at_load=`` and
+        which the written network or its actions still read, has ``folded_at_load=`` and
         what it was folded into in a comment on its line, and is listed again
         in the model loaded from the file. (One that nothing in the network
         reads is left out of the file.) The comment may be written by hand
-        on a parameter line of either format, to the same effect.
+        on a parameter line of either format, to the same effect; one on a
+        line that declares no parameter of the model says nothing.
 
         Empty for most models.
 
@@ -4027,7 +4028,7 @@ def _where_a_folded_parameter_is_changed(what: str) -> str:
     if "unit_conversion=" in what:
         return "the BNGL source and generate the network again"
     if what.endswith(_FOLDED_READ_BACK):
-        return "the SBML document the file was converted from, and convert it again"
+        return "the document the file was written from, and write the file again"
     return "the SBML document and load the model again"
 
 
@@ -4056,8 +4057,10 @@ def _folded_at_load_in(text: str) -> list[tuple[str, str]]:
 
     The block is found as :func:`_unit_conversions_in` finds the reactions:
     by the first two words of a line with its comment taken off. A parameter
-    line is ``<index> <name> <value>`` in a ``.net`` and may be
-    ``<name> <value>`` in a ``.bngl``.
+    line is ``<index> <name> <value>`` in a ``.net``. In a ``.bngl`` it may
+    also have no index, an ``=`` between the name and the value, and a label
+    before the name (``f 2``, ``f = 2``, ``3 f=2``, ``label: f 2``,
+    ``label : f 2``, ``3 label: f 2``), each of which BNG2.pl reads.
     """
     if "folded_at_load" not in text:
         return []
@@ -4075,8 +4078,17 @@ def _folded_at_load_in(text: str) -> list[tuple[str, str]]:
             continue
         said = _FOLDED_AT_LOAD.search(comment)
         if said and said.group(1):
-            indexed = len(words) >= 3 and words[0].isdigit()
-            found.append((words[1] if indexed else words[0], said.group(1)))
+            words = code.replace("=", " ").split()
+            if len(words) >= 3 and words[0].isdigit():
+                words = words[1:]  # the index
+            if words[:1] == [":"]:
+                continue  # a colon and no label before it
+            if words and words[0].endswith(":"):
+                words = words[1:]  # a label, its colon with it
+            elif words[1:2] == [":"]:
+                words = words[2:]  # a label, a blank, its colon
+            if words:
+                found.append((words[0], said.group(1)))
     return found
 
 
